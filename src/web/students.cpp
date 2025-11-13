@@ -74,7 +74,7 @@ void handleStudentsForMateria() {
             "</script>";
   }
 
-  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a> <a class='btn btn-blue' href='/'>Menu</a></p>";
+  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
@@ -118,7 +118,7 @@ void handleStudentsAll() {
       html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
 
       // Editar -> abrir edición en capture y regresar a /students_all
-      html += "<a class='btn btn-blue' href='/capture_edit?uid=" + uids[i] + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
+      html += "<a class='btn btn-green' href='/capture_edit?uid=" + uids[i] + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
 
       // Eliminar totalmente
       html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";
@@ -137,7 +137,7 @@ void handleStudentsAll() {
             "</script>";
   }
 
-  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a> <a class='btn btn-blue' href='/'>Menu</a></p>";
+  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
