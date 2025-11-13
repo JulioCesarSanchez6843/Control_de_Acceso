@@ -1,7 +1,4 @@
 #pragma once
-// Utilidades comunes para generación de HTML (cabecera/pie), y prototipos
-// que usan en múltiples módulos web.
-
 #include <Arduino.h>
 #include <WebServer.h>
 
@@ -9,9 +6,11 @@
 String htmlHeader(const char* title);
 String htmlFooter();
 
-// Helpers para rutas web generales (se declaran aquí si quieres centralizarlos)
+// Helpers para rutas web
 void handleRoot();
 void handleStatus();
-
-// Exporta la función que registra las rutas (definida en web_routes.cpp)
 void registerRoutes();
+
+// 🔹 Declaraciones de validación (solo se declaran aquí)
+bool existsUserUidMateria(const String& uid, const String& materia);
+bool existsUserAccountMateria(const String& account, const String& materia);

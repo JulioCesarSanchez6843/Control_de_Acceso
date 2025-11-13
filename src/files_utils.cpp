@@ -1,35 +1,35 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
-#include "rfid_handler.h" // for nowISO()
+#include "rfid_handler.h"  // for nowISO()
 #include <SPIFFS.h>
 #include <algorithm>
 
 // --- CSV parsing ---
 std::vector<String> parseQuotedCSVLine(const String &line) {
   std::vector<String> cols;
-  int i=0, n=line.length();
-  while (i<n) {
-    while (i<n && line[i]!='"') i++;
-    if (i>=n) break;
-    int start = i+1;
+  int i = 0, n = line.length();
+  while (i < n) {
+    while (i < n && line[i] != '"') i++;
+    if (i >= n) break;
+    int start = i + 1;
     int end = line.indexOf('"', start);
     if (end == -1) { cols.push_back(line.substring(start)); break; }
     cols.push_back(line.substring(start, end));
-    i = end+1;
-    if (i<n && line[i]==',') i++;
+    i = end + 1;
+    if (i < n && line[i] == ',') i++;
   }
   return cols;
 }
 
-void appendLineToFile(const char* path, const String &line) {
+void appendLineToFile(const char *path, const String &line) {
   File f = SPIFFS.open(path, FILE_APPEND);
   if (!f) { Serial.printf("ERR append %s\n", path); return; }
   f.println(line);
   f.close();
 }
 
-void writeAllLines(const char* path, const std::vector<String> &lines) {
+void writeAllLines(const char *path, const std::vector<String> &lines) {
   File f = SPIFFS.open(path, FILE_WRITE);
   if (!f) return;
   for (const String &L : lines) f.println(L);
@@ -77,7 +77,7 @@ std::vector<ScheduleEntry> loadSchedules() {
   String header = f.readStringUntil('\n');
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim();
-    if (l.length()==0) continue;
+    if (l.length() == 0) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 4) {
       ScheduleEntry e; e.materia = c[0]; e.day = c[1]; e.start = c[2]; e.end = c[3];
@@ -96,6 +96,7 @@ bool slotOccupied(const String &day, const String &start, const String &materiaF
   }
   return false;
 }
+
 void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end) {
   String line = "\"" + materia + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + end + "\"";
   appendLineToFile(SCHEDULES_FILE, line);
@@ -108,11 +109,11 @@ std::vector<Course> loadCourses() {
   if (!f) return res;
   String header = f.readStringUntil('\n');
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (l.length()==0) continue;
+    String l = f.readStringUntil('\n'); l.trim(); if (l.length() == 0) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size()>=3) {
+    if (c.size() >= 3) {
       Course co; co.materia = c[0]; co.profesor = c[1]; co.created_at = c[2]; res.push_back(co);
-    } else if (c.size()==2) {
+    } else if (c.size() == 2) {
       Course co; co.materia = c[0]; co.profesor = c[1]; co.created_at = ""; res.push_back(co);
     }
   }
@@ -121,7 +122,7 @@ std::vector<Course> loadCourses() {
 }
 
 bool courseExists(const String &materia) {
-  if (materia.length()==0) return false;
+  if (materia.length() == 0) return false;
   auto v = loadCourses();
   for (auto &c : v) if (c.materia == materia) return true;
   return false;
@@ -135,7 +136,8 @@ void addCourse(const String &materia, const String &prof) {
 void writeCourses(const std::vector<Course> &list) {
   std::vector<String> lines;
   lines.push_back("\"materia\",\"profesor\",\"created_at\"");
-  for (auto &c : list) lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
+  for (auto &c : list)
+    lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
   writeAllLines(COURSES_FILE, lines);
 }
 
@@ -145,9 +147,9 @@ String findAnyUserByUID(const String &uid) {
   if (!f) return "";
   while (f.available()) {
     String line = f.readStringUntil('\n'); line.trim();
-    if (line.length()==0) continue;
+    if (line.length() == 0) continue;
     auto cols = parseQuotedCSVLine(line);
-    if (cols.size()>0 && cols[0]==uid) { f.close(); return line; }
+    if (cols.size() > 0 && cols[0] == uid) { f.close(); return line; }
   }
   f.close();
   return "";
@@ -158,9 +160,22 @@ bool existsUserUidMateria(const String &uid, const String &materia) {
   if (!f) return false;
   while (f.available()) {
     String line = f.readStringUntil('\n'); line.trim();
-    if (line.length()==0) continue;
+    if (line.length() == 0) continue;
     auto c = parseQuotedCSVLine(line);
-    if (c.size()>=4 && c[0]==uid && c[3]==materia) { f.close(); return true; }
+    if (c.size() >= 4 && c[0] == uid && c[3] == materia) { f.close(); return true; }
+  }
+  f.close();
+  return false;
+}
+
+bool existsUserAccountMateria(const String &account, const String &materia) {
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n'); line.trim();
+    if (line.length() == 0) continue;
+    auto c = parseQuotedCSVLine(line);
+    if (c.size() >= 4 && c[2] == account && c[3] == materia) { f.close(); return true; }
   }
   f.close();
   return false;
@@ -173,9 +188,9 @@ std::vector<String> usersForMateria(const String &materia) {
   String header = f.readStringUntil('\n');
   while (f.available()) {
     String line = f.readStringUntil('\n'); line.trim();
-    if (line.length()==0) continue;
+    if (line.length() == 0) continue;
     auto c = parseQuotedCSVLine(line);
-    if (c.size()>=4 && c[3]==materia) res.push_back(line);
+    if (c.size() >= 4 && c[3] == materia) res.push_back(line);
   }
   f.close();
   return res;
@@ -199,7 +214,7 @@ std::vector<String> readNotifications(int limit) {
   f.close();
   int start = max(0, (int)res.size() - limit);
   std::vector<String> out;
-  for (int i=start;i<(int)res.size();i++) out.push_back(res[i]);
+  for (int i = start; i < (int)res.size(); i++) out.push_back(res[i]);
   return out;
 }
 
@@ -208,7 +223,9 @@ int notifCount() {
   if (!f) return 0;
   int count = 0;
   String header = f.readStringUntil('\n');
-  while (f.available()) { String l = f.readStringUntil('\n'); l.trim(); if (l.length()) count++; }
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (l.length()) count++;
+  }
   f.close();
   return count;
 }
