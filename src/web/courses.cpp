@@ -76,13 +76,19 @@ void handleMaterias() {
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
-      html += "<a class='btn btn-blue' href='/materias/edit?materia=" + c.materia + "'>✏️ Editar</a> ";
+      // Editar -> verde (no destructivo)
+      html += "<a class='btn btn-green' href='/materias/edit?materia=" + c.materia + "'>✏️ Editar</a> ";
 
-      // <-- CAMBIO: botón Horarios apunta al submenú/flujo de "materias_new_schedule" que edita SOLO esa materia
-      html += "<a class='btn btn-blue' href='/materias_new_schedule?materia=" + c.materia + "'>📅 Horarios</a> ";
+      // Horarios -> amarillo (edición de horarios)  <-- estilo forzado para visibilidad
+      html += "<a class='btn btn-yellow' href='/materias_new_schedule?materia=" + c.materia + "' style='background:#f1c40f;color:#111;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📅 Horarios</a> ";
 
-      html += "<a class='btn btn-blue' href='/students?materia=" + c.materia + "'>👥 Administrar Estudiantes</a> ";
-      html += "<a class='btn btn-blue' href='/materia_history?materia=" + c.materia + "' title='Historial por días'>📆 Historial</a> ";
+      // Administrar estudiantes -> morado/clarito (estilo forzado)
+      html += "<a class='btn btn-purple' href='/students?materia=" + c.materia + "' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>👥 Administrar Estudiantes</a> ";
+
+      // Historial por días -> naranja (estilo forzado)
+      html += "<a class='btn btn-orange' href='/materia_history?materia=" + c.materia + "' title='Historial por días' style='background:#e67e22;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📆 Historial</a> ";
+
+      // Eliminar (peligroso) -> rojo
       html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Eliminar materia y sus horarios/usuarios? Esta acción es irreversible.\");'><input type='hidden' name='materia' value='" + c.materia + "'><input class='btn btn-red' type='submit' value='Eliminar'></form>";
       html += "</td></tr>";
     }
@@ -108,7 +114,8 @@ void handleMaterias() {
             "</script>";
   }
 
-  html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>➕ Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Volver</a></p>";
+  // Botones inferiores: Agregar nueva materia (verde) + Inicio (azul)
+  html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>➕ Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200, "text/html", html);
 }
@@ -129,17 +136,26 @@ void handleMateriasNew() {
 
 // POST /materias_add
 void handleMateriasAddPOST() {
-  if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
-  String mat = server.arg("materia"); mat.trim();
-  String prof = server.arg("profesor"); prof.trim();
+  if (!server.hasArg("materia") || !server.hasArg("profesor")) {
+    server.send(400, "text/plain", "materia y profesor requeridos");
+    return;
+  }
+  String mat = server.arg("materia");
+  mat.trim();
+  String prof = server.arg("profesor");
+  prof.trim();
   if (mat.length() == 0) { server.send(400, "text/plain", "materia vacia"); return; }
   if (prof.length() == 0) { server.send(400, "text/plain", "profesor vacio"); return; }
 
   if (coursePairExists(mat, prof)) {
-    String html = htmlHeader("Duplicado");
-    html += "<div class='card'><h3>No se puede crear: materia y profesor ya registrados.</h3>";
-    html += "<p class='small'>Ya existe una entrada con <b>" + mat + "</b> y el profesor <b>" + prof + "</b>. Si deseas la misma materia con otro profesor, cambia el nombre del profesor antes de crear.</p>";
-    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias/new'>Inicio</a> <a class='btn btn-blue' href='/materias'>Lista de materias</a></p>";
+    // Página de error mejor redactada
+    String html = htmlHeader("Operación inválida");
+    html += "<div class='card'><h3>Operación inválida — duplicado de materia y profesor</h3>";
+    html += "<p class='small'>No se puede registrar la misma materia con el mismo profesor porque ya existe una entrada idéntica en el sistema.</p>";
+    html += "<p class='small'><b>Materia:</b> " + mat + " &nbsp; <b>Profesor:</b> " + prof + "</p>";
+    html += "<p class='small'>Si desea asociar esta materia a otro profesor, vuelva al formulario de registro y cambie el nombre del profesor. Si lo que desea es ver o editar materias existentes, use la lista de materias.</p>";
+    // Botones: Regresar a formulario (verde) y Lista de materias (azul)
+    html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>Regresar</a> <a class='btn btn-blue' href='/materias'>Lista de materias</a></p>";
     html += htmlFooter();
     server.send(200, "text/html", html);
     return;
@@ -148,25 +164,29 @@ void handleMateriasAddPOST() {
   addCourse(mat, prof);
 
   // Redirige a la pantalla de asignar horarios para la nueva materia (opcional)
-  // Esta página permite editar SOLO los slots de la materia recién creada.
-  server.sendHeader("Location", "/materias_new_schedule?materia=" + mat);
+  // Añadimos new=1 para que la página de horarios sepa que viene del flujo de creación
+  server.sendHeader("Location", "/materias_new_schedule?materia=" + mat + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
 }
 
 // GET /materias_new_schedule?materia=...
 void handleMateriasNewScheduleGET() {
   if (!server.hasArg("materia")) { server.send(400, "text/plain", "materia required"); return; }
-  String mat = server.arg("materia"); mat.trim();
+  String mat = server.arg("materia");
+  mat.trim();
   if (mat.length() == 0) { server.send(400, "text/plain", "materia invalida"); return; }
   if (!courseExists(mat)) { server.send(404, "text/plain", "Materia no encontrada"); return; }
+
+  // Determinar si entramos desde creación nueva (new=1) o desde edición normal (sin new)
+  bool fromNewFlow = (server.hasArg("new") && server.arg("new") == "1");
 
   auto schedules = loadSchedules();
   String headerTitle = String("Asignar horarios - ") + mat;
   String html = htmlHeader(headerTitle.c_str());
   html += "<div class='card'><h2>Horarios para: " + mat + "</h2>";
-  html += "<p class='small'>Solo puedes agregar horarios libres para esta materia o eliminar los que ya hayas agregado. Los horarios ocupados por otras materias están bloqueados.</p>";
+  // Nota: aquí eliminamos el texto explicativo extra (petición estética del usuario)
 
-  // Tabla tipo grilla, solo editable para la materia nueva
+  // Tabla tipo grilla, editable para la materia indicada
   html += "<table><tr><th>Hora</th>";
   for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
@@ -187,7 +207,7 @@ void handleMateriasNewScheduleGET() {
         // ocupado por otra materia -> mostrar bloqueado
         html += "<div class='occupied-other'>" + owner + "</div>";
       } else if (occ && owner == mat) {
-        // pertenece a la materia nueva -> permitir eliminar
+        // pertenece a la materia -> permitir eliminar
         html += "<div>" + owner + "</div>";
         html += "<div style='margin-top:6px'><form method='POST' action='/materias_new_schedule_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>";
         html += "<input type='hidden' name='materia' value='" + mat + "'>";
@@ -196,7 +216,7 @@ void handleMateriasNewScheduleGET() {
         html += "<input class='btn btn-red' type='submit' value='Eliminar'>";
         html += "</form></div>";
       } else {
-        // libre -> permitir agregar SOLO para la materia nueva
+        // libre -> permitir agregar
         html += "<form method='POST' action='/materias_new_schedule_add' style='display:inline'>";
         html += "<input type='hidden' name='materia' value='" + mat + "'>";
         html += "<input type='hidden' name='day' value='" + day + "'>";
@@ -212,15 +232,21 @@ void handleMateriasNewScheduleGET() {
 
   html += "</table>";
 
-  // Botones Continuar / Cancelar
+  // Botones inferiores: si venimos del flujo NEW (creación), mostrar Continuar + Cancelar registro.
+  // Si venimos desde el menú (edición), mostrar SOLO un botón verde de confirmar (volver a /materias).
   html += "<p style='margin-top:12px'>";
-  // Continuar: vuelve a la lista de materias (la materia ya está guardada)
-  html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Continuar</button></form> ";
-  // Cancelar: hacemos POST a /materias_delete para eliminar la materia nueva
-  html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>";
-  html += "<input type='hidden' name='materia' value='" + mat + "'>";
-  html += "<button class='btn btn-red' type='submit'>Cancelar registro</button>";
-  html += "</form>";
+  if (fromNewFlow) {
+    // Continuar: vuelve a la lista de materias (la materia ya está guardada)
+    html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Continuar</button></form> ";
+    // Cancelar: hacemos POST a /materias_delete para eliminar la materia nueva
+    html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>"; 
+    html += "<input type='hidden' name='materia' value='" + mat + "'>";
+    html += "<button class='btn btn-red' type='submit'>Cancelar registro</button>";
+    html += "</form>";
+  } else {
+    // Edición normal: solo botón confirmación (verde) que regresa a listado
+    html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Confirmar</button></form>";
+  }
   html += "</p></div>" + htmlFooter();
 
   server.send(200, "text/html", html);
@@ -289,7 +315,7 @@ void handleMateriasEditGET() {
   html += "<input type='hidden' name='orig_materia' value='" + mat + "'>";
   html += "Nombre materia:<br><input name='materia' value='" + courses[idx].materia + "' required><br>";
   html += "Profesor:<br><input name='profesor' value='" + courses[idx].profesor + "' required><br><br>";
-  html += "<input class='btn btn-green' type='submit' value='Guardar cambios'>";
+  html += "<input class='btn btn-green' type='submit' value='Guardar cambios'>"; // guardar verde
   html += "</form>";
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>" + htmlFooter();
   server.send(200, "text/html", html);
@@ -435,4 +461,3 @@ void registerCoursesHandlers() {
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 }
-
