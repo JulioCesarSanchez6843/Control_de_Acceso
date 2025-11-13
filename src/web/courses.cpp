@@ -139,7 +139,7 @@ void handleMateriasAddPOST() {
     String html = htmlHeader("Duplicado");
     html += "<div class='card'><h3>No se puede crear: materia y profesor ya registrados.</h3>";
     html += "<p class='small'>Ya existe una entrada con <b>" + mat + "</b> y el profesor <b>" + prof + "</b>. Si deseas la misma materia con otro profesor, cambia el nombre del profesor antes de crear.</p>";
-    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias/new'>Volver</a> <a class='btn btn-blue' href='/materias'>Lista de materias</a></p>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias/new'>Inicio</a> <a class='btn btn-blue' href='/materias'>Lista de materias</a></p>";
     html += htmlFooter();
     server.send(200, "text/html", html);
     return;
