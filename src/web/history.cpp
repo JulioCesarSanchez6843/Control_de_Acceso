@@ -9,25 +9,51 @@
 void handleHistoryPage() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
   String profFilter = server.hasArg("profesor") ? server.arg("profesor") : String();
+  
   String html = htmlHeader("Historial de Accesos");
   html += "<div class='card'><h2>Historial de Accesos</h2>";
-  html += "<div class='filters'><input id='hf_materia' placeholder='Filtrar por materia' value='" + materiaFilter + "'><input id='hf_prof' placeholder='Filtrar por profesor' value='" + profFilter + "'><input id='hf_uid' placeholder='Filtrar UID'><input id='hf_name' placeholder='Filtrar Nombre'><button class='search-btn btn btn-blue' onclick='applyHistoryFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearHistoryFilters()'>Limpiar</button></div>";
 
-  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/history.csv'>📥 Descargar TODO (laboratorio)</a> <a class='btn btn-blue' href='/history.csv" + (materiaFilter.length()? String("?materia=") + materiaFilter : String()) + "'>📥 Descargar filtrado (materia)</a> <form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'><input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> <a class='btn btn-blue' href='/'>Volver</a></p>";
+  // Texto explicativo
+  html += "<p class='small'>Esta pestaña muestra el historial completo de accesos y capturas de tarjetas de los estudiantes. "
+          "Aquí puede ver cuándo y quién ha sido registrado, junto con la materia correspondiente. "
+          "Importante: Al borrar todo el historial, también se reiniciarán las listas de asistencia de las materias.</p>";
+
+  // Filtros
+  html += "<div class='filters'>";
+  html += "<input id='hf_materia' placeholder='Filtrar por materia' value='" + materiaFilter + "'>";
+  html += "<input id='hf_prof' placeholder='Filtrar por profesor' value='" + profFilter + "'>";
+  html += "<input id='hf_name' placeholder='Filtrar por nombre'>";
+  html += "<button class='search-btn btn btn-blue' onclick='applyHistoryFilters()'>Buscar</button>";
+  html += "<button class='search-btn btn btn-green' onclick='clearHistoryFilters()'>Limpiar</button>";
+  html += "</div>";
+
+  // Botones de acción
+  html += "<p style='margin-top:8px'>";
+  html += "<a class='btn btn-green' href='/history.csv'>📥 Descargar todo el historial del laboratorio</a> ";
+  html += "<form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'>";
+  html += "<input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> ";
+  html += "<a class='btn btn-blue' href='/'>Inicio</a></p>";
 
   File f = SPIFFS.open(ATT_FILE, FILE_READ);
-  if (!f) { html += "<p>No hay historial.</p>"; html += htmlFooter(); server.send(200,"text/html",html); return; }
+  if (!f) { 
+    html += "<p>No hay historial.</p>"; 
+    html += htmlFooter(); 
+    server.send(200,"text/html",html); 
+    return; 
+  }
+
   String header = f.readStringUntil('\n');
-  html += "<table id='history_table'><tr><th>Timestamp</th><th>UID</th><th>Nombre</th><th>Cuenta</th><th>Materia</th><th>Modo</th></tr>";
+  html += "<table id='history_table'><tr><th>Timestamp</th><th>Nombre</th><th>Cuenta</th><th>Materia</th><th>Modo</th></tr>";
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
     String ts = (c.size()>0?c[0]:"");
-    String uid = (c.size()>1?c[1]:"");
     String name = (c.size()>2?c[2]:"");
     String acc = (c.size()>3?c[3]:"");
     String mat = (c.size()>4?c[4]:"");
     String mode = (c.size()>5?c[5]:"");
+
+    // Filtrado por profesor
     if (profFilter.length()) {
       bool okProf=false;
       auto courses = loadCourses();
@@ -37,14 +63,35 @@ void handleHistoryPage() {
       if (!okProf) continue;
     }
     if (materiaFilter.length() && mat != materiaFilter) continue;
-    html += "<tr><td>" + ts + "</td><td>" + uid + "</td><td>" + name + "</td><td>" + acc + "</td><td>" + mat + "</td><td>" + mode + "</td></tr>";
+
+    html += "<tr><td>" + ts + "</td><td>" + name + "</td><td>" + acc + "</td><td>" + mat + "</td><td>" + mode + "</td></tr>";
   }
   f.close();
   html += "</table>";
+
+  // Scripts de filtros
   html += "<script>"
-          "function applyHistoryFilters(){ const table=document.getElementById('history_table'); if(!table) return; const fm=document.getElementById('hf_materia').value.trim().toLowerCase(); const fp=document.getElementById('hf_prof').value.trim().toLowerCase(); const fu=document.getElementById('hf_uid').value.trim().toLowerCase(); const fn=document.getElementById('hf_name').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<6) continue; const mat=row.cells[4].textContent.toLowerCase(); const uid=row.cells[1].textContent.toLowerCase(); const name=row.cells[2].textContent.toLowerCase(); const profMatches = (fp.length===0) ? true : true; const ok=(mat.indexOf(fm)!==-1)&&(uid.indexOf(fu)!==-1)&&(name.indexOf(fn)!==-1); row.style.display = ok ? '' : 'none'; } }"
-          "function clearHistoryFilters(){ document.getElementById('hf_materia').value=''; document.getElementById('hf_prof').value=''; document.getElementById('hf_uid').value=''; document.getElementById('hf_name').value=''; applyHistoryFilters(); }"
+          "function applyHistoryFilters(){ "
+          "const table=document.getElementById('history_table'); if(!table) return; "
+          "const fm=document.getElementById('hf_materia').value.trim().toLowerCase(); "
+          "const fp=document.getElementById('hf_prof').value.trim().toLowerCase(); "
+          "const fn=document.getElementById('hf_name').value.trim().toLowerCase(); "
+          "for(let r=1;r<table.rows.length;r++){ "
+          "const row=table.rows[r]; if(row.cells.length<5) continue; "
+          "const mat=row.cells[3].textContent.toLowerCase(); "
+          "const name=row.cells[1].textContent.toLowerCase(); "
+          "const ok=(mat.indexOf(fm)!==-1)&&(name.indexOf(fn)!==-1); "
+          "row.style.display = ok ? '' : 'none'; "
+          "} "
+          "}"
+          "function clearHistoryFilters(){ "
+          "document.getElementById('hf_materia').value=''; "
+          "document.getElementById('hf_prof').value=''; "
+          "document.getElementById('hf_name').value=''; "
+          "applyHistoryFilters(); "
+          "}"
           "</script>";
+
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
@@ -76,7 +123,8 @@ void handleHistoryCSV() {
 // /history_clear (POST)
 void handleHistoryClearPOST() {
   writeAllLines(ATT_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"")});
-  server.sendHeader("Location","/history"); server.send(303,"text/plain","Historial borrado");
+  server.sendHeader("Location","/history"); 
+  server.send(303,"text/plain","Historial borrado");
 }
 
 // /materia_history (GET)
@@ -116,4 +164,3 @@ void handleMateriaHistoryGET() {
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
-

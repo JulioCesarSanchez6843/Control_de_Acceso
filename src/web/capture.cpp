@@ -7,7 +7,7 @@
 #include <SPIFFS.h>
 #include <ctype.h>
 
-// Las variables externas deben coincidir exactamente con lo declarado en globals.h
+// Variables externas (asegúrate que en globals.h estén declaradas como "extern volatile bool captureMode;" etc.)
 extern volatile bool captureMode;
 extern String captureUID;
 extern String captureName;
@@ -90,7 +90,7 @@ void handleCapturePoll() {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
     return;
   }
-  // Construir JSON seguro (básico)
+  // Construir JSON básico
   String j = "{\"status\":\"found\",\"uid\":\"" + captureUID + "\"";
   if (captureName.length() > 0) {
     j += ",\"name\":\"" + captureName + "\"";
@@ -134,22 +134,30 @@ void handleCaptureConfirm() {
     captureMode = false;
     String html = htmlHeader("Duplicado detectado");
     html += "<div class='card'><h3 style='color:red;'>⚠️ El estudiante ya está registrado en esta materia.</h3>";
-    html += "<a href='/capture' class='btn btn-blue'>Volver a Capturar</a> ";
-    html += "<a href='/' class='btn btn-green'>Inicio</a></div>";
+    html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
+    html += "<a href='/' class='btn btn-blue'>Inicio</a> ";
+    html += "<a href='/capture' class='btn btn-green'>Capturar otro</a>";
+    html += "</div></div>";
     html += htmlFooter();
     server.send(200,"text/html",html);
     return;
   }
 
-  // Registrar nuevo usuario
+  // Registrar nuevo usuario (intentar guardar y comprobar éxito)
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," +
                 "\"" + materia + "\"," + "\"" + created + "\"";
-  appendLineToFile(USERS_FILE, line);
+  if (!appendLineToFile(USERS_FILE, line)) {
+    server.send(500, "text/plain", "Error guardando usuario");
+    return;
+  }
 
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," +
                "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura\"";
-  appendLineToFile(ATT_FILE, rec);
+  if (!appendLineToFile(ATT_FILE, rec)) {
+    server.send(500, "text/plain", "Error guardando attendance");
+    return;
+  }
 
   captureMode = false;
   captureUID = "";
@@ -157,10 +165,13 @@ void handleCaptureConfirm() {
   captureAccount = "";
   captureDetectedAt = 0;
 
-  // Confirmación visual
+  // Confirmación visual con dos botones: Inicio (azul) y Capturar otro (verde)
   String html = htmlHeader("Registrado correctamente");
   html += "<div class='card'><h3>✅ Usuario registrado correctamente.</h3>";
-  html += "<a href='/' class='btn btn-green'>Volver al inicio</a></div>";
+  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
+  html += "<a href='/' class='btn btn-blue'>Inicio</a> ";
+  html += "<a href='/capture' class='btn btn-green'>Capturar otro</a>";
+  html += "</div></div>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
@@ -176,7 +187,7 @@ void handleCaptureStopGET() {
 }
 
 // ---------------- NUEVO: edición de alumno (desde Students) ----------------
-// Rutas esperadas:
+// Rutas:
 //  GET  /capture_edit?uid=XXXX&return_to=/students_all   -> mostrar formulario de edición
 //  POST /capture_edit_post (uid,name,account,materia,return_to) -> guardar y redirigir a return_to
 //
@@ -312,7 +323,7 @@ void handleCaptureEditPost() {
     return;
   }
 
-  // Escribir archivo (writeAllLines regresa bool en tu util)
+  // Escribir archivo (writeAllLines debe devolver bool)
   if (!writeAllLines(USERS_FILE, lines)) {
     server.send(500, "text/plain", "Error guardando usuarios");
     return;
