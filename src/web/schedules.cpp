@@ -78,6 +78,10 @@ void handleSchedulesEditGrid() {
   String html = htmlHeader("Horarios - Editar (Global)");
   html += "<div class='card'><h2>Editar horarios (Global)</h2>";
   html += "<p class='small'>Seleccione una materia registrada para asignar al slot vacío, o elimine materias asignadas. Aquí puede editar cualquier slot globalmente.</p>";
+
+  // DIV para mensajes extra (no obligatorio, alert() es la capa principal)
+  html += "<div id='schedules_msg' style='display:none;color:#b00020;margin-bottom:8px;font-weight:600;'></div>";
+
   html += "<table><tr><th>Hora</th>";
   for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
@@ -107,11 +111,12 @@ void handleSchedulesEditGrid() {
                 "<input class='btn btn-red' type='submit' value='Eliminar'>"
                 "</form></div>";
       } else {
-        html += "<form method='POST' action='/schedules_add_slot' style='display:inline'>";
+        // Agrego onsubmit con validateSelect y required en select para forzar validación en la mayoría de navegadores.
+        html += "<form method='POST' action='/schedules_add_slot' style='display:inline' onsubmit='return validateSelect(this)'>";
         html += "<input type='hidden' name='day' value='" + day + "'>";
         html += "<input type='hidden' name='start' value='" + start + "'>";
         html += "<input type='hidden' name='end' value='" + end + "'>";
-        html += "<select name='materia'>";
+        html += "<select name='materia' required>";
         html += "<option value=''>-- Seleccionar materia --</option>";
         for (auto &c : courses) {
           html += "<option value='" + c.materia + "'>" + c.materia + " (" + c.profesor + ")</option>";
@@ -126,6 +131,40 @@ void handleSchedulesEditGrid() {
   }
 
   html += "</table>";
+
+  // Script de validación: validateSelect + listener como respaldo
+  html += "<script>"
+          "function validateSelect(form){"
+          "  try{"
+          "    var sel = form.materia; "
+          "    if(!sel || !sel.value || sel.value.trim() === ''){"
+          "      alert('Por favor seleccione una materia antes de agregar.');"
+          "      return false;"
+          "    }"
+          "  }catch(e){}"
+          "  return true;"
+          "}"
+          // respaldo: attach listeners a todos los forms action=/schedules_add_slot por si algún navegador ignora onsubmit inline
+          "document.addEventListener('DOMContentLoaded', function(){"
+          "  try{"
+          "    var forms = document.querySelectorAll('form[action=\"/schedules_add_slot\"]');"
+          "    for(var i=0;i<forms.length;i++){"
+          "      (function(f){"
+          "        if(!f) return;"
+          "        // si el form no tiene onsubmit definido, lo agregamos"
+          "        if(!f.onsubmit){"
+          "          f.addEventListener('submit', function(ev){"
+          "            try{ var sel = f.materia; if(!sel || !sel.value || sel.value.trim()===''){ ev.preventDefault(); alert('Por favor seleccione una materia antes de agregar.'); return false;} }catch(e){}"
+          "          });"
+          "        }"
+          "        // limpiamos mensaje si el usuario cambia seleccion"
+          "        var sel2 = f.materia; if(sel2) sel2.addEventListener('change', function(){ var md = document.getElementById('schedules_msg'); if(md){ md.style.display='none'; md.textContent=''; } });"
+          "      })(forms[i]);"
+          "    }"
+          "  }catch(e){}"
+          "});"
+          "</script>";
+
   html += "<p style='margin-top:12px'>"
           "<a class='btn btn-red' href='/schedules'>Ver Horarios (solo lectura)</a> "
           "<a class='btn btn-blue' href='/'>Inicio</a>"
