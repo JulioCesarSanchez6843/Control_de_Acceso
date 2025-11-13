@@ -1,14 +1,26 @@
-#include <Arduino.h>
-#include <FS.h>
-#include <SPIFFS.h>
+// src/web/capture.cpp
 #include "capture.h"
 #include "globals.h"
 #include "web_common.h"
+#include "files_utils.h"
+#include <FS.h>
+#include <SPIFFS.h>
+#include <ctype.h>
+
+// Las variables externas deben coincidir exactamente con lo declarado en globals.h
+extern volatile bool captureMode;
+extern String captureUID;
+extern String captureName;
+extern String captureAccount;
+extern unsigned long captureDetectedAt;
 
 // Página de captura manual con confirmación
 void handleCapturePage() {
   captureMode = true;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
 
   String html = htmlHeader("Capturar Tarjeta (modo manual)");
   html += "<div class='card'><h2>Capturar Tarjeta</h2>";
@@ -38,7 +50,7 @@ void handleCapturePage() {
 
   html += "</form>";
 
-  // Script de autocompletado y validación
+  // Script de autocompletado y validación (inyectado como raw literal)
   html += R"rawliteral(
   <script>
   function isAccountValid(s){ return /^[0-9]{7}$/.test(s); }
@@ -50,7 +62,7 @@ void handleCapturePage() {
       .then(j=>{
         if(j.status=='waiting'){ setTimeout(poll,700); }
         else if(j.status=='found'){
-          document.getElementById('uid').value = j.uid;
+          document.getElementById('uid').value = j.uid || '';
           if(j.name) document.getElementById('name').value = j.name;
           if(j.account) document.getElementById('account').value = j.account;
           setTimeout(poll,700);
@@ -69,27 +81,32 @@ void handleCapturePage() {
   )rawliteral";
 
   html += "</div>" + htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }
 
 // Manejo de polling para UID detectado
 void handleCapturePoll() {
   if (captureUID.length() == 0) {
-    server.send(200,"application/json","{\"status\":\"waiting\"}");
+    server.send(200, "application/json", "{\"status\":\"waiting\"}");
     return;
   }
+  // Construir JSON seguro (básico)
   String j = "{\"status\":\"found\",\"uid\":\"" + captureUID + "\"";
-  if (captureName.length()) j += ",\"name\":\"" + captureName + "\"";
-  if (captureAccount.length()) j += ",\"account\":\"" + captureAccount + "\"";
+  if (captureName.length() > 0) {
+    j += ",\"name\":\"" + captureName + "\"";
+  }
+  if (captureAccount.length() > 0) {
+    j += ",\"account\":\"" + captureAccount + "\"";
+  }
   j += "}";
-  server.send(200,"application/json", j);
+  server.send(200, "application/json", j);
 }
 
 // Confirmación manual (POST)
 void handleCaptureConfirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("materia")) {
-    server.send(400,"text/plain","Faltan parámetros");
+    server.send(400, "text/plain", "Faltan parámetros");
     return;
   }
 
@@ -98,19 +115,21 @@ void handleCaptureConfirm() {
   String account = server.arg("account"); account.trim();
   String materia = server.arg("materia"); materia.trim();
 
-  if (uid.isEmpty()) { server.send(400,"text/plain","UID vacío"); return; }
+  if (uid.length() == 0) { server.send(400, "text/plain", "UID vacío"); return; }
 
   bool ok = true;
   if (account.length() != 7) ok = false;
-  for (size_t i = 0; i < account.length(); i++) if (!isDigit(account[i])) ok = false;
-  if (!ok) { server.send(400,"text/plain","Cuenta inválida"); return; }
+  for (size_t i = 0; i < account.length(); i++) {
+    if (!isDigit(account[i])) { ok = false; break; }
+  }
+  if (!ok) { server.send(400, "text/plain", "Cuenta inválida"); return; }
 
   if (!courseExists(materia)) {
-    server.send(400,"text/plain","La materia especificada no existe. Regístrela primero en Materias.");
+    server.send(400, "text/plain", "La materia especificada no existe. Regístrela primero en Materias.");
     return;
   }
 
-  // 🚫 Validar duplicado sin redirigir
+  // Validar duplicado solo dentro de la misma materia
   if (existsUserUidMateria(uid, materia) || existsUserAccountMateria(account, materia)) {
     captureMode = false;
     String html = htmlHeader("Duplicado detectado");
@@ -122,7 +141,7 @@ void handleCaptureConfirm() {
     return;
   }
 
-  // ✅ Registrar nuevo usuario
+  // Registrar nuevo usuario
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," +
                 "\"" + materia + "\"," + "\"" + created + "\"";
@@ -133,9 +152,12 @@ void handleCaptureConfirm() {
   appendLineToFile(ATT_FILE, rec);
 
   captureMode = false;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
 
-  // 🔁 Confirmación visual
+  // Confirmación visual
   String html = htmlHeader("Registrado correctamente");
   html += "<div class='card'><h3>✅ Usuario registrado correctamente.</h3>";
   html += "<a href='/' class='btn btn-green'>Volver al inicio</a></div>";
@@ -145,7 +167,158 @@ void handleCaptureConfirm() {
 
 void handleCaptureStopGET() {
   captureMode = false;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
-  server.sendHeader("Location","/");
-  server.send(303,"text/plain","stopped");
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
+  server.sendHeader("Location", "/");
+  server.send(303, "text/plain", "stopped");
+}
+
+// ---------------- NUEVO: edición de alumno (desde Students) ----------------
+// Rutas esperadas:
+//  GET  /capture_edit?uid=XXXX&return_to=/students_all   -> mostrar formulario de edición
+//  POST /capture_edit_post (uid,name,account,materia,return_to) -> guardar y redirigir a return_to
+//
+
+static String sanitizeReturnTo(const String &rt) {
+  // evita redirecciones a dominios externos: solo aceptar rutas que empiecen por '/'
+  if (rt.length() > 0 && rt[0] == '/') return rt;
+  return String("/students_all");
+}
+
+void handleCaptureEditPage() {
+  if (!server.hasArg("uid")) { server.send(400, "text/plain", "uid required"); return; }
+  String uid = server.arg("uid");
+  String return_to = server.hasArg("return_to") ? server.arg("return_to") : "/students_all";
+  return_to = sanitizeReturnTo(return_to);
+
+  // Buscar alumno en USERS_FILE
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) { server.send(500, "text/plain", "No se pudo abrir archivo de usuarios"); return; }
+
+  String foundName = "", foundAccount = "", foundMateria = "", foundCreated = "";
+  bool found = false;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim();
+    if (l.length() == 0) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 3 && c[0] == uid) {
+      foundName = (c.size() > 1 ? c[1] : "");
+      foundAccount = (c.size() > 2 ? c[2] : "");
+      foundMateria = (c.size() > 3 ? c[3] : "");
+      foundCreated = (c.size() > 4 ? c[4] : nowISO());
+      found = true;
+      break;
+    }
+  }
+  f.close();
+  if (!found) { server.send(404, "text/plain", "Alumno no encontrado"); return; }
+
+  // Construir formulario de edición
+  String html = htmlHeader("Editar Alumno");
+  html += "<div class='card'><h2>Editar Usuario</h2>";
+
+  html += "<form method='POST' action='/capture_edit_post'>";
+  html += "<input type='hidden' name='uid' value='" + uid + "'>";
+  html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
+
+  html += "<label>UID (no editable):</label><br>";
+  html += "<input readonly style='background:#eee;' value='" + uid + "'><br><br>";
+
+  html += "<label>Nombre:</label><br>";
+  html += "<input name='name' required value='" + foundName + "'><br><br>";
+
+  html += "<label>Cuenta:</label><br>";
+  html += "<input name='account' required maxlength='7' minlength='7' value='" + foundAccount + "'><br><br>";
+
+  // Materia: mostrar select con materias y seleccionar la actual
+  auto courses2 = loadCourses();
+  html += "<label>Materia:</label><br><select name='materia'>";
+  html += "<option value=''>-- Ninguna --</option>";
+  for (auto &c : courses2) {
+    String sel = (c.materia == foundMateria) ? " selected" : "";
+    html += "<option value='" + c.materia + "'" + sel + ">" + c.materia + " (" + c.profesor + ")</option>";
+  }
+  html += "</select><br><br>";
+
+  html += "<label>Registrado:</label><br>";
+  html += "<div style='padding:6px;background:#f5f5f5;border-radius:4px;'>" + foundCreated + "</div><br>";
+
+  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
+  html += "<button type='submit' class='btn btn-green'>Guardar</button>";
+  html += "<a class='btn btn-red' href='" + return_to + "'>Cancelar</a>";
+  html += "</div>";
+
+  html += "</form></div>" + htmlFooter();
+  server.send(200, "text/html", html);
+}
+
+void handleCaptureEditPost() {
+  // Esperamos: uid, name, account, materia (opcional), return_to
+  if (!server.hasArg("uid") || !server.hasArg("name") || !server.hasArg("account") || !server.hasArg("return_to")) {
+    server.send(400, "text/plain", "Faltan parámetros");
+    return;
+  }
+  String uid = server.arg("uid"); uid.trim();
+  String name = server.arg("name"); name.trim();
+  String account = server.arg("account"); account.trim();
+  String materia = server.hasArg("materia") ? server.arg("materia") : "";
+  materia.trim();
+  String return_to = sanitizeReturnTo(server.arg("return_to"));
+
+  if (uid.length() == 0) { server.send(400, "text/plain", "UID vacío"); return; }
+  if (name.length() == 0) { server.send(400, "text/plain", "Nombre vacío"); return; }
+  if (account.length() != 7) { server.send(400, "text/plain", "Cuenta inválida"); return; }
+  for (size_t i = 0; i < account.length(); i++) {
+    if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
+  }
+
+  // Si se seleccionó materia, verificar que exista
+  if (materia.length() > 0 && !courseExists(materia)) {
+    server.send(400, "text/plain", "La materia seleccionada no existe");
+    return;
+  }
+
+  // Leer todo USERS_FILE y reescribir con la modificación
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) { server.send(500, "text/plain", "No se pudo abrir archivo de usuarios"); return; }
+
+  std::vector<String> lines;
+  String header = f.readStringUntil('\n');
+  lines.push_back(header);
+  bool updated = false;
+
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim();
+    if (l.length() == 0) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) {
+      // Reconstruir linea con valores actualizados
+      String created = (c.size() > 4 ? c[4] : nowISO());
+      String mat = (materia.length() ? materia : (c.size() > 3 ? c[3] : ""));
+      String newline = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + mat + "\",\"" + created + "\"";
+      lines.push_back(newline);
+      updated = true;
+    } else {
+      lines.push_back(l);
+    }
+  }
+  f.close();
+
+  if (!updated) {
+    // No encontramos UID; error
+    server.send(404, "text/plain", "Alumno no encontrado");
+    return;
+  }
+
+  // Escribir archivo (writeAllLines regresa bool en tu util)
+  if (!writeAllLines(USERS_FILE, lines)) {
+    server.send(500, "text/plain", "Error guardando usuarios");
+    return;
+  }
+
+  // Redirigir a la página que indicó return_to
+  server.sendHeader("Location", return_to);
+  server.send(303, "text/plain", "Updated");
 }

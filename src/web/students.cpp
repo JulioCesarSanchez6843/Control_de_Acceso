@@ -59,10 +59,10 @@ void handleStudentsForMateria() {
       // Acciones: editar (regresa a lista de alumnos de la materia) y eliminar del curso
       html += "<td>";
 
-      // Editar -> pasa return_to codificado para volver a /students?materia=...
+      // Editar -> abre la nueva página de edición en capture y pasa return_to codificado (volver a /students?materia=...)
       if (uid.length()) {
         String returnTo = "/students?materia=" + materia;
-        html += "<a class='btn btn-blue' href='/edit?uid=" + uid + "&return_to=" + urlEncode(returnTo) + "'>✏️ Editar</a> ";
+        html += "<a class='btn btn-blue' href='/capture_edit?uid=" + uid + "&return_to=" + urlEncode(returnTo) + "'>✏️ Editar</a> ";
       }
 
       // Solo eliminar del curso
@@ -126,8 +126,8 @@ void handleStudentsAll() {
       if (mats.length()==0) mats = "-";
       html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
 
-      // Editar -> regresar a lista completa (/students_all)
-      html += "<a class='btn btn-blue' href='/edit?uid=" + uids[i] + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
+      // Editar -> abrir edición en capture y regresar a /students_all
+      html += "<a class='btn btn-blue' href='/capture_edit?uid=" + uids[i] + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
 
       // Eliminar totalmente
       html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";

@@ -84,7 +84,7 @@ struct ScheduleEntry {
 // time_utils
 String nowISO(); // devuelve "YYYY-MM-DD HH:MM:SS"
 
-// UID helpers (de tu código original)
+// UID helpers
 String uidBytesToString(byte *uid, byte len);
 
 // schedules / current schedule
@@ -96,9 +96,9 @@ void addScheduleSlot(const String &materia, const String &day, const String &sta
 // csv parsing
 std::vector<String> parseQuotedCSVLine(const String &line);
 
-// files utils
-void appendLineToFile(const char* path, const String &line);
-void writeAllLines(const char* path, const std::vector<String> &lines);
+// files utils CORREGIDO: devolver bool en lugar de void
+bool appendLineToFile(const char* path, const String &line);
+bool writeAllLines(const char* path, const std::vector<String> &lines);
 void initFiles();
 
 // courses
@@ -110,6 +110,7 @@ void writeCourses(const std::vector<Course> &list);
 // users
 String findAnyUserByUID(const String &uid);
 bool existsUserUidMateria(const String &uid, const String &materia);
+bool existsUserAccountMateria(const String &account, const String &materia);
 std::vector<String> usersForMateria(const String &materia);
 
 // notifications
@@ -118,7 +119,7 @@ std::vector<String> readNotifications(int limit = 200);
 int notifCount();
 void clearNotifications();
 
-// display / leds (implementadas en display.cpp)
+// display / leds
 void ledOff();
 void ledRedOn();
 void ledGreenOn();

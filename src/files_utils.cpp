@@ -8,13 +8,19 @@
 // --- CSV parsing ---
 std::vector<String> parseQuotedCSVLine(const String &line) {
   std::vector<String> cols;
-  int i = 0, n = line.length();
+  int i = 0;
+  int n = line.length();
   while (i < n) {
+    // buscar comilla inicial
     while (i < n && line[i] != '"') i++;
     if (i >= n) break;
     int start = i + 1;
     int end = line.indexOf('"', start);
-    if (end == -1) { cols.push_back(line.substring(start)); break; }
+    if (end == -1) {
+      // sin comilla de cierre -> tomar el resto
+      cols.push_back(line.substring(start));
+      break;
+    }
     cols.push_back(line.substring(start, end));
     i = end + 1;
     if (i < n && line[i] == ',') i++;
@@ -22,50 +28,72 @@ std::vector<String> parseQuotedCSVLine(const String &line) {
   return cols;
 }
 
-void appendLineToFile(const char *path, const String &line) {
+// Append a line to a file. Return true on success.
+bool appendLineToFile(const char *path, const String &line) {
   File f = SPIFFS.open(path, FILE_APPEND);
-  if (!f) { Serial.printf("ERR append %s\n", path); return; }
+  if (!f) {
+    Serial.printf("ERR append %s\n", path);
+    return false;
+  }
   f.println(line);
   f.close();
+  return true;
 }
 
-void writeAllLines(const char *path, const std::vector<String> &lines) {
+// Write all lines (overwrite). Return true on success.
+bool writeAllLines(const char *path, const std::vector<String> &lines) {
   File f = SPIFFS.open(path, FILE_WRITE);
-  if (!f) return;
+  if (!f) {
+    Serial.printf("ERR writeAll %s\n", path);
+    return false;
+  }
   for (const String &L : lines) f.println(L);
   f.close();
+  return true;
 }
 
 void initFiles() {
   if (!SPIFFS.exists(USERS_FILE)) {
     File f = SPIFFS.open(USERS_FILE, FILE_WRITE);
-    f.println("\"uid\",\"name\",\"account\",\"materia\",\"created_at\"");
-    f.close();
+    if (f) {
+      f.println("\"uid\",\"name\",\"account\",\"materia\",\"created_at\"");
+      f.close();
+    }
   }
   if (!SPIFFS.exists(ATT_FILE)) {
     File f = SPIFFS.open(ATT_FILE, FILE_WRITE);
-    f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"");
-    f.close();
+    if (f) {
+      f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"");
+      f.close();
+    }
   }
   if (!SPIFFS.exists(DENIED_FILE)) {
     File f = SPIFFS.open(DENIED_FILE, FILE_WRITE);
-    f.println("\"timestamp\",\"uid\",\"note\"");
-    f.close();
+    if (f) {
+      f.println("\"timestamp\",\"uid\",\"note\"");
+      f.close();
+    }
   }
   if (!SPIFFS.exists(SCHEDULES_FILE)) {
     File f = SPIFFS.open(SCHEDULES_FILE, FILE_WRITE);
-    f.println("\"materia\",\"day\",\"start\",\"end\"");
-    f.close();
+    if (f) {
+      f.println("\"materia\",\"day\",\"start\",\"end\"");
+      f.close();
+    }
   }
   if (!SPIFFS.exists(NOTIF_FILE)) {
     File f = SPIFFS.open(NOTIF_FILE, FILE_WRITE);
-    f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"");
-    f.close();
+    if (f) {
+      f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"");
+      f.close();
+    }
   }
   if (!SPIFFS.exists(COURSES_FILE)) {
     File f = SPIFFS.open(COURSES_FILE, FILE_WRITE);
-    f.println("\"materia\",\"profesor\",\"created_at\"");
-    f.close();
+    if (f) {
+      f.println("\"materia\",\"profesor\",\"created_at\"");
+      f.close();
+    }
   }
 }
 
@@ -138,6 +166,7 @@ void writeCourses(const std::vector<Course> &list) {
   lines.push_back("\"materia\",\"profesor\",\"created_at\"");
   for (auto &c : list)
     lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
+  // writeAllLines now returns bool; ignore return here (but it could be checked by caller)
   writeAllLines(COURSES_FILE, lines);
 }
 

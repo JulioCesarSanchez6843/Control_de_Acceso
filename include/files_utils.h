@@ -1,9 +1,19 @@
 #pragma once
-// files_utils.h - wrapper mínimo para las utilidades de archivos.
-// Ya todas las declaraciones de tipos y prototipos "globales" están en globals.h.
-// Evitamos duplicados incluyendo únicamente globals.h.
+// files_utils.h
+// Declaraciones públicas de utilidades de archivos usadas por el proyecto.
 
-#include "globals.h"
+#include <vector>
+#include <Arduino.h>
+#include <FS.h>
 
-// Si quieres, aquí puedes añadir prototipos locales al módulo files_utils.cpp
-// que **no** estén ya en globals.h. De lo contrario, deja vacío.
+// Parsea una línea CSV con campos entre comillas: "a","b c","d"
+std::vector<String> parseQuotedCSVLine(const String &line);
+
+// Añade una línea al final del archivo. Devuelve true si tuvo éxito.
+bool appendLineToFile(const char *path, const String &line);
+
+// Escribe todas las líneas (sobrescribe el archivo). Devuelve true si tuvo éxito.
+bool writeAllLines(const char *path, const std::vector<String> &lines);
+
+// Inicializa archivos (crea cabeceras si no existen)
+void initFiles();

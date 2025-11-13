@@ -43,6 +43,10 @@ void registerRoutes() {
   server.on("/capture_poll", HTTP_GET, handleCapturePoll);
   server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
 
+  // NUEVAS RUTAS: edición vía capture
+  server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);        // abre página de edición
+  server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);  // procesa guardado
+
   // status
   server.on("/status", handleStatus);
 
