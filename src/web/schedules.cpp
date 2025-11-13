@@ -1,22 +1,54 @@
+// src/web/schedules.cpp
 #include "schedules.h"
 #include "web_common.h"
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
 #include <SPIFFS.h>
+#include <vector>
 
-// /schedules (GET) - mostrar grilla
+/*
+  Implementación de handlers de horarios (grilla, editor global y editor por materia).
+
+  Requiere que existan en el proyecto:
+   - std::vector<ScheduleEntry> loadSchedules();
+   - std::vector<Course> loadCourses();
+   - bool courseExists(const String &materia);
+   - void addScheduleSlot(const String &materia,const String &day,const String &start,const String &end);
+   - std::vector<String> parseQuotedCSVLine(const String &line);
+   - void writeAllLines(const String &path, const std::vector<String> &lines);
+   - const char* DAYS[]; int SLOT_COUNT; int SLOT_STARTS[];
+   - const char* SCHEDULES_FILE;
+   - extern WebServer server;
+*/
+
+// --- utilitarios locales ---
+static bool slotOccupiedSched(const String &day, const String &start, String *ownerOut = nullptr) {
+  auto sched = loadSchedules();
+  for (auto &e : sched) {
+    if (e.day == day && e.start == start) {
+      if (ownerOut) *ownerOut = e.materia;
+      return true;
+    }
+  }
+  return false;
+}
+
+// --- handlers ---
+
+// GET /schedules  - grilla (solo lectura)
 void handleSchedulesGrid() {
   auto schedules = loadSchedules();
   String html = htmlHeader("Horarios - Grilla");
   html += "<div class='card'><h2>Horarios del Laboratorio (LUN - SAB)</h2>";
   html += "<p class='small'>Vista de la grilla de horarios. Para editar/agregar/quitar horarios pulsa <b>Editar Horarios</b> arriba.</p>";
   html += "<table><tr><th>Hora</th>";
-  for (int d = 0; d < 6; d++) html += "<th>" + DAYS[d] + "</th>";
+  for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
+
   for (int s = 0; s < SLOT_COUNT; s++) {
     int h = SLOT_STARTS[s];
-    char lbl[16];
+    char lbl[32];
     snprintf(lbl, sizeof(lbl), "%02d:00 - %02d:00", h, h + 2);
     html += "<tr><th>" + String(lbl) + "</th>";
     for (int d = 0; d < 6; d++) {
@@ -30,9 +62,8 @@ void handleSchedulesGrid() {
     }
     html += "</tr>";
   }
-  html += "</table>";
 
-  // Botones: Editar verde, Inicio (volver) azul
+  html += "</table>";
   html += "<p style='margin-top:12px'>"
           "<a class='btn btn-green' href='/schedules/edit'>✏️ Editar Horarios</a> "
           "<a class='btn btn-blue' href='/'>Inicio</a>"
@@ -41,19 +72,20 @@ void handleSchedulesGrid() {
   server.send(200, "text/html", html);
 }
 
-// /schedules/edit (GET) - editor global
+// GET /schedules/edit - editor global (permite asignar y eliminar cualquier materia)
 void handleSchedulesEditGrid() {
   auto schedules = loadSchedules();
   String html = htmlHeader("Horarios - Editar (Global)");
   html += "<div class='card'><h2>Editar horarios (Global)</h2>";
   html += "<p class='small'>Seleccione una materia registrada para asignar al slot vacío, o elimine materias asignadas. Aquí puede editar cualquier slot globalmente.</p>";
   html += "<table><tr><th>Hora</th>";
-  for (int d = 0; d < 6; d++) html += "<th>" + DAYS[d] + "</th>";
+  for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
+
   auto courses = loadCourses();
   for (int s = 0; s < SLOT_COUNT; s++) {
     int h = SLOT_STARTS[s];
-    char lbl[16];
+    char lbl[32];
     snprintf(lbl, sizeof(lbl), "%02d:00 - %02d:00", h, h + 2);
     html += "<tr><th>" + String(lbl) + "</th>";
     for (int d = 0; d < 6; d++) {
@@ -68,7 +100,7 @@ void handleSchedulesEditGrid() {
       html += "<td>";
       if (occupied) {
         html += "<div>" + cell + "</div><div style='margin-top:6px'>"
-                "<form method='POST' action='/schedules_del' style='display:inline'>"
+                "<form method='POST' action='/schedules_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
                 "<input type='hidden' name='materia' value='" + cell + "'>"
                 "<input type='hidden' name='day' value='" + day + "'>"
                 "<input type='hidden' name='start' value='" + start + "'>"
@@ -81,8 +113,9 @@ void handleSchedulesEditGrid() {
         html += "<input type='hidden' name='end' value='" + end + "'>";
         html += "<select name='materia'>";
         html += "<option value=''>-- Seleccionar materia --</option>";
-        for (auto &c : courses)
+        for (auto &c : courses) {
           html += "<option value='" + c.materia + "'>" + c.materia + " (" + c.profesor + ")</option>";
+        }
         html += "</select> ";
         html += "<input class='btn btn-green' type='submit' value='Agregar'>";
         html += "</form>";
@@ -91,9 +124,8 @@ void handleSchedulesEditGrid() {
     }
     html += "</tr>";
   }
-  html += "</table>";
 
-  // Cambios: "Ver Horarios (solo lectura)" ahora rojo; "Volver" renombrado a "Inicio"
+  html += "</table>";
   html += "<p style='margin-top:12px'>"
           "<a class='btn btn-red' href='/schedules'>Ver Horarios (solo lectura)</a> "
           "<a class='btn btn-blue' href='/'>Inicio</a>"
@@ -102,7 +134,7 @@ void handleSchedulesEditGrid() {
   server.send(200, "text/html", html);
 }
 
-// /schedules_add_slot (POST)
+// POST /schedules_add_slot - agregar (global, selecciona materia)
 void handleSchedulesAddSlot() {
   if (!server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end") || !server.hasArg("materia")) {
     server.send(400, "text/plain", "faltan parametros"); return;
@@ -117,35 +149,44 @@ void handleSchedulesAddSlot() {
   }
 
   if (!courseExists(materia)) {
-    server.send(400, "text/plain", "Materia no registrada. Registre la materia en Materias antes de asignarla a un horario.");
+    server.send(400, "text/plain", "Materia no registrada. Registre la materia antes de asignarla a un horario.");
     return;
   }
 
-  if (slotOccupied(day, start)) {
+  String owner;
+  if (slotOccupiedSched(day, start, &owner)) {
     server.sendHeader("Location", "/schedules?msg=ocupado");
     server.send(303, "text/plain", "Slot ocupado");
     return;
   }
 
+  // añade (función addScheduleSlot del proyecto; puede ser void)
   addScheduleSlot(materia, day, start, end);
   server.sendHeader("Location", "/schedules/edit");
   server.send(303, "text/plain", "Agregado");
 }
 
-// /schedules_del (POST)
+// POST /schedules_del - eliminar (global)
 void handleSchedulesDel() {
-  if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start")) { server.send(400, "text/plain", "faltan"); return; }
-  String mat = server.arg("materia"); String day = server.arg("day"); String start = server.arg("start");
+  if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start")) {
+    server.send(400, "text/plain", "faltan"); return;
+  }
+  String mat = server.arg("materia"); mat.trim();
+  String day = server.arg("day"); day.trim();
+  String start = server.arg("start"); start.trim();
+
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   if (!f) { server.send(500, "text/plain", "no file"); return; }
+
   std::vector<String> lines;
   String header = f.readStringUntil('\n');
   lines.push_back(header);
+
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim();
     if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue;
+    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue; // skip (delete)
     lines.push_back(l);
   }
   f.close();
@@ -154,14 +195,16 @@ void handleSchedulesDel() {
   server.send(303, "text/plain", "Borrado");
 }
 
-// /schedules_for (GET)
+// --- Editor por materia (restringido) ---
+// GET /schedules_for?materia=...
 void handleSchedulesForMateriaGET() {
   if (!server.hasArg("materia")) { server.send(400, "text/plain", "materia required"); return; }
-  String materia = server.arg("materia");
+  String materia = server.arg("materia"); materia.trim();
   if (!courseExists(materia)) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
   auto schedules = loadSchedules();
-  String html = htmlHeader(("Horarios - " + materia).c_str());
+  String title = "Horarios - " + materia;
+  String html = htmlHeader(title.c_str());
   html += "<div class='card'><h2>Horarios para: " + materia + "</h2>";
   html += "<p class='small'>Aquí puede agregar o eliminar horarios únicamente para la materia seleccionada.</p>";
 
@@ -205,40 +248,51 @@ void handleSchedulesForMateriaGET() {
   server.send(200, "text/html", html);
 }
 
+// POST /schedules_for_add - agrega horario para una materia (solo si libre)
 void handleSchedulesForMateriaAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
     server.send(400, "text/plain", "faltan parametros"); return;
   }
-  String materia = server.arg("materia");
-  String day = server.arg("day");
-  String start = server.arg("start");
-  String end = server.arg("end");
-  materia.trim(); day.trim(); start.trim(); end.trim();
+  String materia = server.arg("materia"); materia.trim();
+  String day = server.arg("day"); day.trim();
+  String start = server.arg("start"); start.trim();
+  String end = server.arg("end"); end.trim();
+
   if (materia.length() == 0 || day.length() == 0 || start.length() == 0 || end.length() == 0) {
     server.send(400, "text/plain", "datos invalidos"); return;
   }
-  if (!courseExists(materia)) {
-    server.send(400, "text/plain", "Materia no registrada"); return;
-  }
-  if (slotOccupied(day, start)) {
+  if (!courseExists(materia)) { server.send(400, "text/plain", "Materia no registrada"); return; }
+
+  String owner;
+  if (slotOccupiedSched(day, start, &owner)) {
     server.sendHeader("Location", "/schedules_for?materia=" + materia + "&msg=ocupado");
     server.send(303, "text/plain", "Slot ocupado");
     return;
   }
+
   addScheduleSlot(materia, day, start, end);
   server.sendHeader("Location", "/schedules_for?materia=" + materia);
   server.send(303, "text/plain", "Agregado");
 }
 
+// POST /schedules_for_del - elimina horario (solo si pertenece a la materia solicitante)
 void handleSchedulesForMateriaDelPOST() {
   if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start")) {
     server.send(400, "text/plain", "faltan"); return;
   }
-  String mat = server.arg("materia");
-  String day = server.arg("day");
-  String start = server.arg("start");
+  String mat = server.arg("materia"); mat.trim();
+  String day = server.arg("day"); day.trim();
+  String start = server.arg("start"); start.trim();
+
+  String owner;
+  if (!slotOccupiedSched(day, start, &owner) || owner != mat) {
+    server.send(400, "text/plain", "El horario no pertenece a esta materia");
+    return;
+  }
+
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   if (!f) { server.send(500, "text/plain", "no file"); return; }
+
   std::vector<String> lines;
   String header = f.readStringUntil('\n');
   lines.push_back(header);

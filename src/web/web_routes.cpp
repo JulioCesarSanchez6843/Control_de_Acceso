@@ -26,6 +26,11 @@ void registerRoutes() {
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 
+  // **nuevas rutas de asignación de horarios**
+  server.on("/materias_new_schedule", handleMateriasNewScheduleGET);
+  server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
+  server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
+
   // students
   server.on("/students", handleStudentsForMateria);
   server.on("/students_all", handleStudentsAll);
