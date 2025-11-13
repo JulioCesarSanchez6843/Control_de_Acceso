@@ -1,26 +1,25 @@
 #pragma once
+// globals.h - Declaraciones globales, tipos y prototipos compartidos
 
-// Core Arduino + platform includes
 #include <Arduino.h>
-#include <WiFi.h>
 #include <WebServer.h>
-#include <SPIFFS.h>
-#include <SPI.h>
 #include <MFRC522.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <vector>
+#include <FS.h>
+
 #if defined(ARDUINO_ARCH_ESP32)
   #include <ESP32Servo.h>
 #else
   #include <Servo.h>
 #endif
-#include "time.h"
-#include <vector>
 
-// ---------------- CONFIG (puedes ajustarlos) ----------------
+// ---------------- CONFIG ----------------
 extern const char* WIFI_SSID;
 extern const char* WIFI_PASS;
 extern const char* TZ;
+// -----------------------------------------
 
 // ---------------- PINES ----------------
 extern const int RST_PIN;
@@ -32,28 +31,94 @@ extern const int SERVO_PIN;
 extern const int RGB_R_PIN;
 extern const int RGB_G_PIN;
 extern const int BUZZER_PIN;
+// ----------------------------------------
 
-// ---------------- FILES ----------------
+// ---------------- FILES SPIFFS ----------------
 extern const char* USERS_FILE;
 extern const char* ATT_FILE;
 extern const char* DENIED_FILE;
 extern const char* SCHEDULES_FILE;
 extern const char* NOTIF_FILE;
 extern const char* COURSES_FILE;
+// -----------------------------------------------
 
-// ---------------- Global object declarations (extern) ----------------
-// Decláralas como extern aqui y crea las instancias en main.cpp
+// Timing constants
+extern const unsigned long DISPLAY_MS;
+extern const unsigned long POLL_INTERVAL;
+extern const unsigned long CAPTURE_DEBOUNCE_MS;
+
+// Days & slots
+extern const String DAYS[6];
+extern const int SLOT_STARTS[];
+extern const int SLOT_COUNT;
+
+// ---------------- Objetos globales (definidos en src/globals.cpp) ----------------
 extern WebServer server;
 extern MFRC522 mfrc522;
 extern Adafruit_ST7735 tft;
 extern Servo puerta;
 
-// ---------------- Capture / runtime flags ----------------
+// Capture mode globals
 extern volatile bool captureMode;
 extern String captureUID;
 extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
-// ---------------- forward decls (si los llama otro .cpp) ----------------
-// Si exponen funciones globales, decláralas aquí (no es obligatorio)
+// ---------------- Tipos ----------------
+struct Course {
+  String materia;
+  String profesor;
+  String created_at;
+};
+
+struct ScheduleEntry {
+  String materia;
+  String day;
+  String start;
+  String end;
+};
+
+// ---------------- Prototipos utilitarios (implementados en src/*.cpp) ----------------
+
+// time_utils
+String nowISO(); // devuelve "YYYY-MM-DD HH:MM:SS"
+
+// UID helpers (de tu código original)
+String uidBytesToString(byte *uid, byte len);
+
+// schedules / current schedule
+std::vector<ScheduleEntry> loadSchedules();
+String currentScheduledMateria();
+bool slotOccupied(const String &day, const String &start, const String &materiaFilter = String());
+void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end);
+
+// csv parsing
+std::vector<String> parseQuotedCSVLine(const String &line);
+
+// files utils
+void appendLineToFile(const char* path, const String &line);
+void writeAllLines(const char* path, const std::vector<String> &lines);
+void initFiles();
+
+// courses
+std::vector<Course> loadCourses();
+bool courseExists(const String &materia);
+void addCourse(const String &materia, const String &prof);
+void writeCourses(const std::vector<Course> &list);
+
+// users
+String findAnyUserByUID(const String &uid);
+bool existsUserUidMateria(const String &uid, const String &materia);
+std::vector<String> usersForMateria(const String &materia);
+
+// notifications
+void addNotification(const String &uid, const String &name, const String &account, const String &note);
+std::vector<String> readNotifications(int limit = 200);
+int notifCount();
+void clearNotifications();
+
+// display / leds (implementadas en display.cpp)
+void ledOff();
+void ledRedOn();
+void ledGreenOn();

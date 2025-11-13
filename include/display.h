@@ -1,22 +1,19 @@
 #pragma once
-/* display.h
-   Prototipos para manejo de TFT, LEDs y servo (presentación al usuario).
-   Implementación en src/display.cpp
-*/
+// Encapsula interacción con la pantalla TFT y LEDs/buzzer.
+// Implementa en display.cpp las funciones que usan tft y los pines RGB.
 
 #include <Arduino.h>
 
-// Inicializa pantalla, servo, LED pins (llamar en setup después de pinMode si aplica)
-void displayInit();
+// Inicialización de display y estado visual
+void displayInit();                 // iniciar tft, rotation, cursor básico
+void showWaitingMessage();          // pantalla "Esperando tarjeta..."
+void showAccessGranted(const String &name, const String &materia, const String &uid);
+void showAccessDenied(const String &reason, const String &uid);
 
-// LEDs RGB
+// LEDs / feedback
 void ledOff();
 void ledRedOn();
 void ledGreenOn();
 
-// Mensajes genéricos en pantalla
-void showMessage(const char *title, const String &line1, const String &line2 = "", uint16_t color = 0xFFFF, unsigned long ms = 3000);
-
-// Acceso concedido / denegado (manejan servo y leds internamente)
-void showGranted(const String &name, const String &materia, const String &uid, unsigned long ms = 2000);
-void showDenied(const String &uid, const String &note = "", unsigned long ms = 2000);
+// (Opcional) funciones para mensajes breves
+void showInfo(const String &title, const String &line1, unsigned long ms = 2000);
