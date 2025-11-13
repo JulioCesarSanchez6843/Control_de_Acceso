@@ -31,6 +31,7 @@ static bool slotOccupiedLocal(const String &day, const String &start, String *ow
 }
 
 // Añade slot si está libre (usa addScheduleSlot() existente)
+// Devuelve true si se agregó, false y err si falló
 static bool addScheduleSlotSafeLocal(const String &materia, const String &day, const String &start, const String &end, String *err = nullptr) {
   String owner;
   if (slotOccupiedLocal(day, start, &owner)) {
@@ -41,7 +42,7 @@ static bool addScheduleSlotSafeLocal(const String &materia, const String &day, c
     if (err) *err = "ya asignado";
     return false;
   }
-  // addScheduleSlot puede ser void en tu código; asumimos que realiza el guardado.
+  // addScheduleSlot es la función que ya tienes; se asume que guarda en SCHEDULES_FILE
   addScheduleSlot(materia, day, start, end);
   return true;
 }
@@ -76,7 +77,10 @@ void handleMaterias() {
 
       html += "<td>";
       html += "<a class='btn btn-blue' href='/materias/edit?materia=" + c.materia + "'>✏️ Editar</a> ";
-      html += "<a class='btn btn-blue' href='/schedules_for?materia=" + c.materia + "'>📅 Horarios</a> ";
+
+      // <-- CAMBIO: botón Horarios apunta al submenú/flujo de "materias_new_schedule" que edita SOLO esa materia
+      html += "<a class='btn btn-blue' href='/materias_new_schedule?materia=" + c.materia + "'>📅 Horarios</a> ";
+
       html += "<a class='btn btn-blue' href='/students?materia=" + c.materia + "'>👥 Administrar Estudiantes</a> ";
       html += "<a class='btn btn-blue' href='/materia_history?materia=" + c.materia + "' title='Historial por días'>📆 Historial</a> ";
       html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Eliminar materia y sus horarios/usuarios? Esta acción es irreversible.\");'><input type='hidden' name='materia' value='" + c.materia + "'><input class='btn btn-red' type='submit' value='Eliminar'></form>";
@@ -98,7 +102,8 @@ void handleMaterias() {
             "const prof=row.cells[1].textContent.toLowerCase();"
             "const ok=(mat.indexOf(fmat)!==-1)&&(prof.indexOf(fprof)!==-1);"
             "row.style.display=ok?'':'none';"
-            "}}"
+            "}"
+            "}"
             "function clearMateriaFilters(){document.getElementById('f_mat').value='';document.getElementById('f_prof').value='';applyMateriaFilters();}"
             "</script>";
   }
@@ -143,6 +148,7 @@ void handleMateriasAddPOST() {
   addCourse(mat, prof);
 
   // Redirige a la pantalla de asignar horarios para la nueva materia (opcional)
+  // Esta página permite editar SOLO los slots de la materia recién creada.
   server.sendHeader("Location", "/materias_new_schedule?materia=" + mat);
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
 }
@@ -150,13 +156,12 @@ void handleMateriasAddPOST() {
 // GET /materias_new_schedule?materia=...
 void handleMateriasNewScheduleGET() {
   if (!server.hasArg("materia")) { server.send(400, "text/plain", "materia required"); return; }
-  String mat = server.arg("materia");
-  mat.trim();
+  String mat = server.arg("materia"); mat.trim();
   if (mat.length() == 0) { server.send(400, "text/plain", "materia invalida"); return; }
+  if (!courseExists(mat)) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
   auto schedules = loadSchedules();
-
-  String headerTitle = "Asignar horarios - " + mat;
+  String headerTitle = String("Asignar horarios - ") + mat;
   String html = htmlHeader(headerTitle.c_str());
   html += "<div class='card'><h2>Horarios para: " + mat + "</h2>";
   html += "<p class='small'>Solo puedes agregar horarios libres para esta materia o eliminar los que ya hayas agregado. Los horarios ocupados por otras materias están bloqueados.</p>";
@@ -177,7 +182,6 @@ void handleMateriasNewScheduleGET() {
       String end = String(h + 2) + ":00";
       String owner;
       bool occ = slotOccupiedLocal(day, start, &owner);
-
       html += "<td style='min-width:150px'>";
       if (occ && owner != mat) {
         // ocupado por otra materia -> mostrar bloqueado
@@ -210,6 +214,7 @@ void handleMateriasNewScheduleGET() {
 
   // Botones Continuar / Cancelar
   html += "<p style='margin-top:12px'>";
+  // Continuar: vuelve a la lista de materias (la materia ya está guardada)
   html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Continuar</button></form> ";
   // Cancelar: hacemos POST a /materias_delete para eliminar la materia nueva
   html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>";
@@ -223,19 +228,16 @@ void handleMateriasNewScheduleGET() {
 
 // POST /materias_new_schedule_add
 void handleMateriasNewScheduleAddPOST() {
-  if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
-    server.send(400, "text/plain", "faltan"); return;
-  }
+  if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) { server.send(400, "text/plain", "faltan"); return; }
   String mat = server.arg("materia"); mat.trim();
   String day = server.arg("day"); day.trim();
   String start = server.arg("start"); start.trim();
   String end = server.arg("end"); end.trim();
-
   if (mat.length() == 0) { server.send(400, "text/plain", "materia vacia"); return; }
   if (!courseExists(mat)) { server.send(400, "text/plain", "Materia no registrada"); return; }
 
-  addScheduleSlotSafeLocal(mat, day, start, end);
-
+  String err;
+  addScheduleSlotSafeLocal(mat, day, start, end, &err);
   server.sendHeader("Location", "/materias_new_schedule?materia=" + mat);
   server.send(303, "text/plain", "Agregado");
 }
@@ -246,7 +248,6 @@ void handleMateriasNewScheduleDelPOST() {
   String mat = server.arg("materia"); mat.trim();
   String day = server.arg("day"); day.trim();
   String start = server.arg("start"); start.trim();
-
   if (mat.length() == 0) { server.send(400, "text/plain", "materia vacia"); return; }
 
   // solo borrar si pertenece a la materia
@@ -255,7 +256,8 @@ void handleMateriasNewScheduleDelPOST() {
     File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
     std::vector<String> slines;
     if (f) {
-      String header = f.readStringUntil('\n'); slines.push_back(header);
+      String header = f.readStringUntil('\n');
+      slines.push_back(header);
       while (f.available()) {
         String l = f.readStringUntil('\n'); l.trim();
         if (!l.length()) continue;
@@ -280,6 +282,7 @@ void handleMateriasEditGET() {
   int idx = -1;
   for (int i = 0; i < (int)courses.size(); i++) if (courses[i].materia == mat) { idx = i; break; }
   if (idx == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
+
   String html = htmlHeader("Editar Materia");
   html += "<div class='card'><h2>Editar materia</h2>";
   html += "<form method='POST' action='/materias_edit'>";
@@ -423,10 +426,13 @@ void registerCoursesHandlers() {
   server.on("/materias", HTTP_GET, handleMaterias);
   server.on("/materias/new", HTTP_GET, handleMateriasNew);
   server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
+
   server.on("/materias_new_schedule", HTTP_GET, handleMateriasNewScheduleGET);
   server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
   server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
+
   server.on("/materias/edit", HTTP_GET, handleMateriasEditGET);
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 }
+
