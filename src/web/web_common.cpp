@@ -15,40 +15,105 @@ String htmlHeader(const char* title) {
 
   h += R"rawliteral(
   <style>
-  body{font-family:'Inter',Arial,Helvetica,sans-serif;background:linear-gradient(180deg,#f8fafc,#eef2ff);color:#111;margin:0;padding:0}
-  .container{min-height:100vh;display:flex;flex-direction:column;justify-content:space-between}
-  .topbar{background:linear-gradient(90deg,#0f172a,#0369a1);color:#fff;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;box-shadow:0 6px 18px rgba(2,6,23,0.15)}
-  .title{font-weight:900;font-size:20px;cursor:pointer}
-  .nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .btn{display:inline-block;padding:8px 12px;border-radius:8px;text-decoration:none;font-weight:700;border:none;cursor:pointer;color:#fff}
-  .btn-green{background:#10b981;color:#fff}
-  .btn-red{background:#ef4444;color:#fff}
-  .btn-blue{background:#06b6d4;color:#05345b}
-  .card{background:#fff;padding:22px;border-radius:16px;box-shadow:0 8px 30px rgba(2,6,23,0.08);margin:16px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:16px}
-  .icon{font-size:36px;display:block;margin-bottom:8px}
-  table{width:100%;border-collapse:collapse;margin-top:8px}
-  th,td{padding:8px;border:1px solid #e6eef6;text-align:center}
-  th{background:#0ea5b7;color:#fff}
-  .small{font-size:14px;color:#475569}
-  .notif{position:relative;display:inline-block;padding:6px 8px;border-radius:8px;background:#fff;color:#05345b;font-weight:700;margin-right:12px}
-  .notif .count{position:absolute;top:-6px;right:-6px;background:#ef4444;color:#fff;border-radius:50%;padding:2px 6px;font-size:12px}
-  footer{background:linear-gradient(90deg,#0f172a,#0369a1);color:#fff;text-align:center;padding:12px 8px;font-size:14px;font-weight:600}
-  section h2{margin-top:0;color:#0369a1}
-  @media (max-width:800px){ .nav{flex-wrap:wrap} .grid{grid-template-columns:1fr} }
+  /* Make sure html/body fill viewport */
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Global body */
+  body {
+    font-family:'Inter',Arial,Helvetica,sans-serif;
+    background: linear-gradient(180deg,#f8fafc,#eef2ff);
+    color: #111;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* Container holds header, content and footer */
+  .container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    /* no spacing tricks here — footer is fixed so we ensure content has bottom padding */
+  }
+
+  .topbar {
+    background: linear-gradient(90deg,#0f172a,#0369a1);
+    color: #fff;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 6px 18px rgba(2,6,23,0.15);
+  }
+  .title { font-weight:900; font-size:20px; cursor:pointer; }
+  .nav { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  .btn { display:inline-block; padding:8px 12px; border-radius:8px; text-decoration:none; font-weight:700; border:none; cursor:pointer; color:#fff; }
+  .btn-green{ background:#10b981; color:#fff; }
+  .btn-red{ background:#ef4444; color:#fff; }
+  .btn-blue{ background:#06b6d4; color:#05345b; }
+
+  .card { background:#fff; padding:22px; border-radius:16px; box-shadow:0 8px 30px rgba(2,6,23,0.08); margin:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; padding:16px; }
+  .icon { font-size:36px; display:block; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th, td { padding:8px; border:1px solid #e6eef6; text-align:center; }
+  th { background:#0ea5b7; color:#fff; }
+  .small { font-size:14px; color:#475569; }
+  .notif { position:relative; display:inline-block; padding:6px 8px; border-radius:8px; background:#fff; color:#05345b; font-weight:700; margin-right:12px; }
+  .notif .count { position:absolute; top:-6px; right:-6px; background:#ef4444; color:#fff; border-radius:50%; padding:2px 6px; font-size:12px; }
+
+  /* FIXED footer: always visible at bottom of viewport.
+     To avoid overlapping content we add bottom padding to the content wrapper (.page-content). */
+  footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg,#0f172a,#0369a1);
+    color: #fff;
+    text-align: center;
+    padding: 12px 8px;
+    font-size: 14px;
+    font-weight: 600;
+    z-index: 999;
+    box-shadow: 0 -4px 12px rgba(2,6,23,0.12);
+    height: 56px; /* fixed footer height for layout calculations */
+  }
+
+  /* content wrapper — add bottom padding equal (or slightly larger) than footer height
+     so that page content never hides beneath fixed footer. */
+  .page-content {
+    flex: 1 0 auto;
+    padding: 12px;
+    padding-bottom: 84px; /* footer height (56px) + margin (28px) to be safe on small screens */
+  }
+
+  section h2 { margin-top: 0; color: #0369a1; }
+
+  @media (max-width:800px) {
+    .nav { flex-wrap: wrap; }
+    .grid { grid-template-columns: 1fr; }
+    footer { height: 64px; }
+    .page-content { padding-bottom: 96px; }
+  }
   </style>
   )rawliteral";
 
   h += "</head><body>";
   h += "<div class='container'>";
-  
+
   // Barra superior
   h += "<div class='topbar'><div style='display:flex;gap:12px;align-items:center'>";
   h += "<div class='title' onclick='location.href=\"/\"'>Control de Acceso - Laboratorio</div>";
   h += "<a class='notif' href='/notifications' title='Notificaciones'>🔔";
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
-  
+
   // Menú de navegación
   h += "<div class='nav'>";
   h += "<a class='btn btn-blue' href='/capture'>🎴 Capturar</a>";
@@ -59,15 +124,17 @@ String htmlHeader(const char* title) {
   h += "<a class='btn btn-blue' href='/status'>🔧 Estado ESP</a>";
   h += "</div></div>";
 
-  h += "<div style='flex:1;padding:12px'>";
+  // page-content wrapper (important: has bottom padding to avoid footer overlap)
+  h += "<div class='page-content'>";
+
   return h;
 }
 
 // ==================== PIE DE PÁGINA CON AUTORES ====================
 String htmlFooter() {
-  String f = "</div>"; // Cierra el contenedor principal
+  String f = "</div>"; // Cierra .page-content
   f += "<footer>Proyecto desarrollado por: Kevin González Gutiérrez • Julio César Sánchez Méndez • Dylan Adayr de la Rosa Ramos</footer>";
-  f += "</div></body></html>";
+  f += "</div></body></html>"; // Cierra .container + body + html
   return f;
 }
 
@@ -115,7 +182,7 @@ void handleStatus() {
   size_t total = SPIFFS.totalBytes();
   size_t used = SPIFFS.usedBytes();
   float pct = (total>0) ? (used * 100.0f) / (float)total : 0;
-  
+
   String html = htmlHeader("Estado ESP32");
   html += "<div class='card'><h2>🔧 Estado del Dispositivo</h2>";
   html += "<p><b>IP:</b> " + WiFi.localIP().toString() + "</p>";

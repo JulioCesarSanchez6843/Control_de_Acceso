@@ -9,7 +9,7 @@
 void handleNotificationsPage() {
   String html = htmlHeader("Notificaciones");
   html += "<div class='card'><h2>Notificaciones</h2>";
-  html += "<div style='margin-bottom:8px'><form method='POST' action='/notifications_clear' onsubmit='return confirm(\"Borrar todas las notificaciones? Esta acción es irreversible.\");' style='display:inline'><input class='btn btn-red' type='submit' value='🗑️ Borrar Notificaciones'></form> <a class='btn btn-blue' href='/'>Volver</a></div>";
+  html += "<div style='margin-bottom:8px'><form method='POST' action='/notifications_clear' onsubmit='return confirm(\"Borrar todas las notificaciones? Esta acción es irreversible.\");' style='display:inline'><input class='btn btn-red' type='submit' value='🗑️ Borrar Notificaciones'></form> <a class='btn btn-blue' href='/'>Inicio</a></div>";
   auto nots = readNotifications(200);
   if (nots.size()==0) html += "<p>No hay notificaciones.</p>";
   else {
