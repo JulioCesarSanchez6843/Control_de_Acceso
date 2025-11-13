@@ -16,10 +16,10 @@ static String urlEncode(const String &str) {
   ret.reserve(str.length() * 3);
   for (size_t i = 0; i < (size_t)str.length(); ++i) {
     char c = str[i];
-    if ( (c >= '0' && c <= '9') ||
-         (c >= 'a' && c <= 'z') ||
-         (c >= 'A' && c <= 'Z') ||
-         c == '-' || c == '_' || c == '.' || c == '~' ) {
+    if ((c >= '0' && c <= '9') ||
+        (c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') ||
+        c == '-' || c == '_' || c == '.' || c == '~') {
       ret += c;
     } else if (c == ' ') {
       ret += "%20";
@@ -56,22 +56,13 @@ void handleStudentsForMateria() {
 
       html += "<tr><td>" + name + "</td><td>" + acc + "</td><td>" + created + "</td>";
 
-      // Acciones: editar (regresa a lista de alumnos de la materia) y eliminar del curso
+      // Acciones: SOLO eliminar del curso
       html += "<td>";
-
-      // Editar -> abre la nueva página de edición en capture y pasa return_to codificado (volver a /students?materia=...)
-      if (uid.length()) {
-        String returnTo = "/students?materia=" + materia;
-        html += "<a class='btn btn-blue' href='/capture_edit?uid=" + uid + "&return_to=" + urlEncode(returnTo) + "'>✏️ Editar</a> ";
-      }
-
-      // Solo eliminar del curso
       html += "<form method='POST' action='/student_remove_course' style='display:inline' onsubmit='return confirm(\"Eliminar este alumno de la materia?\");'>";
       html += "<input type='hidden' name='uid' value='" + uid + "'>";
       html += "<input type='hidden' name='materia' value='" + materia + "'>";
       html += "<input class='btn btn-red' type='submit' value='Eliminar del curso'>";
       html += "</form>";
-
       html += "</td></tr>";
     }
     html += "</table>";
@@ -166,7 +157,6 @@ void handleStudentRemoveCourse() {
   }
   f.close();
   writeAllLines(USERS_FILE, lines);
-  // redirigir de vuelta a la lista de alumnos de la materia (codificada)
   server.sendHeader("Location","/students?materia=" + urlEncode(materia));
   server.send(303,"text/plain","Removed");
 }
@@ -186,7 +176,6 @@ void handleStudentDelete() {
   }
   f.close();
   writeAllLines(USERS_FILE, lines);
-  // Redirigir a la lista completa
   server.sendHeader("Location","/students_all");
   server.send(303,"text/plain","Deleted");
 }
