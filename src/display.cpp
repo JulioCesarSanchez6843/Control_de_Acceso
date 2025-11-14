@@ -115,10 +115,10 @@ void showAccessGranted(const String &name, const String &materia, const String &
   int baseY = cy + r + 6;
   drawCenteredText("ACCESO CONCEDIDO", baseY, 1, ST77XX_WHITE);
 
-  // Nombre / materia / uid con tamaños moderados
-  if (name.length()) drawCenteredText(name, baseY + 18, 2, ST77XX_WHITE);
-  if (materia.length()) drawCenteredText(materia, baseY + 36, 1, ST77XX_WHITE);
-  if (uid.length()) drawCenteredText(uid, baseY + 50, 1, ST77XX_WHITE);
+  // Nombre / materia / uid con tamaños moderados (más pequeños para evitar encimar)
+  if (name.length()) drawCenteredText(name, baseY + 18, 1, ST77XX_WHITE);
+  if (materia.length()) drawCenteredText(materia, baseY + 30, 1, ST77XX_WHITE);
+  if (uid.length()) drawCenteredText(uid, baseY + 42, 1, ST77XX_WHITE);
 
   // LED verde
   ledGreenOn();

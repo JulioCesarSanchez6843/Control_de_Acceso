@@ -1,9 +1,11 @@
 // src/time_utils.cpp
 // Implementaciones: nowISO(), uidBytesToString(), currentScheduledMateria()
+// + utilidades para ajustar la hora manualmente.
 
 #include <Arduino.h>
 #include "globals.h"
 #include <time.h>
+#include <sys/time.h> // settimeofday
 
 // nowISO: devuelve fecha/hora local en formato "YYYY-MM-DD HH:MM:SS"
 String nowISO() {
@@ -27,6 +29,7 @@ String uidBytesToString(byte *uid, byte len) {
 }
 
 // currentScheduledMateria: determina la materia activa según la hora local y schedules
+// Retorna la parte "materia" de s.materia (si s.materia es "Materia||Profesor", retorna "Materia").
 String currentScheduledMateria() {
   struct tm tm_now;
   if (!getLocalTime(&tm_now)) return String();
@@ -38,6 +41,13 @@ String currentScheduledMateria() {
   int nowMin = tm_now.tm_hour * 60 + tm_now.tm_min;
   auto schedules = loadSchedules();
   for (auto &s : schedules) {
+    // El campo s.materia puede ser "Materia" o "Materia||Profesor" (legacy o composite).
+    // Para comparación de horario simplemente se compara la parte materia almacenada en s.materia
+    // (si viene compuesta, se toma la parte antes de "||").
+    String schedMat = s.materia;
+    int sep = schedMat.indexOf("||");
+    if (sep >= 0) schedMat = schedMat.substring(0, sep);
+
     if (s.day != DAYS[dayIndex]) continue;
     // s.start e.g. "07:00", s.end e.g. "09:00"
     if (s.start.length() < 5 || s.end.length() < 5) continue;
@@ -47,7 +57,40 @@ String currentScheduledMateria() {
     int em = s.end.substring(3,5).toInt();
     int smin = sh*60 + sm;
     int emin = eh*60 + em;
-    if (smin <= nowMin && nowMin <= emin) return s.materia;
+    if (smin <= nowMin && nowMin <= emin) return schedMat;
   }
   return String();
 }
+
+// ---------------------------
+// Funciones para setear hora manualmente (desde PC o script).
+// ---------------------------
+
+// setTimeFromEpoch: ajusta el reloj del sistema (epoch = segundos desde 1970 UTC)
+void setTimeFromEpoch(uint32_t epoch_seconds) {
+  struct timeval tv;
+  tv.tv_sec = (time_t)epoch_seconds;
+  tv.tv_usec = 0;
+  // aplicar la hora
+  if (settimeofday(&tv, nullptr) == 0) {
+    // actualizar tz (si ya tienes TZ definida en globals, repetirla aqui por si acaso)
+    setenv("TZ", TZ, 1);
+    tzset();
+    // opcional: small delay para que getLocalTime lea la nueva hora
+    delay(10);
+  } else {
+    // fallo (raro en ESP32), no hacemos nada
+  }
+}
+
+// Devuelve epoch actual (segundos) según reloj del sistema
+uint32_t getEpochNow() {
+  time_t t = time(nullptr);
+  return (uint32_t)t;
+}
+
+// Imprime hora local legible por Serial (usa nowISO())
+void printLocalTimeToSerial() {
+  Serial.println(nowISO());
+}
+
