@@ -1,4 +1,4 @@
-// src/main.cpp  (reemplaza tu fichero main actual)
+// src/main.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
@@ -13,20 +13,18 @@
 #include "web/web_routes.h"
 
 // cuánto esperar (ms) a que NTP sincronice antes de seguir (ajusta si quieres)
-static const unsigned long NTP_TIMEOUT_MS = 20UL * 1000UL; // 20 segundos
+static const unsigned long NTP_TIMEOUT_MS = 30UL * 1000UL; // 30 segundos
 static const unsigned long NTP_POLL_MS    = 500UL;        // poll cada 500 ms
 
 static bool systemTimeReasonable() {
   time_t now = time(nullptr);
-  // 1577836800 = 2020-01-01T00:00:00Z
+  // 1577836800 = 2020-01-01T00:00:00Z -> considera razonable si > 2020
   return now > 1577836800;
 }
 
 static void waitForNtpSyncOrTimeout() {
   unsigned long t0 = millis();
-  Serial.print("Esperando sincronización NTP (timeout ");
-  Serial.print(NTP_TIMEOUT_MS / 1000);
-  Serial.println("s) ...");
+  Serial.printf("Esperando sincronización NTP (timeout %lus) ...\n", NTP_TIMEOUT_MS / 1000UL);
   while (!systemTimeReasonable() && (millis() - t0) < NTP_TIMEOUT_MS) {
     delay(NTP_POLL_MS);
     Serial.print(".");
@@ -52,6 +50,28 @@ static void printTimeInfo() {
   time_t epoch = time(nullptr);
   Serial.print("Epoch (UTC): ");
   Serial.println((unsigned long)epoch);
+
+  const char *tz = getenv("TZ");
+  Serial.print("getenv(\"TZ\"): ");
+  Serial.println(tz ? tz : "NULL");
+  Serial.print("WiFi status: ");
+  Serial.println(WiFi.status());
+}
+
+void connectWiFiWithTimeout(unsigned long timeout_ms = 20000UL) {
+  Serial.printf("Conectando WiFi a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms/1000UL);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeout_ms) {
+    delay(250);
+    Serial.print(".");
+  }
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(String("WiFi OK - IP: ") + WiFi.localIP().toString());
+  } else {
+    Serial.println("WARN: No conectado a WiFi. NTP no funcionará sin conexión.");
+  }
 }
 
 void setup() {
@@ -72,33 +92,34 @@ void setup() {
   Serial.println("initFiles() -> OK.");
 
   // WiFi
-  Serial.println("Conectando WiFi...");
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Conectando");
-  int tries = 0;
-  while (WiFi.status() != WL_CONNECTED && tries < 40) {
-    delay(250);
-    Serial.print(".");
-    tries++;
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(String("WiFi OK - IP: ") + WiFi.localIP().toString());
-  } else {
-    Serial.println("WARN: No conectado a WiFi. NTP no funcionará sin conexión.");
-  }
+  connectWiFiWithTimeout(30000UL); // 30s
 
   // timezone + NTP
   Serial.println("Configurando TZ y NTP...");
-  // Intentamos usar la TZ "oficial" (si el sistema la soporta)
+
+  // POSIX fallback TZ (asegura que se aplique el offset en ESP32)
+  // GMT-6 fija UTC-6. Cambia a otra cadena POSIX si necesitas reglas DST.
+  const char *posixTZ = "GMT-6"; // <-- usa esto para forzar UTC-6
+
+  // Primero intenta usar la variable TZ definida en globals (puede ser IANA)
+  // pero como fallback aplicamos posixTZ que sí funciona en la mayoría de builds ESP.
+  // Intento 1: usar TZ (puede ser "America/Mexico_City")
   configTzTime(TZ, "pool.ntp.org", "time.nist.gov");
-  // FORZAR un TZ simple POSIX en caso de que la base tz no exista o no se aplique:
-  // 'GMT-6' significa UTC-6 (Mexico City generalmente UTC-6; ajusta si necesitas otro offset)
-  setenv("TZ", "GMT-6", 1);
+  // Forzar variable de entorno POSIX si la anterior no aplica correctamente
+  setenv("TZ", posixTZ, 1);
   tzset();
 
   // Esperar explícitamente hasta que NTP sincronice o timeout
   waitForNtpSyncOrTimeout();
+
+  // Si no sincronizó razonablemente, reintentar usando directamente posixTZ en configTzTime
+  if (!systemTimeReasonable()) {
+    Serial.println("Reintentando configTzTime con cadena POSIX (fallback)...");
+    configTzTime(posixTZ, "pool.ntp.org", "time.nist.gov");
+    setenv("TZ", posixTZ, 1);
+    tzset();
+    waitForNtpSyncOrTimeout();
+  }
 
   // Imprimir hora (verificación)
   printTimeInfo();
@@ -119,8 +140,20 @@ void setup() {
   puerta.attach(SERVO_PIN);
   puerta.write(0);
 
-  // web
+  // web (registrar rutas)
   registerRoutes();
+
+  // RUTA DEBUG: set time epoch via web (solo para pruebas) - quita en producción
+  server.on("/debug_set_time", HTTP_GET, [](){
+    if (!server.hasArg("epoch")) { server.send(400,"text/plain","epoch required"); return; }
+    uint32_t e = (uint32_t) server.arg("epoch").toInt();
+    struct timeval tv; tv.tv_sec = (time_t)e; tv.tv_usec = 0;
+    settimeofday(&tv, nullptr);
+    // re-aplicar tz
+    setenv("TZ", "GMT-6", 1); tzset();
+    server.send(200,"text/plain", String("Time set to: ") + nowISO());
+  });
+
   server.begin();
   Serial.println("Web server iniciado.");
 

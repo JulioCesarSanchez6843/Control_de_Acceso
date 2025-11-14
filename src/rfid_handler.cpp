@@ -1,4 +1,4 @@
-// src/rfid_handles.cpp
+// src/rfid_handler.cpp
 #include <Arduino.h>
 #include <SPI.h>
 #include <FS.h>
@@ -36,6 +36,13 @@ static String joinMats(const std::vector<String> &mats) {
     out += mats[i];
   }
   return out;
+}
+
+// Helper: devuelve lowercase copy (no modifica original)
+static String lowerCopy(const String &s) {
+  String t = s;
+  t.toLowerCase();
+  return t;
 }
 
 void rfidLoopHandler() {
@@ -95,10 +102,7 @@ void rfidLoopHandler() {
     Serial.printf("appendLineToFile(DENIED_FILE) -> %s\n", okDenied ? "OK" : "FAIL");
 
     // Crear notificación (para que aparezca en la web)
-    // Incluimos UID en la nota para mayor información
     String note = "Tarjeta no registrada (UID: " + uid + ")";
-    // addNotification guarda: timestamp, uid, name, account, note
-    // name/account vacíos en este caso
     addNotification(uid, String(""), String(""), note);
     Serial.println("addNotification() llamada para tarjeta no registrada.");
 
@@ -111,6 +115,27 @@ void rfidLoopHandler() {
     return;
   }
 
+  // --- DEBUG: imprimir info de schedules y día actual (ayuda a encontrar mismatch en formato/día) ---
+  {
+    struct tm tm_now;
+    if (getLocalTime(&tm_now)) {
+      int wday = tm_now.tm_wday; // 0=domingo,1=lunes,...6=sábado
+      int dayIndex = -1;
+      if (wday >= 1 && wday <= 6) dayIndex = wday - 1;
+      Serial.printf("DEBUG now local: %04d-%02d-%02d %02d:%02d (tm_wday=%d, dayIndex=%d)\n",
+                    tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday, tm_now.tm_hour, tm_now.tm_min, wday, dayIndex);
+    } else {
+      Serial.println("DEBUG: getLocalTime() falló al intentar imprimir info de horario.");
+    }
+
+    auto dbgSchedules = loadSchedules();
+    Serial.printf("DEBUG schedules loaded: %d\n", (int)dbgSchedules.size());
+    for (auto &s : dbgSchedules) {
+      Serial.printf("  sched owner='%s' day='%s' start='%s' end='%s'\n",
+                    s.materia.c_str(), s.day.c_str(), s.start.c_str(), s.end.c_str());
+    }
+  }
+
   // --- Materia actual según horario (owner tal cual: puede ser 'Materia' o 'Materia||Profesor') ---
   String scheduleOwner = currentScheduledMateria(); // devuelve la parte materia (time_utils lo normaliza)
   String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner); // por seguridad
@@ -121,14 +146,20 @@ void rfidLoopHandler() {
   String name = (userRows.size() > 0 && userRows[0].size() > 1 ? userRows[0][1] : "");
   String account = (userRows.size() > 0 && userRows[0].size() > 2 ? userRows[0][2] : "");
 
-  // Construir lista única de materias del usuario
+  // Construir lista única de materias del usuario (mantener original y lista lower para comparación)
   std::vector<String> userMats;
+  std::vector<String> userMatsLower;
   for (auto &r : userRows) {
     if (r.size() > 3) {
       String mm = normMat(r[3]);
+      // evitar duplicados (comparación case-insensitive para la lista)
+      String mmLower = lowerCopy(mm);
       bool found = false;
-      for (auto &u : userMats) if (u == mm) { found = true; break; }
-      if (!found) userMats.push_back(mm);
+      for (auto &ul : userMatsLower) if (ul == mmLower) { found = true; break; }
+      if (!found) {
+        userMats.push_back(mm);
+        userMatsLower.push_back(mmLower);
+      }
     }
   }
 
@@ -140,8 +171,15 @@ void rfidLoopHandler() {
   // --- Si hay clase en curso: permitir solo si usuario tiene esa materia ---
   if (scheduleBaseMat.length() > 0) {
     String wantMat = normMat(scheduleBaseMat);
+    String wantMatLower = lowerCopy(wantMat);
     bool hasCurrent = false;
-    for (auto &mm : userMats) if (mm == wantMat) { hasCurrent = true; break; }
+    for (auto &mmLower : userMatsLower) {
+      if (mmLower == wantMatLower) { hasCurrent = true; break; }
+    }
+
+    Serial.printf("Comparando materia en curso '%s' (lower='%s') con materias usuario (lower):", wantMat.c_str(), wantMatLower.c_str());
+    for (auto &x : userMatsLower) Serial.printf(" '%s'", x.c_str());
+    Serial.println();
 
     if (hasCurrent) {
       // Permitir entrada: registrar asistencia, abrir puerta, mostrar UI
@@ -203,4 +241,3 @@ void rfidLoopHandler() {
     return;
   }
 }
-
