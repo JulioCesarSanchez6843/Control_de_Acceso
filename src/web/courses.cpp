@@ -1,4 +1,3 @@
-// src/web/courses.cpp
 #include "courses.h"
 #include "web_common.h"
 #include "files_utils.h"
@@ -9,7 +8,7 @@
 
 // ---------- Helpers locales ----------
 
-// Separador usado para crear una clave única de curso (materia + profesor)
+// Separador para clave curso "materia||profesor"
 static const char *COURSE_KEY_SEP = "||";
 
 // Construye clave única "Materia||Profesor"
@@ -17,8 +16,7 @@ static String makeCourseKey(const String &materia, const String &profesor) {
   return materia + String(COURSE_KEY_SEP) + profesor;
 }
 
-// Si key contiene el separador, separa en materiaOut/profesorOut y devuelve true.
-// Si no contiene, devuelve false.
+// Si key contiene separador, separa en materiaOut/profesorOut y devuelve true.
 static bool splitCourseKey(const String &key, String &materiaOut, String &profesorOut) {
   int idx = key.indexOf(String(COURSE_KEY_SEP));
   if (idx < 0) return false;
@@ -27,7 +25,7 @@ static bool splitCourseKey(const String &key, String &materiaOut, String &profes
   return true;
 }
 
-// URL-encode pequeño helper
+// URL-encode simple
 static String urlEncode(const String &str) {
   String encoded = "";
   char buf[8];
@@ -46,7 +44,7 @@ static String urlEncode(const String &str) {
   return encoded;
 }
 
-// Cuenta cuántos cursos existen con el mismo nombre de materia
+// Cuenta cursos con el mismo nombre de materia
 static int countCoursesWithName(const String &materia) {
   auto courses = loadCourses();
   int cnt = 0;
@@ -54,7 +52,7 @@ static int countCoursesWithName(const String &materia) {
   return cnt;
 }
 
-// Comprueba existencia de combinación materia+profesor (ya la tenías)
+// Comprueba existencia exacta materia+profesor
 static bool coursePairExists(const String &materia, const String &profesor) {
   auto courses = loadCourses();
   for (auto &c : courses) {
@@ -63,7 +61,7 @@ static bool coursePairExists(const String &materia, const String &profesor) {
   return false;
 }
 
-// Comprueba si un slot está ocupado y devuelve el dueño (la cadena tal y como está en schedules file).
+// Comprueba si un slot (day,start) está ocupado; opcionalmente devuelve owner
 static bool slotOccupiedLocal(const String &day, const String &start, String *ownerOut = nullptr) {
   auto schedules = loadSchedules();
   for (auto &s : schedules) {
@@ -75,8 +73,7 @@ static bool slotOccupiedLocal(const String &day, const String &start, String *ow
   return false;
 }
 
-// Añade slot si está libre (usa addScheduleSlot() existente)
-// Ahora recibe la clave de curso (courseKey), que puede ser legacy (solo materia) o compuesta "materia||profesor".
+// Añade slot si está libre; acepta courseKey composite o legacy
 static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &day, const String &start, const String &end, String *err = nullptr) {
   String owner;
   if (slotOccupiedLocal(day, start, &owner)) {
@@ -87,21 +84,20 @@ static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &d
     if (err) *err = "ya asignado";
     return false;
   }
-  // addScheduleSlot guarda exactamente lo que le pases en 'materia' campo de schedule.
   addScheduleSlot(courseKey, day, start, end);
   return true;
 }
 
 // ---------- Handlers: materias ----------
 
-// /materias (GET) - listar materias y acciones
+// GET /materias - lista materias y acciones
 void handleMaterias() {
   String html = htmlHeader("Materias");
   html += "<div class='card'><h2>Materias disponibles</h2>";
   auto courses = loadCourses();
   html += "<p class='small'>Pulse 'Agregar nueva materia' para registrar una materia. Desde aquí puede administrar estudiantes o ver el historial por días.</p>";
 
-  // Filtros: solo materia y profesor
+  // Filtros: materia y profesor
   html += "<div class='filters'><input id='f_mat' placeholder='Filtrar por materia'><input id='f_prof' placeholder='Filtrar por profesor'><button class='search-btn btn btn-blue' onclick='applyMateriaFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearMateriaFilters()'>Limpiar</button></div>";
 
   if (courses.size() == 0) {
@@ -111,24 +107,21 @@ void handleMaterias() {
     html += "<table id='materias_table'><tr><th>Materia</th><th>Profesor</th><th>Creado</th><th>Horarios</th><th>Acción</th></tr>";
     for (auto &c : courses) {
       String schedStr = "";
-      // Recorremos schedules y asignamos solo los que pertenezcan a esta pareja (o legacy si es único)
+      // Asociar schedules a este curso (composite o legacy si único)
       for (auto &s : schedules) {
         String schedOwner = s.materia;
         String ownerMat, ownerProf;
         if (splitCourseKey(schedOwner, ownerMat, ownerProf)) {
-          // schedule con clave compuesta -> comparar ambos
           if (ownerMat == c.materia && ownerProf == c.profesor) {
             if (schedStr.length()) schedStr += "; ";
             schedStr += s.day + " " + s.start + "-" + s.end;
           }
         } else {
-          // legacy: solo materia. Solo asociarlo si existe una única materia con ese nombre (evita compartirlo entre varios profesores)
           if (schedOwner == c.materia) {
             if (countCoursesWithName(c.materia) == 1) {
               if (schedStr.length()) schedStr += "; ";
               schedStr += s.day + " " + s.start + "-" + s.end;
             }
-            // si hay >1 curso con mismo nombre, no lo asociamos automáticamente (ambigüedad).
           }
         }
       }
@@ -136,19 +129,11 @@ void handleMaterias() {
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
-      // Editar -> verde (no destructivo). Pasamos materia+profesor en la query para identificar el registro exacto.
+      // Acciones: editar, horarios, administrar estudiantes, historial, eliminar
       html += "<a class='btn btn-green' href='/materias/edit?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "'>✏️ Editar</a> ";
-
-      // Horarios -> amarillo (edición de horarios) : enviamos materia+profesor para que los horarios se manejen por pareja única.
       html += "<a class='btn btn-yellow' href='/materias_new_schedule?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#f1c40f;color:#111;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📅 Horarios</a> ";
-
-      // Administrar estudiantes -> morado/clarito
       html += "<a class='btn btn-purple' href='/students?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>👥 Administrar Estudiantes</a> ";
-
-      // Historial por días -> naranja
       html += "<a class='btn btn-orange' href='/materia_history?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' title='Historial por días' style='background:#e67e22;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📆 Historial</a> ";
-
-      // Eliminar (peligroso) -> rojo: incluimos profesor para eliminar solo este registro
       html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Eliminar materia y sus horarios/usuarios? Esta acción es irreversible.\");'>"
               "<input type='hidden' name='materia' value='" + c.materia + "'>"
               "<input type='hidden' name='profesor' value='" + c.profesor + "'>"
@@ -157,7 +142,7 @@ void handleMaterias() {
     }
     html += "</table>";
 
-    // Script filtros: solo materia y profesor
+    // Script de filtros cliente
     html += "<script>"
             "function applyMateriaFilters(){"
             "const table=document.getElementById('materias_table');"
@@ -177,13 +162,13 @@ void handleMaterias() {
             "</script>";
   }
 
-  // Botones inferiores: Agregar nueva materia (verde) + Inicio (azul)
+  // Botones inferiores
   html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>➕ Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200, "text/html", html);
 }
 
-// Página para agregar nueva materia (GET)
+// GET /materias/new - formulario para crear nueva materia
 void handleMateriasNew() {
   String html = htmlHeader("Agregar Materia");
   html += "<div class='card'><h2>Agregar nueva materia</h2>";
@@ -197,7 +182,7 @@ void handleMateriasNew() {
   server.send(200, "text/html", html);
 }
 
-// POST /materias_add
+// POST /materias_add - valida y crea curso
 void handleMateriasAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) {
     server.send(400, "text/plain", "materia y profesor requeridos");
@@ -222,13 +207,12 @@ void handleMateriasAddPOST() {
 
   addCourse(mat, prof);
 
-  // Redirige a la pantalla de asignar horarios para la nueva materia (opcional)
-  // Enviamos tanto materia como profesor
+  // Redirige a asignar horarios para la nueva materia
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
 }
 
-// GET /materias_new_schedule?materia=...&profesor=...
+// GET /materias_new_schedule - muestra grilla de horarios para un curso
 void handleMateriasNewScheduleGET() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -243,7 +227,7 @@ void handleMateriasNewScheduleGET() {
   String html = htmlHeader(headerTitle.c_str());
   html += "<div class='card'><h2>Horarios para: " + mat + " — " + prof + "</h2>";
 
-  // Tabla tipo grilla, editable para la materia indicada (usaremos la clave compuesta)
+  // Grilla editable por franjas
   html += "<table><tr><th>Hora</th>";
   for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
@@ -263,7 +247,7 @@ void handleMateriasNewScheduleGET() {
       bool occ = slotOccupiedLocal(day, start, &owner);
       html += "<td style='min-width:150px'>";
       if (occ) {
-        // Si owner es composite, comparar con courseKey
+        // Mostrar propietario y permitir eliminar si pertenece a este curso
         String ownerMat, ownerProf;
         if (splitCourseKey(owner, ownerMat, ownerProf)) {
           if (owner == courseKey) {
@@ -276,11 +260,9 @@ void handleMateriasNewScheduleGET() {
                     "<input class='btn btn-red' type='submit' value='Eliminar'>"
                     "</form></div>";
           } else {
-            // ocupado por otra pareja -> mostrar bloqueado (solo nombre)
             html += "<div class='occupied-other'>" + ownerMat + " (" + ownerProf + ")</div>";
           }
         } else {
-          // legacy owner (solo materia)
           if (owner == mat && countCoursesWithName(mat) == 1) {
             html += "<div>" + owner + "</div>";
             html += "<div style='margin-top:6px'><form method='POST' action='/materias_new_schedule_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
@@ -295,7 +277,7 @@ void handleMateriasNewScheduleGET() {
           }
         }
       } else {
-        // libre -> permitir agregar con clave compuesta
+        // Libre: permitir agregar con clave compuesta
         html += "<form method='POST' action='/materias_new_schedule_add' style='display:inline'>";
         html += "<input type='hidden' name='materia' value='" + mat + "'>";
         html += "<input type='hidden' name='profesor' value='" + prof + "'>";
@@ -328,7 +310,7 @@ void handleMateriasNewScheduleGET() {
   server.send(200, "text/html", html);
 }
 
-// POST /materias_new_schedule_add
+// POST /materias_new_schedule_add - añade horario (valida curso)
 void handleMateriasNewScheduleAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -349,7 +331,7 @@ void handleMateriasNewScheduleAddPOST() {
   server.send(303, "text/plain", "Agregado");
 }
 
-// POST /materias_new_schedule_del
+// POST /materias_new_schedule_del - elimina horario si pertenece a este curso
 void handleMateriasNewScheduleDelPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -362,7 +344,7 @@ void handleMateriasNewScheduleDelPOST() {
 
   String courseKey = makeCourseKey(mat, prof);
 
-  // Solo eliminamos el horario si pertenece a esta pareja (o si es legacy y no hay ambigüedad)
+  // Reescribe schedules sin la entrada objetivo (solo si aplica)
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   std::vector<String> slines;
   if (f) {
@@ -379,10 +361,8 @@ void handleMateriasNewScheduleDelPOST() {
         if (dayc == day && startc == start) {
           String ownerMat, ownerProf;
           if (splitCourseKey(owner, ownerMat, ownerProf)) {
-            // composite: eliminar solo si coincide exactamente con courseKey
-            if (owner == courseKey) continue; // skip -> removed
+            if (owner == courseKey) continue; 
           } else {
-            // legacy: eliminar solo si owner equals mat AND there is exactly one course with that name
             if (owner == mat && countCoursesWithName(mat) == 1) continue;
           }
         }
@@ -397,8 +377,7 @@ void handleMateriasNewScheduleDelPOST() {
   server.send(303, "text/plain", "Eliminado");
 }
 
-// GET /materias/edit (renderizado)
-// Ahora requiere materia + profesor para identificar el registro único
+// GET /materias/edit - formulario de edición para materia+profesor
 void handleMateriasEditGET() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -423,7 +402,7 @@ void handleMateriasEditGET() {
   server.send(200, "text/html", html);
 }
 
-// POST /materias_edit
+// POST /materias_edit - valida y aplica cambios (actualiza cursos, schedules y usuarios)
 void handleMateriasEditPOST() {
   if (!server.hasArg("orig_materia") || !server.hasArg("orig_profesor") || !server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "faltan"); return; }
   String orig = server.arg("orig_materia"); orig.trim();
@@ -440,7 +419,7 @@ void handleMateriasEditPOST() {
   }
   if (origIndex == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
-  // Evitar duplicado materia+profesor (mismo chequeo que antes)
+  // Evitar duplicado materia+profesor
   for (int i = 0; i < (int)courses.size(); i++) {
     if (i == origIndex) continue;
     if (courses[i].materia == mat && courses[i].profesor == prof) {
@@ -454,15 +433,14 @@ void handleMateriasEditPOST() {
     }
   }
 
-  // Actualizamos el curso
+  // Actualizar curso en memoria y persistir
   String oldMat = courses[origIndex].materia;
   String oldProf = courses[origIndex].profesor;
   courses[origIndex].materia = mat;
   courses[origIndex].profesor = prof;
   writeCourses(courses);
 
-  // Actualiza schedules: reemplazamos entradas que pertenecen a ESTE curso concreto
-  // (tanto composite keys como legacy si no hay ambigüedad)
+  // Actualizar schedules: reemplaza owner cuando corresponda
   String oldKey = makeCourseKey(oldMat, oldProf);
   String newKey = makeCourseKey(mat, prof);
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -478,19 +456,12 @@ void handleMateriasEditPOST() {
         String day = c[1];
         String start = c[2];
         String rest = c[3];
-        // Si owner es composite y coincide con oldKey => sustituir
         if (owner == oldKey) {
           String newline = "\"" + newKey + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
           slines.push_back(newline);
           continue;
         }
-        // Si owner es legacy (solo materia) y owner == oldMat:
-        // Solo lo reemplazamos si no hay ambigüedad (es decir, countCoursesWithName(oldMat) == 1 BEFORE change).
-        // Pero ya cambiamos courses; así que para comprobar la situación 'antes del cambio' es complejo.
-        // He elegido: si owner == oldMat and after the edit there is exactly one course with that name (mat),
-        // then we'll update it (this mirrors previous behaviour in simple cases).
         if (owner == oldMat) {
-          // if currently there is exactly one course with owner name -> update; else keep legacy as-is
           if (countCoursesWithName(oldMat) == 1) {
             String newline = "\"" + newKey + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
             slines.push_back(newline);
@@ -504,9 +475,7 @@ void handleMateriasEditPOST() {
     writeAllLines(SCHEDULES_FILE, slines);
   }
 
-  // Actualiza usuarios (reemplaza materia asociada si aplica)
-  // Nota: usuarios sólo guardan el nombre de materia sin profesor. Si existen múltiples cursos con mismo nombre
-  // este reemplazo afectará a todos los usuarios con ese nombre de materia (comportamiento previo).
+  // Actualizar usuarios: reemplaza campo materia textual cuando coincida
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<String> ulines;
   if (fu) {
@@ -519,7 +488,7 @@ void handleMateriasEditPOST() {
       if (c.size() >= 4) {
         String uid = c[0], name = c[1], acc = c[2], mm = c[3];
         String created = (c.size() > 4 ? c[4] : "");
-        if (mm == oldMat) mm = mat; // cambiar el campo materia textual
+        if (mm == oldMat) mm = mat;
         ulines.push_back("\"" + uid + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + created + "\"");
       } else ulines.push_back(l);
     }
@@ -531,7 +500,7 @@ void handleMateriasEditPOST() {
   server.send(303, "text/plain", "Editado");
 }
 
-// POST /materias_delete - elimina materia y asociados (solo la pareja materia+profesor enviada)
+// POST /materias_delete - elimina curso y datos asociados (horarios/usuarios) si procede
 void handleMateriasDeletePOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -545,8 +514,7 @@ void handleMateriasDeletePOST() {
   }
   writeCourses(newCourses);
 
-  // eliminar horarios: solo aquellos que pertenezcan a la pareja exacta (composite key),
-  // y legacy solo si no hay ambigüedad (es decir, si había única materia con ese nombre).
+  // Eliminar schedules que pertenecen exactamente a esta pareja; legacy solo si queda ninguno.
   String targetKey = makeCourseKey(mat, prof);
 
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -559,11 +527,9 @@ void handleMateriasDeletePOST() {
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
         String owner = c[0];
-        if (owner == targetKey) continue; // borrar composite exact match
-        // legacy owner (solo materia): borrar solo si countCoursesWithName(mat) == 0 AFTER deletion
+        if (owner == targetKey) continue;
         if (owner == mat) {
-          // if after deletion no courses with that name remain -> safe to delete legacy schedule
-          if (countCoursesWithName(mat) == 0) continue;
+          if (countCoursesWithName(mat) == 0) continue; 
         }
       }
       slines.push_back(l);
@@ -572,9 +538,7 @@ void handleMateriasDeletePOST() {
     writeAllLines(SCHEDULES_FILE, slines);
   }
 
-  // eliminar usuarios: los usuarios guardan materia textual; eliminamos solo si su materia coincide
-  // con mat y, dado que estamos borrando solo una pareja profesor, dejamos la lógica previa: eliminar usuarios
-  // asociadas si su materia coincide y NO existen otros cursos con el mismo nombre (evitar borrar usuarios equivocadamente).
+  // Eliminar usuarios asociados si su materia queda sin cursos con ese nombre
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<String> ulines;
   if (fu) {
@@ -585,7 +549,6 @@ void handleMateriasDeletePOST() {
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
         String uid = c[0], name = c[1], acc = c[2], mm = c[3];
-        // eliminar usuarios solo si mm == mat AND no quedan cursos con nombre mat
         if (mm == mat && countCoursesWithName(mat) == 0) continue;
         ulines.push_back(l);
       } else ulines.push_back(l);
@@ -598,7 +561,7 @@ void handleMateriasDeletePOST() {
   server.send(303, "text/plain", "Eliminado");
 }
 
-// ---------------- Registro rutas -----------------
+// Registro de rutas relacionadas con materias
 void registerCoursesHandlers() {
   server.on("/materias", HTTP_GET, handleMaterias);
   server.on("/materias/new", HTTP_GET, handleMateriasNew);

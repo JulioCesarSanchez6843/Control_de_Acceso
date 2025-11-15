@@ -1,4 +1,3 @@
-// src/web/schedules.cpp
 #include "schedules.h"
 #include "web_common.h"
 #include "files_utils.h"
@@ -7,22 +6,8 @@
 #include <SPIFFS.h>
 #include <vector>
 
-/*
-  Implementación de handlers de horarios (grilla, editor global y editor por materia).
-
-  Requiere que existan en el proyecto:
-   - std::vector<ScheduleEntry> loadSchedules();
-   - std::vector<Course> loadCourses();
-   - bool courseExists(const String &materia);
-   - void addScheduleSlot(const String &materia,const String &day,const String &start,const String &end);
-   - std::vector<String> parseQuotedCSVLine(const String &line);
-   - void writeAllLines(const String &path, const std::vector<String> &lines);
-   - const char* DAYS[]; int SLOT_COUNT; int SLOT_STARTS[];
-   - const char* SCHEDULES_FILE;
-   - extern WebServer server;
-*/
-
 // --- utilitarios locales ---
+// Comprueba si un slot (day,start) ya tiene dueño; opcionalmente devuelve owner.
 static bool slotOccupiedSched(const String &day, const String &start, String *ownerOut = nullptr) {
   auto sched = loadSchedules();
   for (auto &e : sched) {
@@ -34,9 +19,8 @@ static bool slotOccupiedSched(const String &day, const String &start, String *ow
   return false;
 }
 
-// --- handlers ---
-
-// GET /schedules  - grilla (solo lectura)
+// GET /schedules
+// Muestra la tabla de horarios (solo lectura).
 void handleSchedulesGrid() {
   auto schedules = loadSchedules();
   String html = htmlHeader("Horarios - Grilla");
@@ -72,14 +56,15 @@ void handleSchedulesGrid() {
   server.send(200, "text/html", html);
 }
 
-// GET /schedules/edit - editor global (permite asignar y eliminar cualquier materia)
+// GET /schedules/edit
+// Editor global: permite asignar o eliminar cualquier materia en cualquier slot.
 void handleSchedulesEditGrid() {
   auto schedules = loadSchedules();
   String html = htmlHeader("Horarios - Editar (Global)");
   html += "<div class='card'><h2>Editar horarios (Global)</h2>";
   html += "<p class='small'>Seleccione una materia registrada para asignar al slot vacío, o elimine materias asignadas. Aquí puede editar cualquier slot globalmente.</p>";
 
-  // DIV para mensajes extra (no obligatorio, alert() es la capa principal)
+  // Mensaje auxiliar
   html += "<div id='schedules_msg' style='display:none;color:#b00020;margin-bottom:8px;font-weight:600;'></div>";
 
   html += "<table><tr><th>Hora</th>";
@@ -103,6 +88,7 @@ void handleSchedulesEditGrid() {
       }
       html += "<td>";
       if (occupied) {
+        // Mostrar materia asignada y botón eliminar
         html += "<div>" + cell + "</div><div style='margin-top:6px'>"
                 "<form method='POST' action='/schedules_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
                 "<input type='hidden' name='materia' value='" + cell + "'>"
@@ -111,7 +97,7 @@ void handleSchedulesEditGrid() {
                 "<input class='btn btn-red' type='submit' value='Eliminar'>"
                 "</form></div>";
       } else {
-        // Agrego onsubmit con validateSelect y required en select para forzar validación en la mayoría de navegadores.
+        // Form para agregar materia al slot libre
         html += "<form method='POST' action='/schedules_add_slot' style='display:inline' onsubmit='return validateSelect(this)'>";
         html += "<input type='hidden' name='day' value='" + day + "'>";
         html += "<input type='hidden' name='start' value='" + start + "'>";
@@ -132,7 +118,7 @@ void handleSchedulesEditGrid() {
 
   html += "</table>";
 
-  // Script de validación: validateSelect + listener como respaldo
+  // Cliente: valida que se seleccione una materia antes de enviar
   html += "<script>"
           "function validateSelect(form){"
           "  try{"
@@ -144,20 +130,18 @@ void handleSchedulesEditGrid() {
           "  }catch(e){}"
           "  return true;"
           "}"
-          // respaldo: attach listeners a todos los forms action=/schedules_add_slot por si algún navegador ignora onsubmit inline
+          // Respaldo: añadir listeners a forms para evitar que navegadores ignoren onsubmit
           "document.addEventListener('DOMContentLoaded', function(){"
           "  try{"
           "    var forms = document.querySelectorAll('form[action=\"/schedules_add_slot\"]');"
           "    for(var i=0;i<forms.length;i++){"
           "      (function(f){"
           "        if(!f) return;"
-          "        // si el form no tiene onsubmit definido, lo agregamos"
           "        if(!f.onsubmit){"
           "          f.addEventListener('submit', function(ev){"
           "            try{ var sel = f.materia; if(!sel || !sel.value || sel.value.trim()===''){ ev.preventDefault(); alert('Por favor seleccione una materia antes de agregar.'); return false;} }catch(e){}"
           "          });"
           "        }"
-          "        // limpiamos mensaje si el usuario cambia seleccion"
           "        var sel2 = f.materia; if(sel2) sel2.addEventListener('change', function(){ var md = document.getElementById('schedules_msg'); if(md){ md.style.display='none'; md.textContent=''; } });"
           "      })(forms[i]);"
           "    }"
@@ -173,7 +157,8 @@ void handleSchedulesEditGrid() {
   server.send(200, "text/html", html);
 }
 
-// POST /schedules_add_slot - agregar (global, selecciona materia)
+// POST /schedules_add_slot
+// Añade un slot global si los datos son válidos y el slot está libre.
 void handleSchedulesAddSlot() {
   if (!server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end") || !server.hasArg("materia")) {
     server.send(400, "text/plain", "faltan parametros"); return;
@@ -199,13 +184,14 @@ void handleSchedulesAddSlot() {
     return;
   }
 
-  // añade (función addScheduleSlot del proyecto; puede ser void)
+  // Llama a addScheduleSlot (persistencia en archivo)
   addScheduleSlot(materia, day, start, end);
   server.sendHeader("Location", "/schedules/edit");
   server.send(303, "text/plain", "Agregado");
 }
 
-// POST /schedules_del - eliminar (global)
+// POST /schedules_del
+// Elimina un horario global (coincidente materia+day+start).
 void handleSchedulesDel() {
   if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -225,7 +211,7 @@ void handleSchedulesDel() {
     String l = f.readStringUntil('\n'); l.trim();
     if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue; // skip (delete)
+    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue; 
     lines.push_back(l);
   }
   f.close();
@@ -235,7 +221,9 @@ void handleSchedulesDel() {
 }
 
 // --- Editor por materia (restringido) ---
+
 // GET /schedules_for?materia=...
+// Muestra y permite gestionar horarios únicamente para la materia dada.
 void handleSchedulesForMateriaGET() {
   if (!server.hasArg("materia")) { server.send(400, "text/plain", "materia required"); return; }
   String materia = server.arg("materia"); materia.trim();
@@ -245,7 +233,7 @@ void handleSchedulesForMateriaGET() {
   String title = "Horarios - " + materia;
   String html = htmlHeader(title.c_str());
   html += "<div class='card'><h2>Horarios para: " + materia + "</h2>";
-  html += "<p class='small'>Aquí puede agregar o eliminar horarios únicamente para la materia seleccionada.</p>";
+  html += "<p class='small'>Aquí puede agregar o eliminar horarios únicamente por materia.</p>";
 
   html += "<div class='filters'>"
           "<input id='sf_day' placeholder='Filtrar día (LUN/MAR/...)'>"
@@ -266,6 +254,7 @@ void handleSchedulesForMateriaGET() {
   }
   html += "</table>";
 
+  // Form para añadir horario a la materia
   html += "<h3>Añadir horario para " + materia + "</h3>";
   html += "<form method='POST' action='/schedules_for_add'>";
   html += "<input type='hidden' name='materia' value='" + materia + "'>";
@@ -275,6 +264,7 @@ void handleSchedulesForMateriaGET() {
   html += "<input class='btn btn-green' type='submit' value='Agregar horario'>";
   html += "</form>";
 
+  // Cliente: filtros simples para la tabla por materia
   html += "<script>"
           "function applySchedFilters(){ const table=document.getElementById('sched_mat_table'); if(!table) return; const fd=document.getElementById('sf_day').value.trim().toLowerCase(); const ft=document.getElementById('sf_time').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; const day=row.cells[0].textContent.toLowerCase(); const start=row.cells[1].textContent.toLowerCase(); const ok=(day.indexOf(fd)!==-1)&&(start.indexOf(ft)!==-1); row.style.display = ok ? '' : 'none'; } }"
           "function clearSchedFilters(){ document.getElementById('sf_day').value=''; document.getElementById('sf_time').value=''; applySchedFilters(); }"
@@ -287,7 +277,8 @@ void handleSchedulesForMateriaGET() {
   server.send(200, "text/html", html);
 }
 
-// POST /schedules_for_add - agrega horario para una materia (solo si libre)
+// POST /schedules_for_add
+// Agrega horario para la materia si el slot está libre.
 void handleSchedulesForMateriaAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
     server.send(400, "text/plain", "faltan parametros"); return;
@@ -314,7 +305,8 @@ void handleSchedulesForMateriaAddPOST() {
   server.send(303, "text/plain", "Agregado");
 }
 
-// POST /schedules_for_del - elimina horario (solo si pertenece a la materia solicitante)
+// POST /schedules_for_del
+// Elimina un horario solo si pertenece a la materia solicitante.
 void handleSchedulesForMateriaDelPOST() {
   if (!server.hasArg("materia") || !server.hasArg("day") || !server.hasArg("start")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -339,7 +331,7 @@ void handleSchedulesForMateriaDelPOST() {
     String l = f.readStringUntil('\n'); l.trim();
     if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue;
+    if (c.size() >= 4 && c[0] == mat && c[1] == day && c[2] == start) continue; 
     lines.push_back(l);
   }
   f.close();

@@ -1,4 +1,3 @@
-// src/rfid_handler.cpp
 #include <Arduino.h>
 #include <SPI.h>
 #include <FS.h>
@@ -6,10 +5,7 @@
 #include <MFRC522.h>
 #include "globals.h"
 #include "files_utils.h"
-#include "display.h" // showWaitingMessage, showAccessGranted, showAccessDenied, led* functions
-
-// Nota: nowISO(), uidBytesToString(), currentScheduledMateria(), addNotification(), appendLineToFile()
-// y demás utilidades están implementadas en otros módulos (time_utils.cpp, files_utils.cpp, etc.)
+#include "display.h" 
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
@@ -38,13 +34,19 @@ static String joinMats(const std::vector<String> &mats) {
   return out;
 }
 
-// Helper: devuelve lowercase copy (no modifica original)
+// Helper: devuelve lowercase copy 
 static String lowerCopy(const String &s) {
   String t = s;
   t.toLowerCase();
   return t;
 }
 
+// Handler principal para eventos RFID:
+// - detecta tarjeta, lee UID
+// - si está en captureMode almacena datos para registro manual
+// - busca filas de usuario en USERS_FILE (puede haber varias materias)
+// - decide: denegar (no registrado), permitir según horario, o permitir fuera de horario
+// - registra asistencias, denied.csv y notificaciones; controla servo y UI
 void rfidLoopHandler() {
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial()) return;
@@ -57,6 +59,7 @@ void rfidLoopHandler() {
   Serial.printf("Tarjeta detectada UID=%s\n", uid.c_str());
 
   // --- MODO CAPTURA (registro manual) ---
+  // Si captureMode activo, guarda UID y info encontrada y no procesa entrada.
   if (captureMode) {
     if (captureUID.length() == 0 || (now - captureDetectedAt) > CAPTURE_DEBOUNCE_MS) {
       captureUID = uid;
@@ -115,7 +118,7 @@ void rfidLoopHandler() {
     return;
   }
 
-  // --- DEBUG: imprimir info de schedules y día actual (ayuda a encontrar mismatch en formato/día) ---
+  // --- DEBUG: imprimir info de schedules y día actual ---
   {
     struct tm tm_now;
     if (getLocalTime(&tm_now)) {
@@ -138,7 +141,7 @@ void rfidLoopHandler() {
 
   // --- Materia actual según horario (owner tal cual: puede ser 'Materia' o 'Materia||Profesor') ---
   String scheduleOwner = currentScheduledMateria(); // devuelve la parte materia (time_utils lo normaliza)
-  String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner); // por seguridad
+  String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner); 
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 

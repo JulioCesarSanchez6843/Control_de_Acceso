@@ -1,7 +1,5 @@
 #pragma once
-// files_utils.h
 // Declaraciones públicas de utilidades de archivos usadas por el proyecto.
-
 #include <vector>
 #include <Arduino.h>
 #include <FS.h>

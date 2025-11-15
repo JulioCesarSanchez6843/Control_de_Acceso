@@ -1,11 +1,11 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
-#include "rfid_handler.h"  // for nowISO()
+#include "rfid_handler.h"  
 #include <SPIFFS.h>
 #include <algorithm>
 
-// --- CSV parsing ---
+// --- Parseo CSV (líneas con campos entre comillas) ---
 std::vector<String> parseQuotedCSVLine(const String &line) {
   std::vector<String> cols;
   int i = 0;
@@ -28,7 +28,7 @@ std::vector<String> parseQuotedCSVLine(const String &line) {
   return cols;
 }
 
-// Append a line to a file. Return true on success.
+// Añade una línea al final de un archivo. True si tiene éxito.
 bool appendLineToFile(const char *path, const String &line) {
   File f = SPIFFS.open(path, FILE_APPEND);
   if (!f) {
@@ -40,7 +40,7 @@ bool appendLineToFile(const char *path, const String &line) {
   return true;
 }
 
-// Write all lines (overwrite). Return true on success.
+// Sobrescribe un archivo con todas las líneas dadas. True si tiene éxito.
 bool writeAllLines(const char *path, const std::vector<String> &lines) {
   File f = SPIFFS.open(path, FILE_WRITE);
   if (!f) {
@@ -52,6 +52,7 @@ bool writeAllLines(const char *path, const std::vector<String> &lines) {
   return true;
 }
 
+// Crea archivos CSV básicos si no existen (cabeceras).
 void initFiles() {
   if (!SPIFFS.exists(USERS_FILE)) {
     File f = SPIFFS.open(USERS_FILE, FILE_WRITE);
@@ -97,7 +98,8 @@ void initFiles() {
   }
 }
 
-// --- schedules ---
+// --- Horarios (schedules) ---
+// Carga todas las entradas de SCHEDULES_FILE y las devuelve.
 std::vector<ScheduleEntry> loadSchedules() {
   std::vector<ScheduleEntry> res;
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -116,6 +118,7 @@ std::vector<ScheduleEntry> loadSchedules() {
   return res;
 }
 
+// Comprueba si ya existe un slot para día+hora.
 bool slotOccupied(const String &day, const String &start, const String &materiaFilter) {
   auto v = loadSchedules();
   for (auto &e : v) {
@@ -125,12 +128,14 @@ bool slotOccupied(const String &day, const String &start, const String &materiaF
   return false;
 }
 
+// Añade una entrada de horario al CSV de schedules.
 void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end) {
   String line = "\"" + materia + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + end + "\"";
   appendLineToFile(SCHEDULES_FILE, line);
 }
 
-// --- courses ---
+// --- Cursos (courses) ---
+// Carga cursos desde COURSES_FILE y los devuelve.
 std::vector<Course> loadCourses() {
   std::vector<Course> res;
   File f = SPIFFS.open(COURSES_FILE, FILE_READ);
@@ -149,6 +154,7 @@ std::vector<Course> loadCourses() {
   return res;
 }
 
+// Devuelve true si la materia ya existe en cursos.
 bool courseExists(const String &materia) {
   if (materia.length() == 0) return false;
   auto v = loadCourses();
@@ -156,21 +162,24 @@ bool courseExists(const String &materia) {
   return false;
 }
 
+// Añade un curso con timestamp actual.
 void addCourse(const String &materia, const String &prof) {
   String rec = "\"" + materia + "\"," + "\"" + prof + "\"," + "\"" + nowISO() + "\"";
   appendLineToFile(COURSES_FILE, rec);
 }
 
+// Sobrescribe el CSV de cursos con la lista proporcionada.
 void writeCourses(const std::vector<Course> &list) {
   std::vector<String> lines;
   lines.push_back("\"materia\",\"profesor\",\"created_at\"");
   for (auto &c : list)
     lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
-  // writeAllLines now returns bool; ignore return here (but it could be checked by caller)
+  // writeAllLines ahora devuelve bool; se omite la comprobación aquí.
   writeAllLines(COURSES_FILE, lines);
 }
 
-// --- users/helpers ---
+// --- Usuarios ---
+// Busca cualquier fila de usuario cuyo UID coincida; devuelve la línea CSV completa o "".
 String findAnyUserByUID(const String &uid) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return "";
@@ -184,6 +193,7 @@ String findAnyUserByUID(const String &uid) {
   return "";
 }
 
+// Comprueba existencia de usuario por UID + materia.
 bool existsUserUidMateria(const String &uid, const String &materia) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
@@ -197,6 +207,7 @@ bool existsUserUidMateria(const String &uid, const String &materia) {
   return false;
 }
 
+// Comprueba existencia de usuario por account + materia.
 bool existsUserAccountMateria(const String &account, const String &materia) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
@@ -210,6 +221,7 @@ bool existsUserAccountMateria(const String &account, const String &materia) {
   return false;
 }
 
+// Devuelve todas las líneas de usuarios que pertenecen a una materia.
 std::vector<String> usersForMateria(const String &materia) {
   std::vector<String> res;
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -225,12 +237,14 @@ std::vector<String> usersForMateria(const String &materia) {
   return res;
 }
 
-// --- notifications ---
+// --- Notificaciones ---
+// Añade una notificación al CSV con timestamp ahora.
 void addNotification(const String &uid, const String &name, const String &account, const String &note) {
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + note + "\"";
   appendLineToFile(NOTIF_FILE, rec);
 }
 
+// Lee todas las notificaciones y devuelve las últimas `limit`.
 std::vector<String> readNotifications(int limit) {
   std::vector<String> res;
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
@@ -247,6 +261,7 @@ std::vector<String> readNotifications(int limit) {
   return out;
 }
 
+// Cuenta las notificaciones (excluye cabecera).
 int notifCount() {
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   if (!f) return 0;
@@ -259,6 +274,7 @@ int notifCount() {
   return count;
 }
 
+// Restaura el CSV de notificaciones a la cabecera (borra todo).
 void clearNotifications() {
   writeAllLines(NOTIF_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"")});
 }

@@ -1,28 +1,15 @@
-// src/time_utils.cpp
-// Implementaciones: nowISO(), uidBytesToString(), currentScheduledMateria()
-// + utilidades para ajustar la hora manualmente.
-// Nota: este módulo aplica un offset fijo (LOCAL_TZ_OFFSET_SEC) sobre el epoch
-// para obtener la "hora local" sin depender de tzdata del sistema.
-
 #include <Arduino.h>
 #include "globals.h"
 #include <time.h>
-#include <sys/time.h> // settimeofday
+#include <sys/time.h> 
 
-// ---------------- CONFIG (ajusta si cambias de zona) ----------------
-// Usar offset fijo en segundos respecto a UTC.
-// Toluca / Ciudad de México: UTC-6 -> -6 * 3600 = -21600
-// Si necesitas UTC-5 usa -18000, UTC+1 usa 3600, etc.
-static const long LOCAL_TZ_OFFSET_SEC = -6L * 3600L;
-// --------------------------------------------------------------------
+// Offset fijo en segundos respecto a UTC (ajustar según zona).
+static const long LOCAL_TZ_OFFSET_SEC = -6L * 3600L; // UTC-6
 
-// nowISO: devuelve fecha/hora local en formato "YYYY-MM-DD HH:MM:SS"
-// Nota: calcula la hora local a partir del epoch (time(nullptr)) aplicando LOCAL_TZ_OFFSET_SEC
+// nowISO: devuelve "YYYY-MM-DD HH:MM:SS" de la hora local (aplica offset fijo).
 String nowISO() {
   time_t epoch = time(nullptr);
-  // ajustar por offset fijo
   time_t local_epoch = epoch + LOCAL_TZ_OFFSET_SEC;
-  // convertir a tm en UTC (puesto que ya aplicamos offset manual)
   struct tm tm_local;
 #if defined(_MSC_VER)
   gmtime_s(&tm_local, &local_epoch);
@@ -35,7 +22,7 @@ String nowISO() {
   return String(buf);
 }
 
-// uidBytesToString: convierte bytes UID a string hex (mayúsculas, sin separadores)
+// uidBytesToString: convierte UID bytes a cadena hex (mayúsculas, sin separadores).
 String uidBytesToString(byte *uid, byte len) {
   String s = "";
   for (byte i = 0; i < len; i++) {
@@ -47,7 +34,7 @@ String uidBytesToString(byte *uid, byte len) {
   return s;
 }
 
-// Helper: parse "HH:MM" permisivo -> devuelve true si parseó y llena sh,sm
+// parseHHMMPermissive: parsea "HH:MM" flexible; devuelve true y llena outH/outM.
 static bool parseHHMMPermissive(const String &t, int &outH, int &outM) {
   String s = t;
   s.trim();
@@ -59,7 +46,6 @@ static bool parseHHMMPermissive(const String &t, int &outH, int &outM) {
   if (hs.length() == 0 || ms.length() == 0) return false;
   int h = hs.toInt();
   int m = ms.toInt();
-  // sanity checks
   if (h < 0 || h > 23) return false;
   if (m < 0 || m > 59) return false;
   outH = h;
@@ -67,10 +53,8 @@ static bool parseHHMMPermissive(const String &t, int &outH, int &outM) {
   return true;
 }
 
-// currentScheduledMateria: determina la materia activa según la hora local y schedules
-// Retorna la parte "materia" de s.materia (si s.materia es "Materia||Profesor", retorna "Materia").
+// currentScheduledMateria: devuelve la materia activa según schedules y hora local.
 String currentScheduledMateria() {
-  // Obtenemos epoch UTC y convertimos a hora local usando offset fijo
   time_t epoch = time(nullptr);
   time_t local_epoch = epoch + LOCAL_TZ_OFFSET_SEC;
   struct tm tm_now;
@@ -80,7 +64,7 @@ String currentScheduledMateria() {
   gmtime_r(&local_epoch, &tm_now);
 #endif
 
-  // Debug: imprime hora UTC y local (en Serial) para verificar
+  // Debug: muestra UTC/local y weekday.
   {
     char bufUtc[32], bufLocal[32];
     time_t utc_epoch = epoch;
@@ -96,15 +80,15 @@ String currentScheduledMateria() {
                   bufUtc, (long)LOCAL_TZ_OFFSET_SEC, bufLocal, tm_now.tm_wday);
   }
 
-  int wday = tm_now.tm_wday; // 0=domingo,1=lunes,...6=sábado
+  int wday = tm_now.tm_wday; 
   int dayIndex = -1;
-  if (wday >= 1 && wday <= 6) dayIndex = wday - 1; // map lunes..sab -> 0..5
+  if (wday >= 1 && wday <= 6) dayIndex = wday - 1; 
   if (dayIndex < 0) return String();
 
   int nowMin = tm_now.tm_hour * 60 + tm_now.tm_min;
   auto schedules = loadSchedules();
 
-  // Debug: cuántos schedules cargados
+  // Debug: lista de schedules cargados.
   Serial.printf("DEBUG schedules loaded: %d\n", (int)schedules.size());
   for (auto &s : schedules) {
     Serial.printf("  sched owner='%s' day='%s' start='%s' end='%s'\n",
@@ -140,31 +124,25 @@ String currentScheduledMateria() {
   return String();
 }
 
-// ---------------------------
-// Funciones para setear hora manualmente (desde PC o script).
-// ---------------------------
-
-// setTimeFromEpoch: ajusta el reloj del sistema (epoch = segundos desde 1970 UTC)
-// Además ajusta la hora local internamente (no cambia LOCAL_TZ_OFFSET_SEC).
+// setTimeFromEpoch: ajusta el reloj del sistema al epoch proporcionado (UTC).
 void setTimeFromEpoch(uint32_t epoch_seconds) {
   struct timeval tv;
   tv.tv_sec = (time_t)epoch_seconds;
   tv.tv_usec = 0;
   if (settimeofday(&tv, nullptr) == 0) {
-    // pequeño delay para que time() y gmtime_r lean la nueva hora
-    delay(10);
+    delay(10); // permitir que time() se actualice
   } else {
     Serial.println("WARN: settimeofday falló.");
   }
 }
 
-// Devuelve epoch actual (segundos) según reloj del sistema
+// getEpochNow: devuelve epoch actual (segundos).
 uint32_t getEpochNow() {
   time_t t = time(nullptr);
   return (uint32_t)t;
 }
 
-// Imprime hora local legible por Serial (usa nowISO())
+// printLocalTimeToSerial: imprime nowISO() por Serial.
 void printLocalTimeToSerial() {
   Serial.println(nowISO());
 }

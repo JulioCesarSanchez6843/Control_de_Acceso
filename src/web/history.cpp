@@ -5,7 +5,7 @@
 #include "globals.h"
 #include <SPIFFS.h>
 
-// /history (GET)
+// Muestra página con historial de accesos y filtros; permite descarga y borrado.
 void handleHistoryPage() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
   String profFilter = server.hasArg("profesor") ? server.arg("profesor") : String();
@@ -18,7 +18,7 @@ void handleHistoryPage() {
           "Aquí puede ver cuándo y quién ha sido registrado, junto con la materia correspondiente. "
           "Importante: Al borrar todo el historial, también se reiniciarán las listas de asistencia de las materias.</p>";
 
-  // Filtros
+  // Filtros (cliente)
   html += "<div class='filters'>";
   html += "<input id='hf_materia' placeholder='Filtrar por materia' value='" + materiaFilter + "'>";
   html += "<input id='hf_prof' placeholder='Filtrar por profesor' value='" + profFilter + "'>";
@@ -27,21 +27,24 @@ void handleHistoryPage() {
   html += "<button class='search-btn btn btn-green' onclick='clearHistoryFilters()'>Limpiar</button>";
   html += "</div>";
 
-  // Botones de acción
+  // Acciones: descargar CSV completo / borrar historial / volver
   html += "<p style='margin-top:8px'>";
   html += "<a class='btn btn-green' href='/history.csv'>📥 Descargar todo el historial del laboratorio</a> ";
   html += "<form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'>";
   html += "<input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> ";
   html += "<a class='btn btn-blue' href='/'>Inicio</a></p>";
 
+  // Abrir archivo de attendance
   File f = SPIFFS.open(ATT_FILE, FILE_READ);
   if (!f) { 
+    // Si no existe o no se puede abrir, mostrar mensaje
     html += "<p>No hay historial.</p>"; 
     html += htmlFooter(); 
     server.send(200,"text/html",html); 
     return; 
   }
 
+  // Tabla con registros
   String header = f.readStringUntil('\n');
   html += "<table id='history_table'><tr><th>Timestamp</th><th>Nombre</th><th>Cuenta</th><th>Materia</th><th>Modo</th></tr>";
   while (f.available()) {
@@ -53,7 +56,7 @@ void handleHistoryPage() {
     String mat = (c.size()>4?c[4]:"");
     String mode = (c.size()>5?c[5]:"");
 
-    // Filtrado por profesor
+    // Filtrado por profesor 
     if (profFilter.length()) {
       bool okProf=false;
       auto courses = loadCourses();
@@ -62,6 +65,7 @@ void handleHistoryPage() {
       }
       if (!okProf) continue;
     }
+    // Filtrado por materia 
     if (materiaFilter.length() && mat != materiaFilter) continue;
 
     html += "<tr><td>" + ts + "</td><td>" + name + "</td><td>" + acc + "</td><td>" + mat + "</td><td>" + mode + "</td></tr>";
@@ -69,7 +73,7 @@ void handleHistoryPage() {
   f.close();
   html += "</table>";
 
-  // Scripts de filtros
+  // Scripts cliente para filtrar la tabla sin recargar
   html += "<script>"
           "function applyHistoryFilters(){ "
           "const table=document.getElementById('history_table'); if(!table) return; "
@@ -96,7 +100,7 @@ void handleHistoryPage() {
   server.send(200,"text/html",html);
 }
 
-// /history.csv (GET) - opcion ?materia=... & ?date=YYYY-MM-DD
+// /history.csv (GET) - Genera y envía CSV filtrado opcionalmente por materia y/o fecha.
 void handleHistoryCSV() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
   String dateFilter = server.hasArg("date") ? server.arg("date") : String();
@@ -111,7 +115,7 @@ void handleHistoryCSV() {
     String mat = (c.size()>4?c[4]:"");
     if (materiaFilter.length() && mat != materiaFilter) continue;
     if (dateFilter.length()) {
-      if (ts.indexOf(dateFilter) != 0) continue;
+      if (ts.indexOf(dateFilter) != 0) continue; // compara prefijo YYYY-MM-DD
     }
     out += l + "\r\n";
   }
@@ -120,14 +124,14 @@ void handleHistoryCSV() {
   server.send(200,"text/csv",out);
 }
 
-// /history_clear (POST)
+// /history_clear (POST) - Borra (resetea) el archivo de attendance dejando solo la cabecera.
 void handleHistoryClearPOST() {
   writeAllLines(ATT_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"")});
   server.sendHeader("Location","/history"); 
   server.send(303,"text/plain","Historial borrado");
 }
 
-// /materia_history (GET)
+// /materia_history (GET) - Lista fechas con registros para una materia y permite descargar por día.
 void handleMateriaHistoryGET() {
   if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
   String materia = server.arg("materia");
@@ -141,7 +145,7 @@ void handleMateriaHistoryGET() {
       auto c = parseQuotedCSVLine(l);
       if (c.size()>4 && c[4]==materia) {
         String ts = c[0];
-        String day = ts.substring(0,10);
+        String day = ts.substring(0,10); // extraer YYYY-MM-DD
         bool found=false;
         for (auto &d : dates) if (d==day) { found=true; break; }
         if (!found) dates.push_back(day);
@@ -156,6 +160,7 @@ void handleMateriaHistoryGET() {
   else {
     html += "<ul>";
     for (auto &d : dates) {
+      // Enlace descarga filtrada por materia+fecha
       html += "<li>" + d + " <a class='btn btn-blue' href='/history.csv?materia=" + materia + "&date=" + d + "'>⬇️ Descargar CSV</a></li>";
     }
     html += "</ul>";

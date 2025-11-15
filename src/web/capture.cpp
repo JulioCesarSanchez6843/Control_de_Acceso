@@ -1,4 +1,3 @@
-// src/web/capture.cpp
 #include "capture.h"
 #include "globals.h"
 #include "web_common.h"
@@ -7,14 +6,14 @@
 #include <SPIFFS.h>
 #include <ctype.h>
 
-// Variables externas (asegúrate que en globals.h estén declaradas como "extern volatile bool captureMode;" etc.)
+// Variables externas
 extern volatile bool captureMode;
 extern String captureUID;
 extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
-// Página de captura manual con confirmación
+// Página de captura manual: activa modo captura y sirve el formulario.
 void handleCapturePage() {
   captureMode = true;
   captureUID = "";
@@ -50,7 +49,7 @@ void handleCapturePage() {
 
   html += "</form>";
 
-  // Script de autocompletado y validación (inyectado como raw literal)
+  // Script de autocompletado y polling para UID detectado.
   html += R"rawliteral(
   <script>
   function isAccountValid(s){ return /^[0-9]{7}$/.test(s); }
@@ -84,7 +83,7 @@ void handleCapturePage() {
   server.send(200, "text/html", html);
 }
 
-// Manejo de polling para UID detectado
+// Polling: responde si hay UID detectado y datos autocompletos.
 void handleCapturePoll() {
   if (captureUID.length() == 0) {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
@@ -102,7 +101,7 @@ void handleCapturePoll() {
   server.send(200, "application/json", j);
 }
 
-// Confirmación manual (POST)
+// Confirmación manual (POST): valida campos y registra usuario y attendance.
 void handleCaptureConfirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("materia")) {
@@ -129,7 +128,7 @@ void handleCaptureConfirm() {
     return;
   }
 
-  // Validar duplicado solo dentro de la misma materia
+  // Evitar duplicados en misma materia.
   if (existsUserUidMateria(uid, materia) || existsUserAccountMateria(account, materia)) {
     captureMode = false;
     String html = htmlHeader("Duplicado detectado");
@@ -143,7 +142,7 @@ void handleCaptureConfirm() {
     return;
   }
 
-  // Registrar nuevo usuario (intentar guardar y comprobar éxito)
+  // Guardar nuevo usuario y registrar captura en attendance.
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," +
                 "\"" + materia + "\"," + "\"" + created + "\"";
@@ -159,13 +158,13 @@ void handleCaptureConfirm() {
     return;
   }
 
+  // Reset modo captura y mostrar confirmación.
   captureMode = false;
   captureUID = "";
   captureName = "";
   captureAccount = "";
   captureDetectedAt = 0;
 
-  // Confirmación visual con dos botones: Inicio (azul) y Capturar otro (verde)
   String html = htmlHeader("Registrado correctamente");
   html += "<div class='card'><h3>✅ Usuario registrado correctamente.</h3>";
   html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
@@ -176,6 +175,7 @@ void handleCaptureConfirm() {
   server.send(200,"text/html",html);
 }
 
+// Detiene modo captura y redirige a inicio.
 void handleCaptureStopGET() {
   captureMode = false;
   captureUID = "";
@@ -186,18 +186,15 @@ void handleCaptureStopGET() {
   server.send(303, "text/plain", "stopped");
 }
 
-// ---------------- NUEVO: edición de alumno (desde Students) ----------------
-// Rutas:
-//  GET  /capture_edit?uid=XXXX&return_to=/students_all   -> mostrar formulario de edición
-//  POST /capture_edit_post (uid,name,account,materia,return_to) -> guardar y redirigir a return_to
-//
+// ---------------- Edición de alumno desde Students ----------------
 
+// Sanitiza return_to: solo rutas internas que empiecen por '/'
 static String sanitizeReturnTo(const String &rt) {
-  // evita redirecciones a dominios externos: solo aceptar rutas que empiecen por '/'
   if (rt.length() > 0 && rt[0] == '/') return rt;
   return String("/students_all");
 }
 
+// Muestra formulario de edición para un UID dado.
 void handleCaptureEditPage() {
   if (!server.hasArg("uid")) { server.send(400, "text/plain", "uid required"); return; }
   String uid = server.arg("uid");
@@ -226,7 +223,7 @@ void handleCaptureEditPage() {
   f.close();
   if (!found) { server.send(404, "text/plain", "Alumno no encontrado"); return; }
 
-  // Construir formulario de edición
+  // Construir formulario de edición prellenado.
   String html = htmlHeader("Editar Alumno");
   html += "<div class='card'><h2>Editar Usuario</h2>";
 
@@ -243,7 +240,7 @@ void handleCaptureEditPage() {
   html += "<label>Cuenta:</label><br>";
   html += "<input name='account' required maxlength='7' minlength='7' value='" + foundAccount + "'><br><br>";
 
-  // Materia: mostrar select con materias y seleccionar la actual
+  // Materia: select con la materia actual seleccionada.
   auto courses2 = loadCourses();
   html += "<label>Materia:</label><br><select name='materia'>";
   html += "<option value=''>-- Ninguna --</option>";
@@ -265,8 +262,8 @@ void handleCaptureEditPage() {
   server.send(200, "text/html", html);
 }
 
+// Procesa POST de edición: valida, reescribe USERS_FILE y redirige.
 void handleCaptureEditPost() {
-  // Esperamos: uid, name, account, materia (opcional), return_to
   if (!server.hasArg("uid") || !server.hasArg("name") || !server.hasArg("account") || !server.hasArg("return_to")) {
     server.send(400, "text/plain", "Faltan parámetros");
     return;
@@ -285,13 +282,13 @@ void handleCaptureEditPost() {
     if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
   }
 
-  // Si se seleccionó materia, verificar que exista
+  // Si se seleccionó materia, verificar que exista.
   if (materia.length() > 0 && !courseExists(materia)) {
     server.send(400, "text/plain", "La materia seleccionada no existe");
     return;
   }
 
-  // Leer todo USERS_FILE y reescribir con la modificación
+  // Leer USERS_FILE y construir nuevo contenido con la fila actualizada.
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) { server.send(500, "text/plain", "No se pudo abrir archivo de usuarios"); return; }
 
@@ -318,18 +315,16 @@ void handleCaptureEditPost() {
   f.close();
 
   if (!updated) {
-    // No encontramos UID; error
     server.send(404, "text/plain", "Alumno no encontrado");
     return;
   }
 
-  // Escribir archivo (writeAllLines debe devolver bool)
+  // Guardar cambios y redirigir.
   if (!writeAllLines(USERS_FILE, lines)) {
     server.send(500, "text/plain", "Error guardando usuarios");
     return;
   }
 
-  // Redirigir a la página que indicó return_to
   server.sendHeader("Location", return_to);
   server.send(303, "text/plain", "Updated");
 }

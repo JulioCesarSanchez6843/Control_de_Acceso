@@ -11,6 +11,6 @@ void handleRoot();
 void handleStatus();
 void registerRoutes();
 
-// 🔹 Declaraciones de validación (solo se declaran aquí)
+// Declaraciones de validación 
 bool existsUserUidMateria(const String& uid, const String& materia);
 bool existsUserAccountMateria(const String& account, const String& materia);

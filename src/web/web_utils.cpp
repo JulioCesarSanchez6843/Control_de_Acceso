@@ -1,5 +1,6 @@
 #include "web_utils.h"
 
+// Escapa comillas dobles para CSV ("" dentro de un campo entre comillas)
 String csvEscape(const String &s) {
   String out;
   out.reserve(s.length() + 4);
@@ -10,6 +11,7 @@ String csvEscape(const String &s) {
   return out;
 }
 
+// Escapa caracteres especiales para HTML (& < > " ')
 String htmlEscape(const String &s) {
   String o; o.reserve(s.length() + 8);
   for (size_t i=0;i<s.length();++i) {
@@ -24,6 +26,7 @@ String htmlEscape(const String &s) {
   return o;
 }
 
+// Escapa para uso en JSON: backslash, comillas y saltos de línea
 String jsonEscape(const String &s) {
   String o; o.reserve(s.length() + 8);
   for (size_t i=0;i<s.length();++i) {
@@ -35,6 +38,7 @@ String jsonEscape(const String &s) {
   return o;
 }
 
+// Formatea hora en entero a "HH:00" (ej. 7 -> "07:00")
 String hhmm(int h) {
   char buf[8];
   snprintf(buf, sizeof(buf), "%02d:00", h);

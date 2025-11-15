@@ -7,6 +7,7 @@
 #include "files_utils.h"
 
 // GET /edit?uid=...
+// Muestra formulario para editar usuario identificado por UID.
 void handleEditGet() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","uid required"); return; }
   String uid = server.arg("uid");
@@ -35,6 +36,7 @@ void handleEditGet() {
 }
 
 // POST /edit_post
+// Recibe formulario de edición, valida y actualiza USERS_FILE reescribiéndolo.
 void handleEditPost() {
   if (!server.hasArg("orig_uid") || !server.hasArg("name") || !server.hasArg("account") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("orig_uid");

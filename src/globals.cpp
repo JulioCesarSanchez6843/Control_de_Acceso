@@ -13,8 +13,8 @@
 #endif
 
 // --- Config values (definiciones) ---
-const char* WIFI_SSID = "Totalplay-2.4G-1cc8";
-const char* WIFI_PASS = "pHh5XfaynxccRz5H";
+const char* WIFI_SSID = "RIUAEMex";
+const char* WIFI_PASS = "";
 const char* TZ = "America/Mexico_City";
 
 // --- Pins ---
@@ -26,7 +26,6 @@ const int TFT_RST   = 4;
 const int SERVO_PIN = 15;
 const int RGB_R_PIN = 25;
 const int RGB_G_PIN = 26;
-const int BUZZER_PIN = 0; // Si no usas buzzer, deja 0 o ajusta al pin correcto
 
 // --- Files (SPIFFS paths) ---
 const char* USERS_FILE     = "/users.csv";

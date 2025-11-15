@@ -8,6 +8,7 @@
 #include "config.h"
 
 // ==================== CABECERA HTML GLOBAL ====================
+// Construye la cabecera HTML común.
 String htmlHeader(const char* title) {
   int nCount = notifCount();
   String h = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
@@ -107,14 +108,14 @@ String htmlHeader(const char* title) {
   h += "</head><body>";
   h += "<div class='container'>";
 
-  // Barra superior
+  // Barra superior con título y notificaciones
   h += "<div class='topbar'><div style='display:flex;gap:12px;align-items:center'>";
   h += "<div class='title' onclick='location.href=\"/\"'>Control de Acceso - Laboratorio</div>";
   h += "<a class='notif' href='/notifications' title='Notificaciones'>🔔";
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
-  // Menú de navegación
+  // Menú de navegación principal
   h += "<div class='nav'>";
   h += "<a class='btn btn-blue' href='/capture'>🎴 Capturar</a>";
   h += "<a class='btn btn-blue' href='/schedules'>📅 Horarios</a>";
@@ -124,21 +125,23 @@ String htmlHeader(const char* title) {
   h += "<a class='btn btn-blue' href='/status'>🔧 Estado ESP</a>";
   h += "</div></div>";
 
-  // page-content wrapper (important: has bottom padding to avoid footer overlap)
+  // Contenedor principal (contenido de la página)
   h += "<div class='page-content'>";
 
   return h;
 }
 
 // ==================== PIE DE PÁGINA CON AUTORES ====================
+// Construye el footer fijo con autores del proyecto.
 String htmlFooter() {
-  String f = "</div>"; // Cierra .page-content
+  String f = "</div>"; 
   f += "<footer>Proyecto desarrollado por: Kevin González Gutiérrez • Julio César Sánchez Méndez • Dylan Adayr de la Rosa Ramos</footer>";
-  f += "</div></body></html>"; // Cierra .container + body + html
+  f += "</div></body></html>"; 
   return f;
 }
 
 // ==================== PÁGINA PRINCIPAL (INICIO) ====================
+// Handler para la ruta raíz: muestra panel principal con accesos rápidos.
 void handleRoot() {
   captureMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
@@ -154,6 +157,7 @@ void handleRoot() {
           "<a class='btn btn-blue' href='/schedules'>📅 Ver Horarios</a></div>";
   html += "</section>";
 
+  // Paneles con accesos a secciones principales
   html += "<section class='grid'>";
   html += "<div class='card'><span class='icon'>📚</span><h3>Gestión de Materias</h3>"
           "<p class='small'>Administra las materias del laboratorio, asigna horarios y controla qué alumnos pertenecen a cada una.</p>"
@@ -178,6 +182,7 @@ void handleRoot() {
 }
 
 // ==================== ESTADO DEL DISPOSITIVO ====================
+// Muestra información básica del ESP32: IP, uptime, memoria y conteo de usuarios.
 void handleStatus() {
   size_t total = SPIFFS.totalBytes();
   size_t used = SPIFFS.usedBytes();

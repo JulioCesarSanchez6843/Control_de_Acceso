@@ -1,5 +1,5 @@
 #pragma once
-// Handlers para páginas y acciones sobre alumnos
+
 #include <Arduino.h>
 
 void handleStudentsForMateria();
