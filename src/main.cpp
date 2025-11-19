@@ -43,7 +43,7 @@ static void printTimeInfo() {
   if (getLocalTime(&t)) {
     char buf[64];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
-    Serial.print("Hora local (nowISO): ");
+    Serial.print("Hora local (getLocalTime): ");
     Serial.println(buf);
   } else {
     Serial.println("getLocalTime() falló.");
@@ -55,25 +55,91 @@ static void printTimeInfo() {
   const char *tz = getenv("TZ");
   Serial.print("getenv(\"TZ\"): ");
   Serial.println(tz ? tz : "NULL");
-  Serial.print("WiFi status: ");
+  Serial.print("WiFi status (numeric): ");
   Serial.println(WiFi.status());
 }
 
-// Intenta conectar WiFi hasta timeout_ms; informa IP si tiene éxito o advierte si falla.
-void connectWiFiWithTimeout(unsigned long timeout_ms = 20000UL) {
-  Serial.printf("Conectando WiFi a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms/1000UL);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - t0) < timeout_ms) {
-    delay(250);
-    Serial.print(".");
+// Handler de eventos WiFi — imprime eventos (útil para depuración)
+static void wifiEvent(WiFiEvent_t event) {
+  Serial.print("WiFi event: ");
+  Serial.println((int)event);
+  switch (event) {
+    case SYSTEM_EVENT_STA_START: Serial.println("  -> SYSTEM_EVENT_STA_START"); break;
+    case SYSTEM_EVENT_STA_CONNECTED: Serial.println("  -> SYSTEM_EVENT_STA_CONNECTED"); break;
+    case SYSTEM_EVENT_STA_GOT_IP: Serial.println("  -> SYSTEM_EVENT_STA_GOT_IP"); break;
+    case SYSTEM_EVENT_STA_DISCONNECTED: Serial.println("  -> SYSTEM_EVENT_STA_DISCONNECTED"); break;
+    default: Serial.println("  -> (otro evento)"); break;
   }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println(String("WiFi OK - IP: ") + WiFi.localIP().toString());
+}
+
+// Conexión WiFi mejorada: scan + eventos + estado, con timeout.
+// Reemplaza tu función anterior por esta.
+void connectWiFiWithTimeout(unsigned long timeout_ms = 30000UL) {
+  Serial.printf("connectWiFiWithTimeout: intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms/1000UL);
+
+  // Registrar eventos
+  WiFi.onEvent(wifiEvent);
+
+  // Escanear redes visibles para diagnóstico (útil: ver si el AP está en 2.4GHz)
+  Serial.println("Escaneando redes WiFi visibles...");
+  int n = WiFi.scanNetworks();
+  if (n <= 0) {
+    Serial.println("  No se encontraron redes (scanNetworks returned 0).");
   } else {
-    Serial.println("WARN: No conectado a WiFi. NTP no funcionará sin conexión.");
+    Serial.printf("  %d redes encontradas:\n", n);
+    for (int i = 0; i < n; ++i) {
+      String ssid = WiFi.SSID(i);
+      int rssi = WiFi.RSSI(i);
+      int ch   = WiFi.channel(i);
+      wifi_auth_mode_t auth = WiFi.encryptionType(i);
+      const char* enc = (auth == WIFI_AUTH_OPEN) ? "OPEN" : "ENCRYPTED";
+      Serial.printf("   %02d: SSID='%s'  RSSI=%d dBm  CH=%d  %s\n", i+1, ssid.c_str(), rssi, ch, enc);
+    }
   }
+  WiFi.scanDelete();
+
+  // Preparar STA y limpiar estado previo
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true); // borrar estado anterior
+  delay(200);
+
+  // Mostrar longitud y contenido (visible) de SSID/PSK para diagnosticar espacios ocultos
+  Serial.printf("WIFI_SSID length=%d, WIFI_PASS length=%d\n", (int)strlen(WIFI_SSID), (int)strlen(WIFI_PASS));
+  // NO imprimas la contraseña completa por seguridad; imprime primeros/caracteres si quieres.
+  if (strlen(WIFI_SSID) == 0) {
+    Serial.println("WARN: WIFI_SSID vacío.");
+    return;
+  }
+
+  // Iniciar conexión
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  unsigned long t0 = millis();
+  wl_status_t lastStatus = WL_IDLE_STATUS;
+  while ((millis() - t0) < timeout_ms) {
+    wl_status_t st = WiFi.status();
+    if (st != lastStatus) {
+      Serial.printf("  WiFi.status() changed: %d\n", (int)st);
+      lastStatus = st;
+    }
+    if (st == WL_CONNECTED) {
+      Serial.println(String("Conectado — IP: ") + WiFi.localIP().toString());
+      // info adicional
+      Serial.print("  RSSI (de AP conectado): "); Serial.println(WiFi.RSSI());
+      Serial.print("  MAC: "); Serial.println(WiFi.macAddress());
+      return;
+    }
+    if (st == WL_CONNECT_FAILED) {
+      Serial.println("  WL_CONNECT_FAILED (handshake falló). Interrumpiendo.");
+      break;
+    }
+    delay(300);
+  }
+
+  Serial.println("Intento de conexión terminado / timeout.");
+  Serial.printf("Estado final WiFi.status() = %d\n", (int)WiFi.status());
+  // Si estás en una red con portal cautivo o bloqueo, el ESP se conectará al AP pero no tendrá internet.
+  // Verifica detalles en el log del router si es posible.
 }
 
 void setup() {
@@ -102,9 +168,10 @@ void setup() {
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6"; // fallback POSIX para UTC-6
 
-  // Primero intenta usar TZ definido en globals (IANA), luego fuerza POSIX.
+  // Primero intenta usar TZ definido en globals (IANA). Si falla NTP, reintentamos con POSIX.
   configTzTime(TZ, "pool.ntp.org", "time.nist.gov");
-  setenv("TZ", posixTZ, 1);
+  // Además establecer variable de entorno por si getLocalTime depende de TZ env var
+  setenv("TZ", TZ, 1);
   tzset();
 
   // Espera sincronización NTP o timeout.
@@ -147,6 +214,7 @@ void setup() {
     uint32_t e = (uint32_t) server.arg("epoch").toInt();
     struct timeval tv; tv.tv_sec = (time_t)e; tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
+    // después de setear, asegurar TZ
     setenv("TZ", "GMT-6", 1); tzset();
     server.send(200,"text/plain", String("Time set to: ") + nowISO());
   });

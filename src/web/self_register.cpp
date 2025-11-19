@@ -4,10 +4,12 @@
 #include "files_utils.h"
 #include "globals.h"
 #include <SPIFFS.h>
-#include "web_utils.h"   // para htmlEscape(), csvEscape(), etc.
+#include "web_utils.h"
 #include <algorithm>
+#include "display.h"
+#include "time_utils.h"
 
-// Nota: SelfRegSession y selfRegSessions deben estar declarados en globals.h
+// ... el resto del código original (sin cambios lógicos) ...
 
 static String makeRandomToken() {
   uint32_t r = (uint32_t)esp_random();
@@ -32,16 +34,12 @@ static void removeSessionIndex(int idx) {
 static void cleanupExpiredSessions() {
   unsigned long now = millis();
   for (int i = (int)selfRegSessions.size() - 1; i >= 0; --i) {
-    // comparar como signed para evitar problemas con wrap-around muy lejano
     if ((long)(now - selfRegSessions[i].createdAtMs) > (long)selfRegSessions[i].ttlMs) {
       selfRegSessions.erase(selfRegSessions.begin() + i);
     }
   }
 }
 
-// POST /self_register_start
-// Body form-urlencoded: uid=...&materia=... (materia opcional)
-// Retorna JSON con URL y token.
 void handleSelfRegisterStartPOST() {
   cleanupExpiredSessions();
 
@@ -57,13 +55,11 @@ void handleSelfRegisterStartPOST() {
     return;
   }
 
-  // Si UID ya registrado -> responder conflicto
   if (findAnyUserByUID(uid).length() > 0) {
     server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid already registered\"}");
     return;
   }
 
-  // Crear sesión y push_back
   SelfRegSession s;
   s.token = makeRandomToken();
   s.uid = uid;
@@ -78,8 +74,6 @@ void handleSelfRegisterStartPOST() {
   server.send(200, "application/json", resp);
 }
 
-// GET /self_register?token=...
-// Muestra formulario público (UID prellenado si token válido)
 void handleSelfRegisterGET() {
   cleanupExpiredSessions();
 
@@ -96,7 +90,6 @@ void handleSelfRegisterGET() {
 
   SelfRegSession &s = selfRegSessions[idx];
 
-  // Formulario HTML sencillo
   String html = htmlHeader("Auto-registro de Tarjeta");
   html += "<div class='card'><h2>Auto-registro</h2>";
   html += "<p class='small'>Complete su Nombre y Cuenta (7 dígitos). UID prellenado. Esta URL expira en 5 min.</p>";
@@ -124,9 +117,6 @@ void handleSelfRegisterGET() {
   server.send(200, "text/html", html);
 }
 
-// POST /self_register_submit
-// Campos: token, uid, name, account, materia (opc)
-// Guarda en USERS_FILE y ATT_FILE y notifica al admin.
 void handleSelfRegisterPost() {
   cleanupExpiredSessions();
 
@@ -147,7 +137,6 @@ void handleSelfRegisterPost() {
     return;
   }
 
-  // Validaciones básicas
   if (uid.length() == 0 || name.length() == 0 || account.length() != 7) {
     server.send(400, "text/plain", "datos invalidos");
     return;
@@ -156,20 +145,17 @@ void handleSelfRegisterPost() {
     if (!isDigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
   }
 
-  // Revisar UID no registrado ya
   if (findAnyUserByUID(uid).length() > 0) {
     removeSessionIndex(idx);
     server.send(409, "text/plain", "UID already registered");
     return;
   }
 
-  // Si materia provista, asegurar que exista
   if (materia.length() && !courseExists(materia)) {
     server.send(400, "text/plain", "Materia no registrada");
     return;
   }
 
-  // Guardar usuario
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
   if (!appendLineToFile(USERS_FILE, line)) {
@@ -177,21 +163,17 @@ void handleSelfRegisterPost() {
     return;
   }
 
-  // Guardar attendance (captura_self)
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura_self\"";
   if (!appendLineToFile(ATT_FILE, rec)) {
     server.send(500, "text/plain", "Error guardando attendance");
     return;
   }
 
-  // Notificación opcional para admin
   String note = "Auto-registro completado. Usuario: " + name + " (" + account + ")";
   addNotification(uid, name, account, note);
 
-  // Eliminar sesión
   removeSessionIndex(idx);
 
-  // Página de confirmación
   String html = htmlHeader("Registro completado");
   html += "<div class='card'><h2>✅ Registro completado</h2>";
   html += "<p class='small'>Gracias — su tarjeta ha sido registrada correctamente.</p>";

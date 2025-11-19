@@ -30,7 +30,7 @@ extern const int TFT_RST;
 extern const int SERVO_PIN;
 extern const int RGB_R_PIN;
 extern const int RGB_G_PIN;
-extern const int BUZZER_PIN; // si no lo usas aún, déjalo; define en globals.cpp si lo requieres
+extern const int BUZZER_PIN;
 // ----------------------------------------
 
 // ---------------- FILES SPIFFS ----------------
@@ -40,7 +40,7 @@ extern const char* DENIED_FILE;
 extern const char* SCHEDULES_FILE;
 extern const char* NOTIF_FILE;
 extern const char* COURSES_FILE;
-extern const char* CAPTURE_QUEUE_FILE; // archivo con cola de UIDs para batch capture
+extern const char* CAPTURE_QUEUE_FILE;
 // -----------------------------------------------
 
 // Timing constants
@@ -53,32 +53,36 @@ extern const String DAYS[6];
 extern const int SLOT_STARTS[];
 extern const int SLOT_COUNT;
 
-// ---------------- Objetos globales (definidos en src/globals.cpp) ----------------
+// ---------------- Objetos globales ----------------
 extern WebServer server;
 extern MFRC522 mfrc522;
 extern Adafruit_ST7735 tft;
 extern Servo puerta;
 
 // Capture mode globals
-extern volatile bool captureMode;        // modo captura individual ON/OFF
-extern volatile bool captureBatchMode;   // modo batch ON/OFF
-extern String captureUID;                // UID detectado para formulario individual
-extern String captureName;               // nombre autocompletado (si existe)
-extern String captureAccount;            // cuenta autocompletada (si existe)
-extern unsigned long captureDetectedAt;  // millis() cuando se detectó la última tarjeta en capture mode
+extern volatile bool captureMode;
+extern volatile bool captureBatchMode;
+extern String captureUID;
+extern String captureName;
+extern String captureAccount;
+extern unsigned long captureDetectedAt;
 
 // ---------------- Self-register session type ----------------
-// Definir la estructura aquí (una única definición compartida)
 struct SelfRegSession {
-  String token;             // token único
-  String uid;               // UID asociado
-  unsigned long createdAtMs; // millis() cuando se creó
-  unsigned long ttlMs;      // time-to-live en ms
-  String materia;           // materia sugerida (opcional)
+  String token;
+  String uid;
+  unsigned long createdAtMs;
+  unsigned long ttlMs;
+  String materia;
 };
-
-// Vector global de sesiones (definido en globals.cpp)
 extern std::vector<SelfRegSession> selfRegSessions;
+
+// Estado de self-register mostrado en display (bloqueo mientras alumno completa)
+extern volatile bool awaitingSelfRegister;
+extern unsigned long awaitingSinceMs;
+extern unsigned long SELF_REG_TIMEOUT_MS;
+extern String currentSelfRegToken;
+extern String currentSelfRegUID;
 
 // ---------------- Tipos ----------------
 struct Course {
@@ -94,7 +98,7 @@ struct ScheduleEntry {
   String end;
 };
 
-// ---------------- Prototipos utilitarios (implementados en src/*.cpp) ----------------
+// ---------------- Prototipos utilitarios ----------------
 
 // time_utils
 String nowISO(); // devuelve "YYYY-MM-DD HH:MM:SS"
@@ -138,3 +142,6 @@ void clearNotifications();
 void ledOff();
 void ledRedOn();
 void ledGreenOn();
+
+// Mostrar QR en pantalla
+void showQRCodeOnDisplay(const String &url, int pixelBoxSize);

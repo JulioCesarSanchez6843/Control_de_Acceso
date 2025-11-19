@@ -14,7 +14,7 @@
 
 // --- Config values (definiciones) ---
 const char* WIFI_SSID = "Totalplay-2.4G-1cc8";
-const char* WIFI_PASS = "pHh5XfaynxccRz5H";
+const char* WIFI_PASS = "pHh5XfaynxccRz5H"; 
 const char* TZ = "America/Mexico_City";
 
 // --- Pins ---
@@ -35,7 +35,7 @@ const char* DENIED_FILE    = "/denied.csv";
 const char* SCHEDULES_FILE = "/schedules.csv";
 const char* NOTIF_FILE     = "/notifications.csv";
 const char* COURSES_FILE   = "/courses.csv";
-const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv"; // si usas cola de captura
+const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv";
 
 // --- Timings ---
 const unsigned long DISPLAY_MS = 4000UL;
@@ -49,22 +49,24 @@ const int SLOT_COUNT = 6;
 
 // --- Objetos globales instanciados ---
 WebServer server(80);
-// MFRC522 constructor: SDA/SS pin, RST pin (ajustado a tu wiring)
 MFRC522 mfrc522(SS_PIN, RST_PIN);
-// Adafruit_ST7735 constructor (CS, DC, RST). Asegúrate coincide con tu librería.
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-// Servo objeto (ESP32 o AVR dependiendo de la placa)
 Servo puerta;
 
 // --- Capture mode globals ---
 volatile bool captureMode = false;
-volatile bool captureBatchMode = false; // nuevo: modo para capturar en lote (batch)
+volatile bool captureBatchMode = false;
 String captureUID = "";
 String captureName = "";
 String captureAccount = "";
 unsigned long captureDetectedAt = 0;
 
 // --- Self-register sessions (vector global) ---
-std::vector<SelfRegSession> selfRegSessions; // sesiones activas para self-registration
+std::vector<SelfRegSession> selfRegSessions;
 
-// FIN de globals.cpp
+// --- Self-register display state (nuevas variables) ---
+volatile bool awaitingSelfRegister = false;
+unsigned long awaitingSinceMs = 0;
+unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL; // 5 minutos por defecto
+String currentSelfRegToken = String();
+String currentSelfRegUID = String();
