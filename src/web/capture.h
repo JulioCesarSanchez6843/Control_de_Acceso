@@ -12,4 +12,11 @@ void handleCaptureStopGET();
 void handleCaptureEditPage();
 void handleCaptureEditPost();
 
+// Compatibilidad / rutas batch (nombres que usa web_routes.cpp)
+void handleCaptureStartPOST();
+void handleCaptureBatchStartGET();
+void handleCaptureBatchPollGET();
+void handleCaptureBatchClearPOST();
+void handleCaptureGenerateLinksPOST();
+
 #endif // CAPTURE_H

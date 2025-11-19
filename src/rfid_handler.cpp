@@ -1,3 +1,4 @@
+// src/rfid_handler.cpp
 #include <Arduino.h>
 #include <SPI.h>
 #include <FS.h>
@@ -5,7 +6,8 @@
 #include <MFRC522.h>
 #include "globals.h"
 #include "files_utils.h"
-#include "display.h" 
+#include "display.h"
+#include <ctype.h>
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
@@ -41,12 +43,28 @@ static String lowerCopy(const String &s) {
   return t;
 }
 
+// Helper local: intenta añadir UID a /capture_queue.csv evitando duplicados simples
+static void appendUidToQueueAvoidDup(const String &uid) {
+  if (uid.length() == 0) return;
+  const char *QFILE = "/capture_queue.csv";
+  // leer y comprobar
+  bool exists = false;
+  if (SPIFFS.exists(QFILE)) {
+    File f = SPIFFS.open(QFILE, FILE_READ);
+    if (f) {
+      while (f.available()) {
+        String l = f.readStringUntil('\n'); l.trim();
+        if (l.length() > 0 && l == uid) { exists = true; break; }
+      }
+      f.close();
+    }
+  }
+  if (!exists) {
+    appendLineToFile(QFILE, uid);
+  }
+}
+
 // Handler principal para eventos RFID:
-// - detecta tarjeta, lee UID
-// - si está en captureMode almacena datos para registro manual
-// - busca filas de usuario en USERS_FILE (puede haber varias materias)
-// - decide: denegar (no registrado), permitir según horario, o permitir fuera de horario
-// - registra asistencias, denied.csv y notificaciones; controla servo y UI
 void rfidLoopHandler() {
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial()) return;
@@ -59,8 +77,18 @@ void rfidLoopHandler() {
   Serial.printf("Tarjeta detectada UID=%s\n", uid.c_str());
 
   // --- MODO CAPTURA (registro manual) ---
-  // Si captureMode activo, guarda UID y info encontrada y no procesa entrada.
   if (captureMode) {
+    // --- Si estamos en modo BATCH, añadir a la cola y salir ---
+    if (captureBatchMode) {
+      appendUidToQueueAvoidDup(uid);
+      captureDetectedAt = now;
+      Serial.printf("Batch capture: UID %s añadida a la cola.\n", uid.c_str());
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+      return;
+    }
+
+    // --- Individual capture (comportamiento original) ---
     if (captureUID.length() == 0 || (now - captureDetectedAt) > CAPTURE_DEBOUNCE_MS) {
       captureUID = uid;
       String found = findAnyUserByUID(uid);
@@ -141,7 +169,7 @@ void rfidLoopHandler() {
 
   // --- Materia actual según horario (owner tal cual: puede ser 'Materia' o 'Materia||Profesor') ---
   String scheduleOwner = currentScheduledMateria(); // devuelve la parte materia (time_utils lo normaliza)
-  String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner); 
+  String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner);
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 

@@ -1,3 +1,4 @@
+// src/web/web_routes.cpp
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -13,6 +14,7 @@
 #include "history.h"
 #include "notifications.h"
 #include "web_common.h"
+#include "self_register.h"  // declara handlers para self-registration
 
 // Registra todas las rutas del servidor web.
 // Cada entry es equivalente a llamar server.on(...) en setup().
@@ -21,55 +23,74 @@ void registerRoutes() {
   server.on("/", handleRoot);
 
   // --- Materias: CRUD y pantallas relacionadas ---
-  server.on("/materias", handleMaterias);                          // lista materias
-  server.on("/materias/new", handleMateriasNew);                   // formulario nueva materia
-  server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);    // crear materia (POST)
-  server.on("/materias/edit", handleMateriasEditGET);              // editar materia (GET)
-  server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);  // guardar edición (POST)
-  server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST); // borrar materia (POST)
+  server.on("/materias", handleMaterias);
+  server.on("/materias/new", handleMateriasNew);
+  server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
+  server.on("/materias/edit", handleMateriasEditGET);
+  server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
+  server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 
   // Rutas para asignación de horarios por materia (nuevo flujo)
-  server.on("/materias_new_schedule", handleMateriasNewScheduleGET);         // ver/editar grilla de horarios para materia
-  server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST); // agregar horario (POST)
-  server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST); // eliminar horario (POST)
+  server.on("/materias_new_schedule", handleMateriasNewScheduleGET);
+  server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
+  server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
 
   // --- Students: ver por materia / ver todos / acciones ---
-  server.on("/students", handleStudentsForMateria);               // ver alumnos de una materia
-  server.on("/students_all", handleStudentsAll);                  // ver todos los alumnos
-  server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse); // remover alumno de una materia (POST)
-  server.on("/student_delete", HTTP_POST, handleStudentDelete);   // eliminar alumno por completo (POST)
+  server.on("/students", handleStudentsForMateria);
+  server.on("/students_all", handleStudentsAll);
+  server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
+  server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // --- Captura (modo manual de registrar tarjetas) ---
-  server.on("/capture", HTTP_GET, handleCapturePage);             // página captura
-  server.on("/capture_confirm", HTTP_POST, handleCaptureConfirm); // confirmar captura (POST)
-  server.on("/capture_poll", HTTP_GET, handleCapturePoll);        // polling para UID detectado (ajax)
-  server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);     // detener modo captura
+  // --- Captura (modo manual) ---
+  // Página principal de captura (muestra toggle Individual / Batch)
+  server.on("/capture", HTTP_GET, handleCapturePage);
 
-  // Edición vía capture (edición de usuario reutilizando UI de captura)
-  server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);        // abrir edición
-  server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);  // procesar edición (POST)
+  // Confirmación individual (form submit)
+  server.on("/capture_confirm", HTTP_POST, handleCaptureConfirm);
+
+  // Polling para autocompletar UID en formulario individual
+  server.on("/capture_poll", HTTP_GET, handleCapturePoll);
+
+  // Stop general de modo captura (sirve para Individual y Batch)
+  server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
+
+  // --- Endpoints de Batch (coinciden con la implementación del capture.cpp que tienes) ---
+  // Iniciar batch (GET en tu capture.cpp actual)
+  server.on("/capture_batch_start", HTTP_GET, handleCaptureBatchStartGET);
+  // Obtener estado / lista de UIDs en cola
+  server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
+  // Limpiar cola (POST)
+  server.on("/capture_clear_queue", HTTP_POST, handleCaptureBatchClearPOST);
+
+  // Edición vía capture (reutiliza UI de captura para editar usuario)
+  server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
+  server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);
 
   // Estado / diagnóstico
   server.on("/status", handleStatus);
 
   // --- Schedules: grilla y edición ---
-  server.on("/schedules", HTTP_GET, handleSchedulesGrid);         // ver grilla (solo lectura)
-  server.on("/schedules/edit", HTTP_GET, handleSchedulesEditGrid);// editor global de horarios
-  server.on("/schedules_add_slot", HTTP_POST, handleSchedulesAddSlot); // agregar slot (POST)
-  server.on("/schedules_del", HTTP_POST, handleSchedulesDel);         // eliminar slot (POST)
+  server.on("/schedules", HTTP_GET, handleSchedulesGrid);
+  server.on("/schedules/edit", HTTP_GET, handleSchedulesEditGrid);
+  server.on("/schedules_add_slot", HTTP_POST, handleSchedulesAddSlot);
+  server.on("/schedules_del", HTTP_POST, handleSchedulesDel);
 
-  // Editor restringido por materia
-  server.on("/schedules_for", HTTP_GET, handleSchedulesForMateriaGET);     // ver horarios por materia
-  server.on("/schedules_for_add", HTTP_POST, handleSchedulesForMateriaAddPOST); // agregar por materia (POST)
-  server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST); // eliminar por materia (POST)
+  server.on("/schedules_for", HTTP_GET, handleSchedulesForMateriaGET);
+  server.on("/schedules_for_add", HTTP_POST, handleSchedulesForMateriaAddPOST);
+  server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST);
 
   // --- Notificaciones ---
-  server.on("/notifications", handleNotificationsPage);         // ver notificaciones
-  server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST); // borrar todas (POST)
+  server.on("/notifications", handleNotificationsPage);
+  server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST);
 
   // --- Edit user (formulario rápido) ---
-  server.on("/edit", handleEditGet);                            // abrir formulario edición de usuario
-  server.on("/edit_post", HTTP_POST, handleEditPost);           // guardar cambios (POST)
+  server.on("/edit", handleEditGet);
+  server.on("/edit_post", HTTP_POST, handleEditPost);
+
+  // --- Self-registration (nuevo) ---
+  server.on("/self_register_start", HTTP_POST, handleSelfRegisterStartPOST); // profesor crea sesión
+  server.on("/self_register", HTTP_GET, handleSelfRegisterGET);             // alumno accede con token
+  server.on("/self_register_submit", HTTP_POST, handleSelfRegisterPost);    // submit desde móvil/alumno
 
   // --- Endpoints CSV (descarga directa de archivos) ---
   server.on("/users.csv", [](){
@@ -88,8 +109,8 @@ void registerRoutes() {
   });
 
   // --- Historial ---
-  server.on("/history", handleHistoryPage);                     // página historial
-  server.on("/history.csv", handleHistoryCSV);                  // descargar CSV (opcional filtros)
-  server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);// borrar historial (POST)
-  server.on("/materia_history", handleMateriaHistoryGET);       // historial por materia (lista días)
+  server.on("/history", handleHistoryPage);
+  server.on("/history.csv", handleHistoryCSV);
+  server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);
+  server.on("/materia_history", handleMateriaHistoryGET);
 }

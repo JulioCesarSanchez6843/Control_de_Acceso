@@ -30,7 +30,7 @@ extern const int TFT_RST;
 extern const int SERVO_PIN;
 extern const int RGB_R_PIN;
 extern const int RGB_G_PIN;
-extern const int BUZZER_PIN;
+extern const int BUZZER_PIN; // si no lo usas aún, déjalo; define en globals.cpp si lo requieres
 // ----------------------------------------
 
 // ---------------- FILES SPIFFS ----------------
@@ -40,6 +40,7 @@ extern const char* DENIED_FILE;
 extern const char* SCHEDULES_FILE;
 extern const char* NOTIF_FILE;
 extern const char* COURSES_FILE;
+extern const char* CAPTURE_QUEUE_FILE; // archivo con cola de UIDs para batch capture
 // -----------------------------------------------
 
 // Timing constants
@@ -59,11 +60,25 @@ extern Adafruit_ST7735 tft;
 extern Servo puerta;
 
 // Capture mode globals
-extern volatile bool captureMode;
-extern String captureUID;
-extern String captureName;
-extern String captureAccount;
-extern unsigned long captureDetectedAt;
+extern volatile bool captureMode;        // modo captura individual ON/OFF
+extern volatile bool captureBatchMode;   // modo batch ON/OFF
+extern String captureUID;                // UID detectado para formulario individual
+extern String captureName;               // nombre autocompletado (si existe)
+extern String captureAccount;            // cuenta autocompletada (si existe)
+extern unsigned long captureDetectedAt;  // millis() cuando se detectó la última tarjeta en capture mode
+
+// ---------------- Self-register session type ----------------
+// Definir la estructura aquí (una única definición compartida)
+struct SelfRegSession {
+  String token;             // token único
+  String uid;               // UID asociado
+  unsigned long createdAtMs; // millis() cuando se creó
+  unsigned long ttlMs;      // time-to-live en ms
+  String materia;           // materia sugerida (opcional)
+};
+
+// Vector global de sesiones (definido en globals.cpp)
+extern std::vector<SelfRegSession> selfRegSessions;
 
 // ---------------- Tipos ----------------
 struct Course {
@@ -96,7 +111,7 @@ void addScheduleSlot(const String &materia, const String &day, const String &sta
 // csv parsing
 std::vector<String> parseQuotedCSVLine(const String &line);
 
-// files utils CORREGIDO: devolver bool en lugar de void
+// files utils (deben devolver bool)
 bool appendLineToFile(const char* path, const String &line);
 bool writeAllLines(const char* path, const std::vector<String> &lines);
 void initFiles();

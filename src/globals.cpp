@@ -13,8 +13,8 @@
 #endif
 
 // --- Config values (definiciones) ---
-const char* WIFI_SSID = "RIUAEMex";
-const char* WIFI_PASS = "";
+const char* WIFI_SSID = "Totalplay-2.4G-1cc8";
+const char* WIFI_PASS = "pHh5XfaynxccRz5H";
 const char* TZ = "America/Mexico_City";
 
 // --- Pins ---
@@ -26,6 +26,7 @@ const int TFT_RST   = 4;
 const int SERVO_PIN = 15;
 const int RGB_R_PIN = 25;
 const int RGB_G_PIN = 26;
+const int BUZZER_PIN = -1; // ajustar si usas buzzer
 
 // --- Files (SPIFFS paths) ---
 const char* USERS_FILE     = "/users.csv";
@@ -34,6 +35,7 @@ const char* DENIED_FILE    = "/denied.csv";
 const char* SCHEDULES_FILE = "/schedules.csv";
 const char* NOTIF_FILE     = "/notifications.csv";
 const char* COURSES_FILE   = "/courses.csv";
+const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv"; // si usas cola de captura
 
 // --- Timings ---
 const unsigned long DISPLAY_MS = 4000UL;
@@ -56,7 +58,13 @@ Servo puerta;
 
 // --- Capture mode globals ---
 volatile bool captureMode = false;
+volatile bool captureBatchMode = false; // nuevo: modo para capturar en lote (batch)
 String captureUID = "";
 String captureName = "";
 String captureAccount = "";
 unsigned long captureDetectedAt = 0;
+
+// --- Self-register sessions (vector global) ---
+std::vector<SelfRegSession> selfRegSessions; // sesiones activas para self-registration
+
+// FIN de globals.cpp
