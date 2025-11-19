@@ -9,7 +9,7 @@
 #include <Adafruit_ST7735.h>
 #include <algorithm> // std::min
 
-// Evitar choque de macros LOW/HIGH con qrcodegen.hpp
+// Evitar choque de macros LOW/HIGH con qrcodegen.hpp (si usas qrcodegen).
 #ifdef LOW
   #define _QR_OLD_LOW
   #undef LOW
@@ -56,6 +56,8 @@ static void drawCrossIcon(int cx, int cy, int r) {
   }
 }
 
+// Dibuja texto centrado horizontalmente en la Y especificada.
+// size corresponde a setTextSize (1..n). Mantener tamaño pequeño para QR-screen.
 static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
   tft.setTextSize(size);
   tft.setTextColor(color);
@@ -63,6 +65,7 @@ static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t co
   uint16_t w, h;
   tft.getTextBounds(txt, 0, y, &x1, &y1, &w, &h);
   int x = (tft.width() - w) / 2;
+  if (x < 0) x = 0;
   tft.setCursor(x, y);
   tft.print(txt);
 }
@@ -97,6 +100,7 @@ void displayInit() {
 void showWaitingMessage() {
   drawHeader();
   clearContentArea();
+  // letras un poco más pequeñas que antes para dar aire
   drawCenteredText("Bienvenido", 28, 2, ST77XX_WHITE);
   drawCenteredText("Esperando tarjeta...", 60, 1, ST77XX_WHITE);
   ledOff();
@@ -154,29 +158,53 @@ void showAccessDenied(const String &reason, const String &uid) {
 }
 
 // ----------------- Dibujar QR en la pantalla -----------------
+// Cambios principales:
+//  - NO dibujar header (quitamos "CONTROL DE ACCESO LAB") para ganar espacio.
+//  - Ajustes de tamaño y posicionamiento para evitar que el texto quede encima.
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   using qrcodegen::QrCode;
 
-  // Evitamos usar el token LOW (que IntelliSense interpreta como macro).
-  // En su lugar pasamos el valor 0 casteado a la enumeración Ecc.
+  // Generar QR (usamos valor entero 0 para ECC LOW si el enum choca con macros)
   QrCode qr = QrCode::encodeText(url.c_str(), static_cast<qrcodegen::QrCode::Ecc>(0));
-  int s = qr.getSize();
+  int s = qr.getSize(); // módulos por lado
 
+  // Calcular escala (tam módulo en px)
   int maxBox = pixelBoxSize;
+  // si pixelBoxSize es mayor que pantalla, ajustamos al 80% del menor lado
+  int screenMin = std::min(tft.width(), tft.height());
+  if (maxBox > screenMin) {
+    maxBox = (screenMin * 80) / 100; // 80% del menor lado
+  }
+
   int modulePx = maxBox / s;
   if (modulePx <= 0) modulePx = 1;
   int totalPx = modulePx * s;
 
+  // limpiar pantalla completa (NO header) para tener todo el espacio
   tft.fillScreen(ST77XX_BLACK);
-  drawHeader();
 
+  // Centrar el QR en toda la pantalla (más espacio al top porque quitamos header)
   int left = (tft.width() - totalPx) / 2;
-  int top  = (tft.height() - totalPx) / 2 + 8;
+  int top  = (tft.height() - totalPx) / 2;
   if (left < 0) left = 0;
-  if (top < 22) top = 22;
+  if (top < 0) top = 0;
 
-  tft.fillRect(left - 4, top - 4, totalPx + 8, totalPx + 8, ST77XX_WHITE);
+  // Fondo blanco para el QR con pequeño padding
+  const int pad = 3;
+  int bgLeft = left - pad;
+  int bgTop  = top  - pad;
+  int bgW    = totalPx + 2 * pad;
+  int bgH    = totalPx + 2 * pad;
 
+  // Asegurar que el fondo no sobresalga de la pantalla
+  if (bgLeft < 0) { bgLeft = 0; }
+  if (bgTop  < 0) { bgTop = 0; }
+  if (bgLeft + bgW > tft.width())  bgW = tft.width() - bgLeft;
+  if (bgTop  + bgH > tft.height()) bgH = tft.height() - bgTop;
+
+  tft.fillRect(bgLeft, bgTop, bgW, bgH, ST77XX_WHITE);
+
+  // dibujar módulos (negros sobre fondo blanco)
   for (int y = 0; y < s; ++y) {
     for (int x = 0; x < s; ++x) {
       bool dark = qr.getModule(x, y);
@@ -186,10 +214,55 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
     }
   }
 
+  // Texto indicativo: usamos texto más pequeño y lo colocamos abajo, centrado
+  // para evitar solapamiento con el QR.
+  String hint = "Escanee el QR para registrarse";
+  // Si queda poco espacio debajo, colocamos texto arriba.
+  int spaceBelow = tft.height() - (top + totalPx);
+  int textY;
+  if (spaceBelow > 18) {
+    textY = top + totalPx + 4; // texto debajo del QR
+  } else {
+    // poco espacio, colocarlo en la parte superior con margen
+    textY = 4;
+  }
+
+  tft.setTextSize(1); // tamaño pequeño para que quepa
+  tft.setTextColor(ST77XX_WHITE);
+  // imprimir centrado manualmente
+  int16_t x1, y1; uint16_t w, h;
+  tft.getTextBounds(hint, 0, textY, &x1, &y1, &w, &h);
+  int tx = (tft.width() - w) / 2;
+  if (tx < 0) tx = 0;
+  tft.setCursor(tx, textY);
+  tft.print(hint);
+
+  // NOTA: No bloqueamos aquí — quien muestra el QR debe gestionar awaiting flags.
+}
+
+// Mostrar banner pequeño informando bloqueo por auto-registro (overlay sobre pantalla actual).
+void showSelfRegisterBanner(const String &uid) {
+  // dibujar rectángulo pequeño en la parte superior (sin borrar QR)
+  int h = 20;
+  tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
+  tft.drawFastHLine(0, h-1, tft.width(), ST77XX_WHITE);
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(6, tft.height() - 14);
-  tft.print("Escanee el QR para registrarse");
+  String t = "Usuario registrando... No leer nuevas tarjetas";
+  // recortar si muy largo
+  if (t.length() > 40) t = t.substring(0, 40);
+  int16_t x1,y1; uint16_t w,hb;
+  tft.getTextBounds(t,0,2,&x1,&y1,&w,&hb);
+  int x = (tft.width()-w)/2; if (x<0) x=0;
+  tft.setCursor(x, 2);
+  tft.print(t);
+
+  // si se proporciona UID mostrarlo a la derecha pequeño
+  if (uid.length()) {
+    String s = uid;
+    if (s.length() > 12) s = s.substring(0,12);
+    tft.setCursor(2, 2); tft.print(s);
+  }
 }
 
 // ----------------- LEDs -----------------

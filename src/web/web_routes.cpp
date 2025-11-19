@@ -66,11 +66,23 @@ void registerRoutes() {
   // --- Endpoints Batch ---
   // Obtener estado / lista de UIDs en cola
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
-  // Detener batch (POST)
+
+  // Detener batch (POST) - completa detención
   server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
+
   // Limpiar cola (POST)
   server.on("/capture_clear_queue", HTTP_POST, handleCaptureBatchClearPOST);
-  // Generar links de auto-registro desde la cola (POST)
+
+  // Pause / Resume (toggle) (POST)
+  server.on("/capture_batch_pause", HTTP_POST, handleCaptureBatchPausePOST);
+
+  // Borrar la última UID capturada (POST)
+  server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
+
+  // Cancelar batch (Volver) (POST) - limpia cola y libera sesión awaiting
+  server.on("/capture_cancel", HTTP_POST, handleCaptureCancelPOST);
+
+  // Generar links de auto-registro desde la cola (POST) - opcional
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
   // Edición vía capture (reutiliza UI de captura para editar usuario)

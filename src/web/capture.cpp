@@ -9,6 +9,7 @@
 #include <SPIFFS.h>
 #include <ctype.h>
 #include "self_register.h" // para SelfRegSession y selfRegSessions
+#include "display.h"       // para actualizar pantalla cuando se cancela/termina self-register
 
 // Globals (de globals.h)
 extern volatile bool captureMode;
@@ -17,6 +18,14 @@ extern String captureUID;
 extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
+
+// También usamos estos globals para el flujo de self-register / bloqueo
+extern volatile bool awaitingSelfRegister;
+extern unsigned long awaitingSinceMs;
+extern unsigned long SELF_REG_TIMEOUT_MS;
+extern String currentSelfRegToken;
+extern String currentSelfRegUID;
+extern std::vector<SelfRegSession> selfRegSessions;
 
 // Archivo de cola (usa la constante global si la tienes, si no se usa esta ruta)
 #ifndef CAPTURE_QUEUE_FILE
@@ -47,6 +56,16 @@ static bool appendUidToCaptureQueue(const String &uid) {
 
 static bool clearCaptureQueueFile() {
   if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) return SPIFFS.remove(CAPTURE_QUEUE_FILE);
+  return true;
+}
+
+static bool writeCaptureQueue(const std::vector<String> &q) {
+  // Sobrescribe todo el archivo (sin cabeceras)
+  if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) SPIFFS.remove(CAPTURE_QUEUE_FILE);
+  if (q.size() == 0) return true;
+  for (auto &u : q) {
+    if (!appendLineToFile(CAPTURE_QUEUE_FILE, u)) return false;
+  }
   return true;
 }
 
@@ -112,7 +131,6 @@ void handleCaptureIndividualPage() {
         .catch(e=>setTimeout(pollUID,1200));
     }
     pollUID();
-    // stop capture on unload
     window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
     </script>
   )rawliteral";
@@ -130,26 +148,31 @@ void handleCaptureBatchPage() {
   captureAccount = "";
   captureDetectedAt = 0;
 
-  // Aseguramos que exista el archivo (no lo limpiamos automáticamente para no perder colas existentes),
-  // si quieres limpiar siempre, llama a clearCaptureQueueFile() aquí.
-  appendLineToFile(CAPTURE_QUEUE_FILE, String()); // crea si no existe (puede dejar línea vacía)
+  // Crear archivo si no existe (touch)
+  if (!SPIFFS.exists(CAPTURE_QUEUE_FILE)) appendLineToFile(CAPTURE_QUEUE_FILE, String()); // crea si no existe, puede dejar línea vacía
 
   String html = htmlHeader("Capturar - Batch");
   html += "<div class='card'><h2>Batch capture</h2>";
-  html += "<p class='small'>Acerca varias tarjetas; las UIDs quedarán en una cola. Luego puede limpiar la cola o generar enlaces.</p>";
+  html += "<p class='small'>Acerca varias tarjetas; las UIDs quedarán en una cola. Luego puede limpiar la cola, borrar la última o pausar la captura.</p>";
 
   html += "<div style='display:flex;gap:8px;margin-bottom:8px;'>";
-  html += "<form method='POST' action='/capture_batch_stop' style='display:inline'><button class='btn btn-red' type='submit'>Detener Batch</button></form>";
+  // Pause/resume: se implementa mediante endpoint toggle
+  html += "<form method='POST' action='/capture_batch_pause' style='display:inline'><button class='btn btn-red' type='submit'>Pausar / Reanudar</button></form>";
   html += "<form method='POST' action='/capture_clear_queue' style='display:inline' onsubmit='return confirm(\"Limpiar cola? Esta acción borrará la cola.\")'><button class='btn btn-red' type='submit'>Limpiar cola</button></form>";
-  html += "<form method='POST' action='/capture_generate_links' style='display:inline'><button class='btn btn-blue' type='submit'>Generar links de auto-registro</button></form>";
+  html += "<form method='POST' action='/capture_remove_last' style='display:inline' onsubmit='return confirm(\"Borrar la última UID capturada?\")'><button class='btn btn-red' type='submit'>Borrar última</button></form>";
   html += "</div>";
 
   html += "<p>Cola actual: <span id='queue_count'>0</span> UID(s).</p>";
   html += "<div id='queue_list' style='background:#f5f7fb;padding:8px;border-radius:8px;min-height:80px;margin-top:8px;'>Cargando...</div>";
-  html += "<p style='margin-top:10px'><a class='btn btn-blue' href='/'>Volver</a></p>";
+
+  // Mensaje si hay registro en curso (bloqueo)
+  html += "<p id='inprogress' style='color:crimson;margin-top:10px;display:none;'>Usuario registrándose — no se pueden leer nuevas tarjetas.</p>";
+
+  // Volver = CANCELAR el batch: limpiar cola y volver al landing
+  html += "<p style='margin-top:10px'><form method='POST' action='/capture_cancel'><button class='btn btn-blue' type='submit'>Volver (Cancelar batch)</button></form></p>";
   html += "</div>" + htmlFooter();
 
-  // JS para poll de cola
+  // JS para poll de cola y estado awaiting
   html += R"rawliteral(
     <script>
     function pollQueue(){
@@ -166,12 +189,18 @@ void handleCaptureBatchPage() {
             html += '</ul>';
             list.innerHTML = html;
           }
+          var inProg = document.getElementById('inprogress');
+          if(j.awaiting && j.awaiting_uid && j.awaiting_uid.length > 0) {
+            inProg.style.display = 'block';
+            inProg.textContent = 'Usuario registrándose (UID: ' + j.awaiting_uid + ') — no se pueden leer nuevas tarjetas.';
+          } else {
+            inProg.style.display = 'none';
+          }
         })
         .catch(e=>{});
       setTimeout(pollQueue,1000);
     }
     pollQueue();
-    // stop capture on unload
     window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
     </script>
   )rawliteral";
@@ -253,6 +282,7 @@ void handleCaptureStartPOST() {
   server.send(303, "text/plain", "capture started");
 }
 
+// Stop (completa detención)
 void handleCaptureBatchStopPOST() {
   captureMode = false; captureBatchMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
@@ -270,23 +300,106 @@ void handleCaptureStopGET() {
 // ---------------- Batch endpoints ----------------
 void handleCaptureBatchPollGET() {
   auto u = readCaptureQueue();
+  // Normalize: if only one entry and empty string -> report empty
+  if (u.size() == 1 && u[0].length() == 0) u.clear();
+
   String j = "{\"uids\":[";
   for (size_t i = 0; i < u.size(); ++i) {
     if (i) j += ",";
     j += "\"" + u[i] + "\"";
   }
-  j += "]}";
+  j += "],";
+
+  // añadir estado awaiting (si hay un self-register en curso)
+  j += "\"awaiting\":";
+  j += (awaitingSelfRegister ? "true" : "false");
+  j += ",";
+  j += "\"awaiting_uid\":\"";
+  j += (currentSelfRegUID.length() ? currentSelfRegUID : "");
+  j += "\"";
+
+  j += "}";
   server.send(200, "application/json", j);
 }
 
+// Limpiar cola (POST)
 void handleCaptureBatchClearPOST() {
   clearCaptureQueueFile();
+  // detener captura (usuario espera que se detenga)
   captureMode = false; captureBatchMode = false;
   server.sendHeader("Location", "/capture");
   server.send(303, "text/plain", "cleared");
 }
 
+// Pause / Resume (toggle) - POST
+void handleCaptureBatchPausePOST() {
+  // If currently running batch (captureMode==true && captureBatchMode==true) => pause by disabling captureMode
+  if (captureBatchMode && captureMode) {
+    captureMode = false; // paused
+    server.sendHeader("Location", "/capture_batch");
+    server.send(303, "text/plain", "paused");
+    return;
+  }
+  // If paused but batchMode still true, resume
+  if (captureBatchMode && !captureMode) {
+    captureMode = true; // resume
+    server.sendHeader("Location", "/capture_batch");
+    server.send(303, "text/plain", "resumed");
+    return;
+  }
+  // If not in batch, start new batch
+  captureMode = true;
+  captureBatchMode = true;
+  server.sendHeader("Location", "/capture_batch");
+  server.send(303, "text/plain", "started");
+}
+
+// Borrar la última UID agregada (POST)
+void handleCaptureRemoveLastPOST() {
+  auto q = readCaptureQueue();
+  // quitar la última no vacía (si hay vacías al final, eliminarlas)
+  for (int i = (int)q.size()-1; i >= 0; --i) {
+    if (q[i].length() > 0) { q.erase(q.begin() + i); break; }
+  }
+  writeCaptureQueue(q);
+  server.sendHeader("Location", "/capture_batch");
+  server.send(303, "text/plain", "removed last");
+}
+
+// Cancelar batch (Volver): limpiar cola y volver a landing (no guardar nada)
+// Además libera cualquier sesión self-register que estuviera en pantalla.
+void handleCaptureCancelPOST() {
+  // limpiar cola y detener
+  clearCaptureQueueFile();
+  captureMode = false;
+  captureBatchMode = false;
+  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+
+  // Si hay un self-register en curso y token conocido -> eliminar la sesión correspondiente
+  if (awaitingSelfRegister && currentSelfRegToken.length()) {
+    for (int i = (int)selfRegSessions.size() - 1; i >= 0; --i) {
+      if (selfRegSessions[i].token == currentSelfRegToken) {
+        selfRegSessions.erase(selfRegSessions.begin() + i);
+      }
+    }
+    awaitingSelfRegister = false;
+    currentSelfRegToken = String();
+    currentSelfRegUID = String();
+    awaitingSinceMs = 0;
+
+    // devolver pantalla a espera
+    showWaitingMessage();
+  }
+
+  server.sendHeader("Location", "/capture");
+  server.send(303, "text/plain", "cancelled");
+}
+
+// (Opt): mantener el antiguo generar links en caso de que lo quieras más adelante.
+// Aquí lo dejamos funcional si el endpoint sigue registrado en web_routes,
+// pero la UI ya no muestra el botón.
 void handleCaptureGenerateLinksPOST() {
+  // mantener compatibilidad: si se llama, generar links como antes
   auto lines = readCaptureQueue();
   if (lines.size() == 0) {
     server.sendHeader("Location", "/capture");

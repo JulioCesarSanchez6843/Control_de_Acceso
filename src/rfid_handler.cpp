@@ -12,13 +12,24 @@
 #include "time_utils.h"
 #include <ctype.h>
 
-// helpers (baseMateriaFromOwner, normMat, joinMats, lowerCopy) ...
+// Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
   int idx = owner.indexOf("||");
-  if (idx < 0) { String o = owner; o.trim(); return o; }
-  String b = owner.substring(0, idx); b.trim(); return b;
+  if (idx < 0) {
+    String o = owner; o.trim();
+    return o;
+  }
+  String b = owner.substring(0, idx);
+  b.trim();
+  return b;
 }
-static String normMat(const String &s) { String t = s; t.trim(); return t; }
+
+// Normaliza una materia (quita espacios al inicio/fin)
+static String normMat(const String &s) {
+  String t = s; t.trim(); return t;
+}
+
+// Devuelve string con materias separadas por "; "
 static String joinMats(const std::vector<String> &mats) {
   String out;
   for (size_t i = 0; i < mats.size(); ++i) {
@@ -27,11 +38,19 @@ static String joinMats(const std::vector<String> &mats) {
   }
   return out;
 }
-static String lowerCopy(const String &s) { String t = s; t.toLowerCase(); return t; }
 
+// Helper: devuelve lowercase copy 
+static String lowerCopy(const String &s) {
+  String t = s;
+  t.toLowerCase();
+  return t;
+}
+
+// Helper local: intenta añadir UID a CAPTURE_QUEUE_FILE evitando duplicados simples
 static void appendUidToQueueAvoidDup(const String &uid) {
   if (uid.length() == 0) return;
   const char *QFILE = CAPTURE_QUEUE_FILE;
+  // leer y comprobar
   bool exists = false;
   if (SPIFFS.exists(QFILE)) {
     File f = SPIFFS.open(QFILE, FILE_READ);
@@ -43,63 +62,77 @@ static void appendUidToQueueAvoidDup(const String &uid) {
       f.close();
     }
   }
-  if (!exists) appendLineToFile(QFILE, uid);
+  if (!exists) {
+    appendLineToFile(QFILE, uid);
+  }
 }
 
+// Handler principal para eventos RFID:
 void rfidLoopHandler() {
-  if (awaitingSelfRegister) {
-    unsigned long now = millis();
-    if ((long)(now - awaitingSinceMs) > (long)SELF_REG_TIMEOUT_MS) {
-      Serial.println("Self-register timeout -> liberando");
-      awaitingSelfRegister = false;
-      currentSelfRegToken = String();
-      currentSelfRegUID = String();
-      awaitingSinceMs = 0;
-      showWaitingMessage();
-    }
-  }
-
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial()) return;
 
   String uid = uidBytesToString(mfrc522.uid.uidByte, mfrc522.uid.size);
   unsigned long now = millis();
 
+  // Imprimir evento con hora local para debug
   Serial.printf("---- RFID event (%s) ----\n", nowISO().c_str());
   Serial.printf("Tarjeta detectada UID=%s\n", uid.c_str());
 
-  // CAPTURE modes
+  // --- Si estamos en Batch y hay un self-register en curso -> bloquear lecturas ---
+  if (captureBatchMode && awaitingSelfRegister) {
+    Serial.println("Lectura bloqueada: hay un auto-registro en curso. Ignorando tarjeta.");
+    // Mostrar banner en pantalla para informar
+    showSelfRegisterBanner(currentSelfRegUID);
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+    return;
+  }
+
+  // --- MODO CAPTURA (registro manual) ---
   if (captureMode) {
+    // --- Si estamos en modo BATCH, añadir a la cola y crear session+QR si no existe bloqueo ---
     if (captureBatchMode) {
+      // Añadir a cola (si no duplicada)
       appendUidToQueueAvoidDup(uid);
       captureDetectedAt = now;
       Serial.printf("Batch capture: UID %s añadida a la cola.\n", uid.c_str());
 
+      // Si ya hay espera activa en display, no crear nueva sesión (ya está bloqueando)
       if (awaitingSelfRegister) {
         Serial.println("Ya hay un self-register en espera en el display; no generar otro QR.");
       } else {
+        // Si UID no registrado, crear una sesión y mostrar QR en display
         if (findAnyUserByUID(uid).length() == 0) {
+          // crear session
           SelfRegSession s;
-          uint32_t r = (uint32_t)esp_random();
-          uint32_t m = (uint32_t)millis();
-          char buf[32];
-          snprintf(buf, sizeof(buf), "%08X%08X", r, m);
-          s.token = String(buf);
+          {
+            uint32_t r = (uint32_t)esp_random();
+            uint32_t m = (uint32_t)millis();
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%08X%08X", r, m);
+            s.token = String(buf);
+          }
           s.uid = uid;
           s.createdAtMs = millis();
           s.ttlMs = SELF_REG_TIMEOUT_MS;
           s.materia = String();
           selfRegSessions.push_back(s);
 
+          // marcar esperando
           awaitingSelfRegister = true;
           currentSelfRegToken = s.token;
           currentSelfRegUID = uid;
           awaitingSinceMs = millis();
 
+          // Crear URL completa (usar IP)
           String url = String("http://") + WiFi.localIP().toString() + String("/self_register?token=") + currentSelfRegToken;
           Serial.printf("Mostrando QR con URL: %s\n", url.c_str());
-          int boxSize = min(tft.width(), tft.height()) - 40;
+
+          // Mostrar QR en display (bloquea nuevas capturas hasta que alumno complete)
+          int boxSize = min(tft.width(), tft.height()) - 24;
           showQRCodeOnDisplay(url, boxSize);
+          showSelfRegisterBanner(uid);
         } else {
           Serial.println("UID ya registrado, no se genera QR (solo agregar a cola).");
         }
@@ -110,7 +143,7 @@ void rfidLoopHandler() {
       return;
     }
 
-    // individual capture
+    // --- Individual capture (comportamiento original) ---
     if (captureUID.length() == 0 || (now - captureDetectedAt) > CAPTURE_DEBOUNCE_MS) {
       captureUID = uid;
       String found = findAnyUserByUID(uid);
@@ -129,7 +162,9 @@ void rfidLoopHandler() {
     return;
   }
 
-  // flujo normal de acceso (leer USERS_FILE...)
+  // --- No estamos en captureMode: procesar acceso normal ---
+
+  // --- Leer todos los registros del UID en USERS_FILE (puede tener varias materias) ---
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<std::vector<String>> userRows;
   if (f) {
@@ -145,27 +180,38 @@ void rfidLoopHandler() {
     Serial.println("WARN: no se pudo abrir USERS_FILE (SPIFFS).");
   }
 
+  // --- Si no existe el usuario: denegar, loggear en denied.csv y CREAR notificación ---
   if (userRows.size() == 0) {
     Serial.printf("UID %s no registrado -> DENEGADO\n", uid.c_str());
+
+    // Registrar en denied.csv
     String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"NO REGISTRADO\"";
     appendLineToFile(DENIED_FILE, recDenied);
+
+    // Crear notificación (para que aparezca en la web)
     String note = "Tarjeta no registrada (UID: " + uid + ")";
     addNotification(uid, String(""), String(""), note);
+
+    // UI: pantalla denegada
     showAccessDenied("Tarjeta no registrada", uid);
     ledOff();
+
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
     return;
   }
 
-  String scheduleOwner = currentScheduledMateria();
+  // --- Materia actual según horario (owner tal cual: puede ser 'Materia' o 'Materia||Profesor') ---
+  String scheduleOwner = currentScheduledMateria(); // devuelve la parte materia (time_utils lo normaliza)
   String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner);
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 
+  // Info principal del usuario (primer registro para name/account)
   String name = (userRows.size() > 0 && userRows[0].size() > 1 ? userRows[0][1] : "");
   String account = (userRows.size() > 0 && userRows[0].size() > 2 ? userRows[0][2] : "");
 
+  // Construir lista única de materias del usuario (mantener original y lista lower para comparación)
   std::vector<String> userMats;
   std::vector<String> userMatsLower;
   for (auto &r : userRows) {
@@ -181,6 +227,7 @@ void rfidLoopHandler() {
     }
   }
 
+  // --- Si hay clase en curso: permitir solo si usuario tiene esa materia ---
   if (scheduleBaseMat.length() > 0) {
     String wantMat = normMat(scheduleBaseMat);
     String wantMatLower = lowerCopy(wantMat);
@@ -192,39 +239,52 @@ void rfidLoopHandler() {
     if (hasCurrent) {
       String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + wantMat + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, rec);
-      puerta.write(90);
+
+      puerta.write(90); // abrir
       showAccessGranted(name, wantMat, uid);
-      puerta.write(0);
+      puerta.write(0); // cerrar
       ledOff();
     } else {
+      // Usuario no tiene la materia en curso -> denegar, notificar y loggear
       String mmstr = joinMats(userMats);
       String note = "Intento fuera de materia en curso. Usuario: " + name + " (" + account + "). Materias del usuario: " + mmstr + ". Materia en curso: " + wantMat;
       addNotification(uid, name, account, note);
+
       String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + note + "\"";
       appendLineToFile(DENIED_FILE, rec);
+
+      // Mostrar pantalla denegada indicando la materia requerida
       showAccessDenied(String("No pertenece a: ") + wantMat, uid);
       ledOff();
+
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+      return;
     }
-
-    mfrc522.PICC_HaltA();
-    mfrc522.PCD_StopCrypto1();
-    return;
+  } else {
+    // No hay clase en curso — permitir si tiene al menos una materia (registro de entrada libre) o denegar según tu política.
+    // Aquí asumimos que si lista de materias no está vacía se permite, sino se deniega.
+    if (!userMats.empty()) {
+      String chosenMat = userMats[0];
+      String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMat + "\"," + "\"entrada\"";
+      appendLineToFile(ATT_FILE, rec);
+      puerta.write(90);
+      showAccessGranted(name, chosenMat, uid);
+      puerta.write(0);
+      ledOff();
+    } else {
+      String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + name;
+      addNotification(uid, name, account, note);
+      appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA\""));
+      showAccessDenied("Sin materia asignada", uid);
+      ledOff();
+      mfrc522.PICC_HaltA();
+      mfrc522.PCD_StopCrypto1();
+      return;
+    }
   }
 
-  // no hay clase -> permitir
-  {
-    String usedMat = (userMats.size() > 0 ? userMats[0] : "");
-    String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + usedMat + "\"," + "\"entrada\"";
-    appendLineToFile(ATT_FILE, rec);
-    String note = "Entrada fuera de horario (no hay clase). Usuario: " + name + (usedMat.length() ? " Materia: " + usedMat : "");
-    addNotification(uid, name, account, note);
-    puerta.write(90);
-    showAccessGranted(name, usedMat, uid);
-    puerta.write(0);
-    ledOff();
-
-    mfrc522.PICC_HaltA();
-    mfrc522.PCD_StopCrypto1();
-    return;
-  }
+  // finalizar interacción con tarjeta
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
 }

@@ -4,12 +4,11 @@
 #include "files_utils.h"
 #include "globals.h"
 #include <SPIFFS.h>
-#include "web_utils.h"
+#include "web_utils.h"   // para htmlEscape(), csvEscape(), etc.
 #include <algorithm>
-#include "display.h"
-#include "time_utils.h"
+#include "display.h"     // <<-- para showWaitingMessage()
 
-// ... el resto del código original (sin cambios lógicos) ...
+// Nota: SelfRegSession y selfRegSessions deben estar declarados en globals.h
 
 static String makeRandomToken() {
   uint32_t r = (uint32_t)esp_random();
@@ -40,6 +39,7 @@ static void cleanupExpiredSessions() {
   }
 }
 
+// POST /self_register_start
 void handleSelfRegisterStartPOST() {
   cleanupExpiredSessions();
 
@@ -60,6 +60,7 @@ void handleSelfRegisterStartPOST() {
     return;
   }
 
+  // Crear sesión y push_back
   SelfRegSession s;
   s.token = makeRandomToken();
   s.uid = uid;
@@ -74,6 +75,7 @@ void handleSelfRegisterStartPOST() {
   server.send(200, "application/json", resp);
 }
 
+// GET /self_register?token=...
 void handleSelfRegisterGET() {
   cleanupExpiredSessions();
 
@@ -90,6 +92,7 @@ void handleSelfRegisterGET() {
 
   SelfRegSession &s = selfRegSessions[idx];
 
+  // Formulario HTML sencillo
   String html = htmlHeader("Auto-registro de Tarjeta");
   html += "<div class='card'><h2>Auto-registro</h2>";
   html += "<p class='small'>Complete su Nombre y Cuenta (7 dígitos). UID prellenado. Esta URL expira en 5 min.</p>";
@@ -117,6 +120,7 @@ void handleSelfRegisterGET() {
   server.send(200, "text/html", html);
 }
 
+// POST /self_register_submit
 void handleSelfRegisterPost() {
   cleanupExpiredSessions();
 
@@ -137,6 +141,7 @@ void handleSelfRegisterPost() {
     return;
   }
 
+  // Validaciones básicas
   if (uid.length() == 0 || name.length() == 0 || account.length() != 7) {
     server.send(400, "text/plain", "datos invalidos");
     return;
@@ -145,17 +150,20 @@ void handleSelfRegisterPost() {
     if (!isDigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
   }
 
+  // Revisar UID no registrado ya
   if (findAnyUserByUID(uid).length() > 0) {
     removeSessionIndex(idx);
     server.send(409, "text/plain", "UID already registered");
     return;
   }
 
+  // Si materia provista, asegurar que exista
   if (materia.length() && !courseExists(materia)) {
     server.send(400, "text/plain", "Materia no registrada");
     return;
   }
 
+  // Guardar usuario
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
   if (!appendLineToFile(USERS_FILE, line)) {
@@ -163,17 +171,35 @@ void handleSelfRegisterPost() {
     return;
   }
 
+  // Guardar attendance (captura_self)
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura_self\"";
   if (!appendLineToFile(ATT_FILE, rec)) {
     server.send(500, "text/plain", "Error guardando attendance");
     return;
   }
 
+  // Notificación opcional para admin
   String note = "Auto-registro completado. Usuario: " + name + " (" + account + ")";
   addNotification(uid, name, account, note);
 
-  removeSessionIndex(idx);
+  // Si el token coincide con la sesión que está mostrando QR en display -> limpiar flags
+  if (token == currentSelfRegToken) {
+    // eliminar session correspondiente
+    for (int i = (int)selfRegSessions.size()-1; i >= 0; --i) {
+      if (selfRegSessions[i].token == token) selfRegSessions.erase(selfRegSessions.begin() + i);
+    }
+    awaitingSelfRegister = false;
+    currentSelfRegToken = String();
+    currentSelfRegUID = String();
+    awaitingSinceMs = 0;
+    // actualizar display
+    showWaitingMessage();
+  } else {
+    // eliminar sesion por idx (si todavía existe)
+    removeSessionIndex(idx);
+  }
 
+  // Página de confirmación
   String html = htmlHeader("Registro completado");
   html += "<div class='card'><h2>✅ Registro completado</h2>";
   html += "<p class='small'>Gracias — su tarjeta ha sido registrada correctamente.</p>";

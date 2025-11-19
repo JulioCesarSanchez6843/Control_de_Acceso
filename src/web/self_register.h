@@ -1,20 +1,22 @@
+// src/self_register.h
 #pragma once
-// self_register.h - endpoints para auto-registro (alumno)
 
-/*
-  Provee:
-    POST  /self_register_start   -> handleSelfRegisterStartPOST
-    GET   /self_register         -> handleSelfRegisterGET
-    POST  /self_register_submit  -> handleSelfRegisterPost
-
-  Nota: la estructura SelfRegSession está definida en globals.h para evitar
-  redefiniciones en múltiples unidades de traducción.
-*/
-
+#include "globals.h"   // contiene la definición de SelfRegSession y selfRegSessions
 #include <Arduino.h>
-#include "globals.h"
 
-// Handlers (implementados en self_register.cpp)
-void handleSelfRegisterStartPOST();
+// Handlers web para self-registration
+// Profesor inicia sesión (POST) -> crea una SelfRegSession
+void handleSelfRegisterStartPOST(); 
+
+// Alumno accede con token (GET), muestra formulario
 void handleSelfRegisterGET();
+
+// Alumno envía datos del formulario (POST)
 void handleSelfRegisterPost();
+
+// Opcional: utilidades expuestas (si las usas en otros módulos)
+// Buscar sesión por token (devuelve index o -1 si no existe)
+int findSelfRegSessionIndexByToken(const String &token);
+
+// Elimina una sesión por index (si quieres exponerlo)
+void removeSelfRegSessionByIndex(int idx);
