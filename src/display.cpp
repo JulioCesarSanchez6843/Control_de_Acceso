@@ -30,7 +30,7 @@
   #define HIGH 0x1
 #endif
 
-static const unsigned long ACCESS_SCREEN_MS = 5000UL; // 5s
+static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s
 
 // ----------------- Helpers gráficos -----------------
 static void drawCheckIcon(int cx, int cy, int r) {
@@ -41,7 +41,7 @@ static void drawCheckIcon(int cx, int cy, int r) {
   int y2 = cy + r/3;
   int x3 = cx + r/2;
   int y3 = cy - r/4;
-  for (int off = -2; off <= 2; ++off) {
+  for (int off = -1; off <= 1; ++off) {
     tft.drawLine(x1, y1 + off, x2, y2 + off, ST77XX_WHITE);
     tft.drawLine(x2, y2 + off, x3, y3 + off, ST77XX_WHITE);
   }
@@ -50,14 +50,13 @@ static void drawCheckIcon(int cx, int cy, int r) {
 static void drawCrossIcon(int cx, int cy, int r) {
   tft.fillCircle(cx, cy, r, ST77XX_RED);
   int off = r * 3 / 4;
-  for (int o = -2; o <= 2; ++o) {
+  for (int o = -1; o <= 1; ++o) {
     tft.drawLine(cx - off + o, cy - off, cx + off + o, cy + off, ST77XX_WHITE);
     tft.drawLine(cx - off + o, cy + off, cx + off + o, cy - off, ST77XX_WHITE);
   }
 }
 
-// Dibuja texto centrado horizontalmente en la Y especificada.
-// size corresponde a setTextSize (1..n). Mantener tamaño pequeño para QR-screen.
+// Texto centrado (tamaño reducido por defecto para evitar solapamiento)
 static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
   tft.setTextSize(size);
   tft.setTextColor(color);
@@ -78,7 +77,8 @@ static void drawHeader() {
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
   tft.fillRect(0, 0, tft.width(), 22, ST77XX_BLACK);
-  drawCenteredText("CONTROL DE ACCESO LAB", 4, 1, ST77XX_WHITE);
+  // header reducido para ganar espacio
+  drawCenteredText("CONTROL DE ACCESO", 4, 1, ST77XX_WHITE);
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
@@ -100,9 +100,9 @@ void displayInit() {
 void showWaitingMessage() {
   drawHeader();
   clearContentArea();
-  // letras un poco más pequeñas que antes para dar aire
-  drawCenteredText("Bienvenido", 28, 2, ST77XX_WHITE);
-  drawCenteredText("Esperando tarjeta...", 60, 1, ST77XX_WHITE);
+  // Letras más pequeñas para dar más aire y evitar solapamiento
+  drawCenteredText("Bienvenido", 28, 1, ST77XX_WHITE);
+  drawCenteredText("Esperando tarjeta...", 56, 1, ST77XX_WHITE);
   ledOff();
 }
 
@@ -110,16 +110,16 @@ void showAccessGranted(const String &name, const String &materia, const String &
   tft.fillScreen(ST77XX_BLACK);
 
   int cx = tft.width() / 2;
-  int cy = 36;
-  int r = std::min(tft.width(), tft.height()) / 6;
+  int cy = 34;
+  int r = std::min(tft.width(), tft.height()) / 7;
   drawCheckIcon(cx, cy, r);
 
-  int baseY = cy + r + 6;
+  int baseY = cy + r + 4;
   drawCenteredText("ACCESO CONCEDIDO", baseY, 1, ST77XX_WHITE);
 
-  if (name.length()) drawCenteredText(name, baseY + 18, 1, ST77XX_WHITE);
-  if (materia.length()) drawCenteredText(materia, baseY + 30, 1, ST77XX_WHITE);
-  if (uid.length()) drawCenteredText(uid, baseY + 42, 1, ST77XX_WHITE);
+  if (name.length()) drawCenteredText(name, baseY + 16, 1, ST77XX_WHITE);
+  if (materia.length()) drawCenteredText(materia, baseY + 28, 1, ST77XX_WHITE);
+  if (uid.length()) drawCenteredText(uid, baseY + 40, 1, ST77XX_WHITE);
 
   ledGreenOn();
 
@@ -135,17 +135,17 @@ void showAccessDenied(const String &reason, const String &uid) {
   tft.fillScreen(ST77XX_BLACK);
 
   int cx = tft.width() / 2;
-  int cy = 36;
-  int r = std::min(tft.width(), tft.height()) / 6;
+  int cy = 34;
+  int r = std::min(tft.width(), tft.height()) / 7;
   drawCrossIcon(cx, cy, r);
 
-  int baseY = cy + r + 6;
+  int baseY = cy + r + 4;
   drawCenteredText("ACCESO DENEGADO", baseY, 1, ST77XX_WHITE);
 
-  if (reason.length()) drawCenteredText(reason, baseY + 18, 1, ST77XX_WHITE);
-  else drawCenteredText("Tarjeta no reconocida", baseY + 18, 1, ST77XX_WHITE);
+  if (reason.length()) drawCenteredText(reason, baseY + 16, 1, ST77XX_WHITE);
+  else drawCenteredText("Tarjeta no reconocida", baseY + 16, 1, ST77XX_WHITE);
 
-  if (uid.length()) drawCenteredText(uid, baseY + 36, 1, ST77XX_WHITE);
+  if (uid.length()) drawCenteredText(uid, baseY + 32, 1, ST77XX_WHITE);
 
   ledRedOn();
 
@@ -158,23 +158,18 @@ void showAccessDenied(const String &reason, const String &uid) {
 }
 
 // ----------------- Dibujar QR en la pantalla -----------------
-// Cambios principales:
-//  - NO dibujar header (quitamos "CONTROL DE ACCESO LAB") para ganar espacio.
-//  - Ajustes de tamaño y posicionamiento para evitar que el texto quede encima.
+// Dibuja QR en pantalla sin header para maximizar espacio.
+// pixelBoxSize es sugerido; lo limitamos para evitar solapamiento.
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   using qrcodegen::QrCode;
-
-  // Generar QR (usamos valor entero 0 para ECC LOW si el enum choca con macros)
+  // genera QR con ECC LOW (enum puede chocar con macros)
   QrCode qr = QrCode::encodeText(url.c_str(), static_cast<qrcodegen::QrCode::Ecc>(0));
-  int s = qr.getSize(); // módulos por lado
+  int s = qr.getSize();
 
-  // Calcular escala (tam módulo en px)
-  int maxBox = pixelBoxSize;
-  // si pixelBoxSize es mayor que pantalla, ajustamos al 80% del menor lado
+  // Limitar tamaño del QR para que no cubra toda la pantalla
   int screenMin = std::min(tft.width(), tft.height());
-  if (maxBox > screenMin) {
-    maxBox = (screenMin * 80) / 100; // 80% del menor lado
-  }
+  int allowed = (screenMin * 60) / 100; // usar 60% del lado menor por defecto
+  int maxBox = std::min(pixelBoxSize, allowed);
 
   int modulePx = maxBox / s;
   if (modulePx <= 0) modulePx = 1;
@@ -183,28 +178,24 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   // limpiar pantalla completa (NO header) para tener todo el espacio
   tft.fillScreen(ST77XX_BLACK);
 
-  // Centrar el QR en toda la pantalla (más espacio al top porque quitamos header)
   int left = (tft.width() - totalPx) / 2;
   int top  = (tft.height() - totalPx) / 2;
   if (left < 0) left = 0;
   if (top < 0) top = 0;
 
-  // Fondo blanco para el QR con pequeño padding
   const int pad = 3;
   int bgLeft = left - pad;
   int bgTop  = top  - pad;
   int bgW    = totalPx + 2 * pad;
   int bgH    = totalPx + 2 * pad;
 
-  // Asegurar que el fondo no sobresalga de la pantalla
-  if (bgLeft < 0) { bgLeft = 0; }
-  if (bgTop  < 0) { bgTop = 0; }
+  if (bgLeft < 0) bgLeft = 0;
+  if (bgTop < 0) bgTop = 0;
   if (bgLeft + bgW > tft.width())  bgW = tft.width() - bgLeft;
   if (bgTop  + bgH > tft.height()) bgH = tft.height() - bgTop;
 
   tft.fillRect(bgLeft, bgTop, bgW, bgH, ST77XX_WHITE);
 
-  // dibujar módulos (negros sobre fondo blanco)
   for (int y = 0; y < s; ++y) {
     for (int x = 0; x < s; ++x) {
       bool dark = qr.getModule(x, y);
@@ -214,55 +205,73 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
     }
   }
 
-  // Texto indicativo: usamos texto más pequeño y lo colocamos abajo, centrado
-  // para evitar solapamiento con el QR.
+  // Mensaje pequeño, fuente reducida, preferiblemente arriba si espacio debajo es poco
   String hint = "Escanee el QR para registrarse";
-  // Si queda poco espacio debajo, colocamos texto arriba.
-  int spaceBelow = tft.height() - (top + totalPx);
-  int textY;
-  if (spaceBelow > 18) {
-    textY = top + totalPx + 4; // texto debajo del QR
-  } else {
-    // poco espacio, colocarlo en la parte superior con margen
-    textY = 4;
-  }
-
-  tft.setTextSize(1); // tamaño pequeño para que quepa
+  tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  // imprimir centrado manualmente
   int16_t x1, y1; uint16_t w, h;
+  int textY;
+  int spaceBelow = tft.height() - (top + totalPx);
+  if (spaceBelow > 18) textY = top + totalPx + 2;
+  else textY = 2;
   tft.getTextBounds(hint, 0, textY, &x1, &y1, &w, &h);
-  int tx = (tft.width() - w) / 2;
-  if (tx < 0) tx = 0;
+  int tx = (tft.width() - w) / 2; if (tx < 0) tx = 0;
   tft.setCursor(tx, textY);
   tft.print(hint);
-
-  // NOTA: No bloqueamos aquí — quien muestra el QR debe gestionar awaiting flags.
 }
 
-// Mostrar banner pequeño informando bloqueo por auto-registro (overlay sobre pantalla actual).
+// Mostrar banner pequeño indicando bloqueo por auto-registro (overlay sobre pantalla actual).
 void showSelfRegisterBanner(const String &uid) {
-  // dibujar rectángulo pequeño en la parte superior (sin borrar QR)
-  int h = 20;
+  // rectángulo en la parte superior pequeño
+  int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
   tft.drawFastHLine(0, h-1, tft.width(), ST77XX_WHITE);
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  String t = "Usuario registrando... No leer nuevas tarjetas";
-  // recortar si muy largo
-  if (t.length() > 40) t = t.substring(0, 40);
+  String t = "Registrando usuario... No pasar otra tarjeta";
+  if (t.length() > 48) t = t.substring(0, 48);
   int16_t x1,y1; uint16_t w,hb;
   tft.getTextBounds(t,0,2,&x1,&y1,&w,&hb);
   int x = (tft.width()-w)/2; if (x<0) x=0;
   tft.setCursor(x, 2);
   tft.print(t);
 
-  // si se proporciona UID mostrarlo a la derecha pequeño
   if (uid.length()) {
     String s = uid;
     if (s.length() > 12) s = s.substring(0,12);
     tft.setCursor(2, 2); tft.print(s);
   }
+}
+
+// ----------------- Indicador modo captura -----------------
+// batch == true -> muestra "Modo: Batch" (si paused=true muestra "(PAUSADO)")
+// batch == false -> muestra "Modo: Individual"
+void showCaptureMode(bool batch, bool paused) {
+  // dibuja un banner pequeño bajo el header (no borra todo)
+  int bannerH = 18;
+  int y = 22; // justo debajo del header area
+  tft.fillRect(0, y, tft.width(), bannerH, ST77XX_BLACK);
+  tft.drawFastHLine(0, y + bannerH - 1, tft.width(), ST77XX_WHITE);
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_WHITE);
+
+  String txt;
+  if (batch) {
+    txt = "Modo Captura: BATCH";
+    if (paused) txt += " (PAUSADO)";
+    else txt += " (ACTIVO)";
+  } else {
+    txt = "Modo Captura: INDIVIDUAL";
+  }
+
+  // recortar si muy largo
+  if (txt.length() > 48) txt = txt.substring(0, 48);
+  int16_t x1,y1; uint16_t w,h;
+  tft.getTextBounds(txt,0,y+2,&x1,&y1,&w,&h);
+  int x = (tft.width() - w) / 2;
+  if (x < 0) x = 0;
+  tft.setCursor(x, y + 2);
+  tft.print(txt);
 }
 
 // ----------------- LEDs -----------------
