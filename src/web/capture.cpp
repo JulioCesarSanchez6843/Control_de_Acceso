@@ -1,5 +1,5 @@
 // src/web/capture.cpp
-// Captura: modo individual (original) + modo batch (cola de UIDs) + edición desde Students.
+// Captura: landing (dos botones) -> individual o batch (cada uno en su propia página)
 
 #include "capture.h"
 #include "globals.h"
@@ -8,8 +8,9 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ctype.h>
+#include "self_register.h" // para SelfRegSession y selfRegSessions
 
-// Variables globales (declaradas en globals.h)
+// Globals (de globals.h)
 extern volatile bool captureMode;
 extern volatile bool captureBatchMode;
 extern String captureUID;
@@ -17,15 +18,13 @@ extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
-// Usar la constante de globals.h para el archivo de cola.
-// Asegúrate en globals.h que CAPTURE_QUEUE_FILE esté declarado extern y definido en globals.cpp
-// Si por alguna razón prefieres usar un archivo local, reemplaza CAPTURE_QUEUE_FILE por la ruta fija.
+// Archivo de cola (usa la constante global si la tienes, si no se usa esta ruta)
 #ifndef CAPTURE_QUEUE_FILE
 static const char *CAPTURE_QUEUE_FILE_LOCAL = "/capture_queue.csv";
 #define CAPTURE_QUEUE_FILE CAPTURE_QUEUE_FILE_LOCAL
 #endif
 
-// -------------------- Helpers de cola --------------------
+// ---------------- Helpers de cola ----------------
 static std::vector<String> readCaptureQueue() {
   std::vector<String> out;
   if (!SPIFFS.exists(CAPTURE_QUEUE_FILE)) return out;
@@ -39,44 +38,46 @@ static std::vector<String> readCaptureQueue() {
   return out;
 }
 
-// Evita duplicados simples (compara texto exacto).
 static bool appendUidToCaptureQueue(const String &uid) {
   if (uid.length() == 0) return false;
-  // evitar duplicados
   auto q = readCaptureQueue();
   for (auto &u : q) if (u == uid) return false;
-  // guardar la UID como línea simple (sin comillas)
   return appendLineToFile(CAPTURE_QUEUE_FILE, uid);
 }
 
 static bool clearCaptureQueueFile() {
-  if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) {
-    return SPIFFS.remove(CAPTURE_QUEUE_FILE);
-  }
+  if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) return SPIFFS.remove(CAPTURE_QUEUE_FILE);
   return true;
 }
 
-// -------------------- Página de captura --------------------
+// ---------------- Landing: elegir modo ----------------
 void handleCapturePage() {
-  // No forzamos captureMode completo aquí: lo iniciará el usuario (individual o batch).
+  // Página simple con solo dos botones que redirigen a /capture_individual o /capture_batch
+  String html = htmlHeader("Capturar Tarjeta");
+  html += "<div class='card'><h2>Capturar Tarjeta</h2>";
+  html += "<p class='small'>Acerca la tarjeta. Si ya existe en otra materia se autocompletan los campos. Seleccione un modo:</p>";
+  html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:18px;'>";
+  html += "<a class='btn btn-blue' href='/capture_individual'>Individual</a>";
+  html += "<a class='btn btn-blue' href='/capture_batch'>Batch (varias tarjetas)</a>";
+  html += "</div></div>" + htmlFooter();
+  server.send(200, "text/html", html);
+}
+
+// ---------------- Individual page ----------------
+void handleCaptureIndividualPage() {
+  // Arrancar modo captura individual
+  captureMode = true;
+  captureBatchMode = false;
   captureUID = "";
   captureName = "";
   captureAccount = "";
   captureDetectedAt = 0;
 
-  String html = htmlHeader("Capturar Tarjeta");
-  html += "<div class='card'><h2>Capturar Tarjeta</h2>";
-  html += "<p class='small'>Acerca la tarjeta. Si ya existe en otra materia se autocompletan los campos. Selecciona Materia y confirma.</p>";
+  String html = htmlHeader("Capturar - Individual");
+  html += "<div class='card'><h2>Captura Individual</h2>";
+  html += "<p class='small'>Acerca la tarjeta. UID autocompletará los campos si existe.</p>";
 
-  // Botones para iniciar modos (formularios POST/GET según preferencia)
-  html += "<div style='display:flex;gap:8px;align-items:center;margin-bottom:12px'>";
-  html += "<form method='POST' action='/capture_start' style='display:inline'><button class='btn btn-blue' type='submit'>Individual</button></form>";
-  // web_routes usa GET para iniciar batch en la versión que mostraste; hacemos ambos seguros:
-  html += "<form method='GET' action='/capture_batch_start' style='display:inline'><button class='btn btn-blue' type='submit'>Batch (varias tarjetas)</button></form>";
-  html += "</div>";
-
-  // --- Individual form (original) ---
-  html += "<div id='individual_div'>";
+  // Formulario individual
   html += "<form id='capForm' method='POST' action='/capture_confirm'>";
   html += "UID (autocompleta):<br><input id='uid' name='uid' readonly style='background:#eee'><br>";
   html += "Nombre:<br><input id='name' name='name' required><br>";
@@ -88,85 +89,97 @@ void handleCapturePage() {
   for (auto &c : courses) html += "<option value='" + c.materia + "'>" + c.materia + " (" + c.profesor + ")</option>";
   html += "</select><br>";
 
-  html += "<div id='msg' style='color:red;font-weight:bold;margin-top:10px;'></div>";
-
   html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
   html += "<button type='submit' class='btn btn-green'>Confirmar</button>";
   html += "<a class='btn btn-red' href='/' onclick='fetch(\"/capture_stop\");return true;'>Cancelar</a>";
   html += "</div>";
-  html += "</form>";
-  html += "</div>"; // individual_div
+  html += "</form></div>" + htmlFooter();
 
-  // --- Batch UI ---
-  html += "<div id='batch_div' style='margin-top:16px'>";
-  html += "<h3>Batch capture</h3>";
-  html += "<p class='small'>Acerca varias tarjetas; las UIDs quedarán en una cola. Luego puede limpiar la cola o generar enlaces de auto-registro.</p>";
-
-  html += "<div style='display:flex;gap:8px;margin-bottom:8px;'>";
-  html += "<form method='GET' action='/capture_batch_start' style='display:inline'><button class='btn btn-green' type='submit'>Iniciar Batch</button></form>";
-  html += "<form method='POST' action='/capture_batch_stop' style='display:inline'><button class='btn btn-red' type='submit'>Detener Batch</button></form>";
-  html += "</div>";
-
-  html += "<p>Cola actual: <span id='queue_count'>" + String(readCaptureQueue().size()) + "</span> UID(s).</p>";
-  html += "<div style='display:flex;gap:8px;margin-top:8px'>";
-  html += "<form method='POST' action='/capture_clear_queue' onsubmit='return confirm(\"Limpiar cola? Esta acción borrará la cola.\")' style='display:inline'><button class='btn btn-red' type='submit'>Limpiar cola</button></form>";
-  html += "<form method='POST' action='/capture_generate_links' style='display:inline'><button class='btn btn-blue' type='submit'>Generar links de auto-registro</button></form>";
-  html += "</div>";
-
-  html += "<div id='queue_list' style='background:#f5f7fb;padding:8px;border-radius:8px;min-height:80px;margin-top:8px;'>No hay UIDs capturadas aún.</div>";
-  html += "</div>"; // batch_div
-
-  // JS: polling para individual (autocompleta) y refresco de cola
+  // JS polling para autocompletar UID
   html += R"rawliteral(
-  <script>
-  function pollUID(){
-    fetch('/capture_poll')
-      .then(r=>r.json())
-      .then(j=>{
-        if(j.status=='found'){
-          document.getElementById('uid').value = j.uid || '';
-          if(j.name) document.getElementById('name').value = j.name;
-          if(j.account) document.getElementById('account').value = j.account;
-        }
-        setTimeout(pollUID,700);
-      })
-      .catch(e=>setTimeout(pollUID,1200));
-  }
-  pollUID();
-
-  // Poll queue count & list
-  function pollQueue(){
-    fetch('/capture_batch_poll')
-      .then(r=>r.json())
-      .then(j=>{
-        var cntEl = document.getElementById('queue_count');
-        if(cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
-        var list = document.getElementById('queue_list');
-        if(!j.uids || j.uids.length==0) list.innerHTML = 'No hay UIDs capturadas aún.';
-        else {
-          var html = '<ul>';
-          for(var i=0;i<j.uids.length;i++) html += '<li>' + j.uids[i] + '</li>';
-          html += '</ul>';
-          list.innerHTML = html;
-        }
-      })
-      .catch(e=>{});
-    setTimeout(pollQueue,1200);
-  }
-  pollQueue();
-
-  // stop capture on unload
-  window.addEventListener('beforeunload', function(){
-    try { navigator.sendBeacon('/capture_stop'); } catch(e){}
-  });
-  </script>
+    <script>
+    function pollUID(){
+      fetch('/capture_poll')
+        .then(r=>r.json())
+        .then(j=>{
+          if(j.status=='found'){
+            document.getElementById('uid').value = j.uid || '';
+            if(j.name) document.getElementById('name').value = j.name;
+            if(j.account) document.getElementById('account').value = j.account;
+          }
+          setTimeout(pollUID,700);
+        })
+        .catch(e=>setTimeout(pollUID,1200));
+    }
+    pollUID();
+    // stop capture on unload
+    window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
+    </script>
   )rawliteral";
 
-  html += "</div>" + htmlFooter();
   server.send(200, "text/html", html);
 }
 
-// -------------------- Polling individual --------------------
+// ---------------- Batch page ----------------
+void handleCaptureBatchPage() {
+  // Arrancar modo batch
+  captureMode = true;
+  captureBatchMode = true;
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
+
+  // Aseguramos que exista el archivo (no lo limpiamos automáticamente para no perder colas existentes),
+  // si quieres limpiar siempre, llama a clearCaptureQueueFile() aquí.
+  appendLineToFile(CAPTURE_QUEUE_FILE, String()); // crea si no existe (puede dejar línea vacía)
+
+  String html = htmlHeader("Capturar - Batch");
+  html += "<div class='card'><h2>Batch capture</h2>";
+  html += "<p class='small'>Acerca varias tarjetas; las UIDs quedarán en una cola. Luego puede limpiar la cola o generar enlaces.</p>";
+
+  html += "<div style='display:flex;gap:8px;margin-bottom:8px;'>";
+  html += "<form method='POST' action='/capture_batch_stop' style='display:inline'><button class='btn btn-red' type='submit'>Detener Batch</button></form>";
+  html += "<form method='POST' action='/capture_clear_queue' style='display:inline' onsubmit='return confirm(\"Limpiar cola? Esta acción borrará la cola.\")'><button class='btn btn-red' type='submit'>Limpiar cola</button></form>";
+  html += "<form method='POST' action='/capture_generate_links' style='display:inline'><button class='btn btn-blue' type='submit'>Generar links de auto-registro</button></form>";
+  html += "</div>";
+
+  html += "<p>Cola actual: <span id='queue_count'>0</span> UID(s).</p>";
+  html += "<div id='queue_list' style='background:#f5f7fb;padding:8px;border-radius:8px;min-height:80px;margin-top:8px;'>Cargando...</div>";
+  html += "<p style='margin-top:10px'><a class='btn btn-blue' href='/'>Volver</a></p>";
+  html += "</div>" + htmlFooter();
+
+  // JS para poll de cola
+  html += R"rawliteral(
+    <script>
+    function pollQueue(){
+      fetch('/capture_batch_poll')
+        .then(r=>r.json())
+        .then(j=>{
+          var cntEl = document.getElementById('queue_count');
+          if(cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
+          var list = document.getElementById('queue_list');
+          if(!j.uids || j.uids.length==0) list.innerHTML = 'No hay UIDs capturadas aún.';
+          else {
+            var html = '<ul>';
+            for(var i=0;i<j.uids.length;i++) html += '<li>' + j.uids[i] + '</li>';
+            html += '</ul>';
+            list.innerHTML = html;
+          }
+        })
+        .catch(e=>{});
+      setTimeout(pollQueue,1000);
+    }
+    pollQueue();
+    // stop capture on unload
+    window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
+    </script>
+  )rawliteral";
+
+  server.send(200, "text/html", html);
+}
+
+// ---------------- Polling individual ----------------
 void handleCapturePoll() {
   if (captureUID.length() == 0) {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
@@ -179,7 +192,7 @@ void handleCapturePoll() {
   server.send(200, "application/json", j);
 }
 
-// -------------------- Confirmación individual (POST) --------------------
+// ---------------- Confirm individual ----------------
 void handleCaptureConfirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("materia")) {
@@ -204,99 +217,57 @@ void handleCaptureConfirm() {
     return;
   }
 
-  // Evitar duplicados en misma materia.
   if (existsUserUidMateria(uid, materia) || existsUserAccountMateria(account, materia)) {
-    captureMode = false;
-    captureBatchMode = false;
+    captureMode = false; captureBatchMode = false;
     String html = htmlHeader("Duplicado detectado");
     html += "<div class='card'><h3 style='color:red;'>⚠️ El estudiante ya está registrado en esta materia.</h3>";
-    html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-    html += "<a href='/' class='btn btn-blue'>Inicio</a> ";
-    html += "<a href='/capture' class='btn btn-green'>Capturar otro</a>";
-    html += "</div></div>";
+    html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'><a href='/' class='btn btn-blue'>Inicio</a> <a href='/capture' class='btn btn-green'>Capturar otro</a></div></div>";
     html += htmlFooter();
     server.send(200,"text/html",html);
     return;
   }
 
-  // Guardar nuevo usuario y attendance
   String created = nowISO();
-  String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," +
-                "\"" + materia + "\"," + "\"" + created + "\"";
+  String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
   if (!appendLineToFile(USERS_FILE, line)) { server.send(500, "text/plain", "Error guardando usuario"); return; }
 
-  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," +
-               "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura\"";
+  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura\"";
   if (!appendLineToFile(ATT_FILE, rec)) { server.send(500, "text/plain", "Error guardando attendance"); return; }
 
-  // Reset modo captura
-  captureMode = false;
-  captureBatchMode = false;
-  captureUID = "";
-  captureName = "";
-  captureAccount = "";
-  captureDetectedAt = 0;
+  captureMode = false; captureBatchMode = false;
+  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
   String html = htmlHeader("Registrado correctamente");
   html += "<div class='card'><h3>✅ Usuario registrado correctamente.</h3>";
-  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-  html += "<a href='/' class='btn btn-blue'>Inicio</a> ";
-  html += "<a href='/capture' class='btn btn-green'>Capturar otro</a>";
-  html += "</div></div>";
+  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'><a href='/' class='btn btn-blue'>Inicio</a> <a href='/capture' class='btn btn-green'>Capturar otro</a></div></div>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
 
-// -------------------- Start/Stop capture (individual & batch) --------------------
+// ---------------- Start/Stop compatibility ----------------
 void handleCaptureStartPOST() {
-  captureMode = true;
-  captureBatchMode = false;
-  captureUID = "";
-  captureName = "";
-  captureAccount = "";
-  captureDetectedAt = 0;
-  server.sendHeader("Location", "/capture");
+  // compat: iniciar modo individual
+  captureMode = true; captureBatchMode = false;
+  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+  server.sendHeader("Location", "/capture_individual");
   server.send(303, "text/plain", "capture started");
 }
 
-// GET /capture_batch_start -> activa batch y limpia cola
-void handleCaptureBatchStartGET() {
-  captureMode = true;
-  captureBatchMode = true;
-  captureUID = "";
-  captureName = "";
-  captureAccount = "";
-  captureDetectedAt = 0;
-  // limpiar cola antes de empezar (si quieres conservar colas, cambia esto)
-  clearCaptureQueueFile();
-  server.sendHeader("Location", "/capture");
-  server.send(303, "text/plain", "batch started");
-}
-
 void handleCaptureBatchStopPOST() {
-  captureMode = false;
-  captureBatchMode = false;
-  captureUID = "";
-  captureName = "";
-  captureAccount = "";
-  captureDetectedAt = 0;
+  captureMode = false; captureBatchMode = false;
+  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
   server.sendHeader("Location", "/capture");
   server.send(303, "text/plain", "batch stopped");
 }
 
 void handleCaptureStopGET() {
-  captureMode = false;
-  captureBatchMode = false;
-  captureUID = "";
-  captureName = "";
-  captureAccount = "";
-  captureDetectedAt = 0;
+  captureMode = false; captureBatchMode = false;
+  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
   server.sendHeader("Location", "/");
   server.send(303, "text/plain", "stopped");
 }
 
-// -------------------- Queue endpoints --------------------
-// GET /capture_batch_poll -> JSON { uids: [...] }
+// ---------------- Batch endpoints ----------------
 void handleCaptureBatchPollGET() {
   auto u = readCaptureQueue();
   String j = "{\"uids\":[";
@@ -308,17 +279,13 @@ void handleCaptureBatchPollGET() {
   server.send(200, "application/json", j);
 }
 
-// POST /capture_clear_queue
 void handleCaptureBatchClearPOST() {
   clearCaptureQueueFile();
-  captureMode = false;
-  captureBatchMode = false;
+  captureMode = false; captureBatchMode = false;
   server.sendHeader("Location", "/capture");
   server.send(303, "text/plain", "cleared");
 }
 
-// POST /capture_generate_links
-// Lee la cola, genera sesiones (selfRegSessions) y devuelve una página con enlaces.
 void handleCaptureGenerateLinksPOST() {
   auto lines = readCaptureQueue();
   if (lines.size() == 0) {
@@ -331,7 +298,6 @@ void handleCaptureGenerateLinksPOST() {
   for (auto &ln : lines) {
     String uid = ln; uid.trim();
     if (uid.length() == 0) continue;
-    // generar token
     uint32_t r = (uint32_t)esp_random();
     uint32_t m = (uint32_t)millis();
     char buf[32];
@@ -346,10 +312,8 @@ void handleCaptureGenerateLinksPOST() {
     urls.push_back(String("/self_register?token=") + s.token);
   }
 
-  // limpiar cola
   clearCaptureQueueFile();
 
-  // mostrar página con enlaces
   String html = htmlHeader("Links de Auto-registro");
   html += "<div class='card'><h2>Links generados</h2>";
   html += "<p class='small'>Estos enlaces expirarán en 5 minutos. Entregue el QR o enlace al alumno para que complete su registro.</p>";
@@ -360,8 +324,7 @@ void handleCaptureGenerateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
-// -------------------- Edición de alumno desde Students (GET/POST) --------------------
-// sanitize return_to
+// ---------------- Edición desde Students (igual que antes) ----------------
 static String sanitizeReturnTo(const String &rt) {
   if (rt.length() > 0 && rt[0] == '/') return rt;
   return String("/students_all");

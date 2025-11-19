@@ -41,9 +41,18 @@ void registerRoutes() {
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // --- Captura (modo manual) ---
-  // Página principal de captura (muestra toggle Individual / Batch)
+  // --- Captura (nuevo flujo: landing + páginas separadas) ---
+  // Landing: elige Individual o Batch
   server.on("/capture", HTTP_GET, handleCapturePage);
+
+  // Página individual (muestra formulario y arranca modo individual)
+  server.on("/capture_individual", HTTP_GET, handleCaptureIndividualPage);
+
+  // Página batch (muestra cola y arranca modo batch)
+  server.on("/capture_batch", HTTP_GET, handleCaptureBatchPage);
+
+  // Compatibilidad: iniciar captura vía POST (si algún código antiguo la llama)
+  server.on("/capture_start", HTTP_POST, handleCaptureStartPOST);
 
   // Confirmación individual (form submit)
   server.on("/capture_confirm", HTTP_POST, handleCaptureConfirm);
@@ -54,13 +63,15 @@ void registerRoutes() {
   // Stop general de modo captura (sirve para Individual y Batch)
   server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
 
-  // --- Endpoints de Batch (coinciden con la implementación del capture.cpp que tienes) ---
-  // Iniciar batch (GET en tu capture.cpp actual)
-  server.on("/capture_batch_start", HTTP_GET, handleCaptureBatchStartGET);
+  // --- Endpoints Batch ---
   // Obtener estado / lista de UIDs en cola
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
+  // Detener batch (POST)
+  server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
   // Limpiar cola (POST)
   server.on("/capture_clear_queue", HTTP_POST, handleCaptureBatchClearPOST);
+  // Generar links de auto-registro desde la cola (POST)
+  server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
   // Edición vía capture (reutiliza UI de captura para editar usuario)
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
