@@ -16,13 +16,9 @@
 #include "web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
 
-// Registra todas las rutas del servidor web.
-// Cada entry es equivalente a llamar server.on(...) en setup().
 void registerRoutes() {
-  // Página principal
   server.on("/", handleRoot);
 
-  // --- Materias: CRUD y pantallas relacionadas ---
   server.on("/materias", handleMaterias);
   server.on("/materias/new", handleMateriasNew);
   server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
@@ -30,69 +26,41 @@ void registerRoutes() {
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 
-  // Rutas para asignación de horarios por materia (nuevo flujo)
   server.on("/materias_new_schedule", handleMateriasNewScheduleGET);
   server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
   server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
 
-  // --- Students: ver por materia / ver todos / acciones ---
   server.on("/students", handleStudentsForMateria);
   server.on("/students_all", handleStudentsAll);
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // --- Captura (nuevo flujo: landing + páginas separadas) ---
-  // Landing: elige Individual o Batch
+  // Captura
   server.on("/capture", HTTP_GET, handleCapturePage);
-
-  // Página individual (muestra formulario y arranca modo individual)
   server.on("/capture_individual", HTTP_GET, handleCaptureIndividualPage);
-
-  // Página batch (muestra cola y arranca modo batch)
   server.on("/capture_batch", HTTP_GET, handleCaptureBatchPage);
-
-  // Compatibilidad: iniciar captura vía POST (si algún código antiguo la llama)
   server.on("/capture_start", HTTP_POST, handleCaptureStartPOST);
-
-  // Confirmación individual (form submit)
   server.on("/capture_confirm", HTTP_POST, handleCaptureConfirm);
-
-  // Polling para autocompletar UID en formulario individual
   server.on("/capture_poll", HTTP_GET, handleCapturePoll);
-
-  // Stop general de modo captura (sirve para Individual y Batch)
   server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
 
-  // --- Endpoints Batch ---
-  // Obtener estado / lista de UIDs en cola
+  // Batch endpoints
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
-
-  // Detener batch (POST) - completa detención
   server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
-
-  // Limpiar cola (POST)
   server.on("/capture_clear_queue", HTTP_POST, handleCaptureBatchClearPOST);
-
-  // Pause / Resume (toggle) (POST)
   server.on("/capture_batch_pause", HTTP_POST, handleCaptureBatchPausePOST);
-
-  // Borrar la última UID capturada (POST)
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
-
-  // Cancelar batch (Volver) (POST) - limpia cola y libera sesión awaiting
   server.on("/capture_cancel", HTTP_POST, handleCaptureCancelPOST);
-
-  // Generar links de auto-registro desde la cola (POST) - opcional
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
-  // Edición vía capture (reutiliza UI de captura para editar usuario)
+  // NUEVO: terminar y guardar batch
+  server.on("/capture_finish", HTTP_POST, handleCaptureFinishPOST);
+
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
   server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);
 
-  // Estado / diagnóstico
   server.on("/status", handleStatus);
 
-  // --- Schedules: grilla y edición ---
   server.on("/schedules", HTTP_GET, handleSchedulesGrid);
   server.on("/schedules/edit", HTTP_GET, handleSchedulesEditGrid);
   server.on("/schedules_add_slot", HTTP_POST, handleSchedulesAddSlot);
@@ -102,20 +70,18 @@ void registerRoutes() {
   server.on("/schedules_for_add", HTTP_POST, handleSchedulesForMateriaAddPOST);
   server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST);
 
-  // --- Notificaciones ---
   server.on("/notifications", handleNotificationsPage);
   server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST);
 
-  // --- Edit user (formulario rápido) ---
   server.on("/edit", handleEditGet);
   server.on("/edit_post", HTTP_POST, handleEditPost);
 
-  // --- Self-registration (nuevo) ---
-  server.on("/self_register_start", HTTP_POST, handleSelfRegisterStartPOST); // profesor crea sesión
-  server.on("/self_register", HTTP_GET, handleSelfRegisterGET);             // alumno accede con token
-  server.on("/self_register_submit", HTTP_POST, handleSelfRegisterPost);    // submit desde móvil/alumno
+  server.on("/self_register_start", HTTP_POST, handleSelfRegisterStartPOST);
+  server.on("/self_register", HTTP_GET, handleSelfRegisterGET);
+  server.on("/self_register_submit", HTTP_POST, handleSelfRegisterPost);
+  // NUEVA RUTA: cancelar self-register (desde el formulario del alumno)
+  server.on("/self_register_cancel", HTTP_POST, handleSelfRegisterCancelPOST);
 
-  // --- Endpoints CSV (descarga directa de archivos) ---
   server.on("/users.csv", [](){
     if (!SPIFFS.exists(USERS_FILE)) { server.send(404,"text/plain","No users"); return; }
     File f = SPIFFS.open(USERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
@@ -131,7 +97,6 @@ void registerRoutes() {
     File f = SPIFFS.open(NOTIF_FILE, FILE_READ); server.streamFile(f,"text/csv"); f.close();
   });
 
-  // --- Historial ---
   server.on("/history", handleHistoryPage);
   server.on("/history.csv", handleHistoryCSV);
   server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);

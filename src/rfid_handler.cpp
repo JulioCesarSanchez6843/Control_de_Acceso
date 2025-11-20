@@ -5,11 +5,13 @@
 #include <SPIFFS.h>
 #include <MFRC522.h>
 #include <WiFi.h>
+#include <vector>
 
 #include "globals.h"
 #include "files_utils.h"
 #include "display.h"
 #include "time_utils.h"
+#include "web/self_register.h" // header en src/web/
 #include <ctype.h>
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
@@ -82,8 +84,12 @@ void rfidLoopHandler() {
   // --- Si estamos en Batch y hay un self-register en curso -> bloquear lecturas ---
   if (captureBatchMode && awaitingSelfRegister) {
     Serial.println("Lectura bloqueada: hay un auto-registro en curso. Ignorando tarjeta.");
-    // Mostrar banner en pantalla para informar
-    showSelfRegisterBanner(currentSelfRegUID);
+    // Mostrar banner en pantalla para informar (sin UID para evitar sobreimpresiones)
+    showSelfRegisterBanner(String()); // banner sin UID
+
+    // Mostrar mensaje rojo temporal indicando que espere su turno (3s)
+    showTemporaryRedMessage("Espere su turno: registro en curso", 3000UL);
+
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
     return;
@@ -122,7 +128,9 @@ void rfidLoopHandler() {
           // marcar esperando
           awaitingSelfRegister = true;
           currentSelfRegToken = s.token;
-          currentSelfRegUID = uid;
+          // NO seteamos currentSelfRegUID para evitar que el QR muestre la ID en pantalla
+          // Guardamos internamente la UID en la sesión pero no en la variable usada por la UI del QR.
+          currentSelfRegUID = String(); // <- vacío para que la pantalla QR no muestre UID
           awaitingSinceMs = millis();
 
           // Crear URL completa (usar IP)
@@ -132,7 +140,8 @@ void rfidLoopHandler() {
           // Mostrar QR en display (bloquea nuevas capturas hasta que alumno complete)
           int boxSize = min(tft.width(), tft.height()) - 24;
           showQRCodeOnDisplay(url, boxSize);
-          showSelfRegisterBanner(uid);
+          // Mostrar banner (sin UID para no sobreimprimir)
+          showSelfRegisterBanner(String());
         } else {
           Serial.println("UID ya registrado, no se genera QR (solo agregar a cola).");
         }
@@ -156,6 +165,9 @@ void rfidLoopHandler() {
       }
       captureDetectedAt = now;
       Serial.printf("Capture mode: UID=%s -> name='%s' acc='%s'\n", captureUID.c_str(), captureName.c_str(), captureAccount.c_str());
+
+      // actualizar display de captura individual si quieres animación/indicador:
+      showCaptureInProgress(false, captureUID);
     }
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();

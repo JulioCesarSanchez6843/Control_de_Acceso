@@ -9,28 +9,32 @@
 #include <Adafruit_ST7735.h>
 #include <algorithm> // std::min
 
-// Evitar choque de macros LOW/HIGH con qrcodegen.hpp (si usas qrcodegen).
+// Guardar y quitar macros problemáticas antes de incluir qrcodegen.hpp
+#pragma push_macro("LOW")
+#pragma push_macro("HIGH")
 #ifdef LOW
-  #define _QR_OLD_LOW
   #undef LOW
 #endif
 #ifdef HIGH
-  #define _QR_OLD_HIGH
   #undef HIGH
 #endif
 
 #include "qrcodegen.hpp"
 
-#ifdef _QR_OLD_LOW
-  #undef _QR_OLD_LOW
-  #define LOW 0x0
-#endif
-#ifdef _QR_OLD_HIGH
-  #undef _QR_OLD_HIGH
-  #define HIGH 0x1
-#endif
+#pragma pop_macro("HIGH")
+#pragma pop_macro("LOW")
 
 static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s
+static const unsigned long TEMP_RED_MS = 3000UL;      // 3s para mensajes rojos
+
+// Estado interno para restauración de pantalla tras mensajes temporales
+static bool g_lastWasQR = false;
+static String g_lastQRUrl = String();
+static int g_lastQRSize = 0;
+
+static bool g_lastWasCapture = false;
+static bool g_lastCaptureBatch = false;
+static String g_lastCaptureUID = String();
 
 // ----------------- Helpers gráficos -----------------
 static void drawCheckIcon(int cx, int cy, int r) {
@@ -77,7 +81,6 @@ static void drawHeader() {
   tft.setTextColor(ST77XX_WHITE);
   tft.setTextSize(1);
   tft.fillRect(0, 0, tft.width(), 22, ST77XX_BLACK);
-  // header reducido para ganar espacio
   drawCenteredText("CONTROL DE ACCESO", 4, 1, ST77XX_WHITE);
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
@@ -98,17 +101,26 @@ void displayInit() {
 }
 
 void showWaitingMessage() {
+  // actualizar estado
+  g_lastWasQR = false;
+  g_lastQRUrl = String();
+  g_lastWasCapture = false;
+  g_lastCaptureUID = String();
+
   drawHeader();
   clearContentArea();
-  // Letras más pequeñas para dar más aire y evitar solapamiento
   drawCenteredText("Bienvenido", 28, 1, ST77XX_WHITE);
   drawCenteredText("Esperando tarjeta...", 56, 1, ST77XX_WHITE);
   ledOff();
 }
 
 void showAccessGranted(const String &name, const String &materia, const String &uid) {
-  tft.fillScreen(ST77XX_BLACK);
+  // limpiar estado activo (no QR ni captura)
+  g_lastWasQR = false;
+  g_lastWasCapture = false;
+  g_lastCaptureUID = String();
 
+  tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
   int cy = 34;
   int r = std::min(tft.width(), tft.height()) / 7;
@@ -132,8 +144,12 @@ void showAccessGranted(const String &name, const String &materia, const String &
 }
 
 void showAccessDenied(const String &reason, const String &uid) {
-  tft.fillScreen(ST77XX_BLACK);
+  // limpiar estado activo
+  g_lastWasQR = false;
+  g_lastWasCapture = false;
+  g_lastCaptureUID = String();
 
+  tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
   int cy = 34;
   int r = std::min(tft.width(), tft.height()) / 7;
@@ -162,18 +178,24 @@ void showAccessDenied(const String &reason, const String &uid) {
 // pixelBoxSize es sugerido; lo limitamos para evitar solapamiento.
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   using qrcodegen::QrCode;
-  // genera QR con ECC LOW (enum puede chocar con macros)
   QrCode qr = QrCode::encodeText(url.c_str(), static_cast<qrcodegen::QrCode::Ecc>(0));
   int s = qr.getSize();
 
-  // Limitar tamaño del QR para que no cubra toda la pantalla
+  // Hacemos el QR un poco más pequeño para evitar solapamientos: usar el 52% del lado menor
   int screenMin = std::min(tft.width(), tft.height());
-  int allowed = (screenMin * 60) / 100; // usar 60% del lado menor por defecto
+  int allowed = (screenMin * 52) / 100; // 52% del lado menor
   int maxBox = std::min(pixelBoxSize, allowed);
 
   int modulePx = maxBox / s;
   if (modulePx <= 0) modulePx = 1;
   int totalPx = modulePx * s;
+
+  // marcar estado QR activo (para restauración luego)
+  g_lastWasQR = true;
+  g_lastQRUrl = url;
+  g_lastQRSize = pixelBoxSize;
+  g_lastWasCapture = false;
+  g_lastCaptureUID = String();
 
   // limpiar pantalla completa (NO header) para tener todo el espacio
   tft.fillScreen(ST77XX_BLACK);
@@ -188,7 +210,6 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   int bgTop  = top  - pad;
   int bgW    = totalPx + 2 * pad;
   int bgH    = totalPx + 2 * pad;
-
   if (bgLeft < 0) bgLeft = 0;
   if (bgTop < 0) bgTop = 0;
   if (bgLeft + bgW > tft.width())  bgW = tft.width() - bgLeft;
@@ -205,51 +226,54 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
     }
   }
 
-  // Mensaje pequeño, fuente reducida, preferiblemente arriba si espacio debajo es poco
-  String hint = "Escanee el QR para registrarse";
+  // Mensaje más pequeño y colocado para no sobreponer el QR
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
+
+  String hint = "Escanee el QR para registrarse";
   int16_t x1, y1; uint16_t w, h;
-  int textY;
   int spaceBelow = tft.height() - (top + totalPx);
-  if (spaceBelow > 18) textY = top + totalPx + 2;
+  int textY;
+  if (spaceBelow > 28) textY = top + totalPx + 2;
   else textY = 2;
+
   tft.getTextBounds(hint, 0, textY, &x1, &y1, &w, &h);
   int tx = (tft.width() - w) / 2; if (tx < 0) tx = 0;
   tft.setCursor(tx, textY);
   tft.print(hint);
+
+  // Mostrar info adicional (titulo) en lugar del UID para evitar sobreimpresiones
+  String title = "Registrando nuevo usuario";
+  int titleY = textY + 14;
+  if (titleY + 12 > tft.height()) titleY = textY - 12;
+  drawCenteredText(title, titleY, 1, ST77XX_WHITE);
+
+  // Mostrar banner superior pequeño para instrucción (no borra QR)
+  showSelfRegisterBanner(String());
 }
 
 // Mostrar banner pequeño indicando bloqueo por auto-registro (overlay sobre pantalla actual).
-void showSelfRegisterBanner(const String &uid) {
-  // rectángulo en la parte superior pequeño
+// No imprime UID para evitar superposiciones sobre el QR.
+void showSelfRegisterBanner(const String & /*uid_unused_for_qr*/) {
   int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
   tft.drawFastHLine(0, h-1, tft.width(), ST77XX_WHITE);
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  String t = "Registrando usuario... No pasar otra tarjeta";
+
+  String t = "Registrando nuevo usuario... No pasar tarjeta";
   if (t.length() > 48) t = t.substring(0, 48);
   int16_t x1,y1; uint16_t w,hb;
   tft.getTextBounds(t,0,2,&x1,&y1,&w,&hb);
   int x = (tft.width()-w)/2; if (x<0) x=0;
   tft.setCursor(x, 2);
   tft.print(t);
-
-  if (uid.length()) {
-    String s = uid;
-    if (s.length() > 12) s = s.substring(0,12);
-    tft.setCursor(2, 2); tft.print(s);
-  }
 }
 
 // ----------------- Indicador modo captura -----------------
-// batch == true -> muestra "Modo: Batch" (si paused=true muestra "(PAUSADO)")
-// batch == false -> muestra "Modo: Individual"
 void showCaptureMode(bool batch, bool paused) {
-  // dibuja un banner pequeño bajo el header (no borra todo)
   int bannerH = 18;
-  int y = 22; // justo debajo del header area
+  int y = 22;
   tft.fillRect(0, y, tft.width(), bannerH, ST77XX_BLACK);
   tft.drawFastHLine(0, y + bannerH - 1, tft.width(), ST77XX_WHITE);
   tft.setTextSize(1);
@@ -264,7 +288,6 @@ void showCaptureMode(bool batch, bool paused) {
     txt = "Modo Captura: INDIVIDUAL";
   }
 
-  // recortar si muy largo
   if (txt.length() > 48) txt = txt.substring(0, 48);
   int16_t x1,y1; uint16_t w,h;
   tft.getTextBounds(txt,0,y+2,&x1,&y1,&w,&h);
@@ -272,6 +295,98 @@ void showCaptureMode(bool batch, bool paused) {
   if (x < 0) x = 0;
   tft.setCursor(x, y + 2);
   tft.print(txt);
+}
+
+// ----------------- Pantalla: captura en progreso -----------------
+void showCaptureInProgress(bool batch, const String &uid) {
+  // actualizar estado
+  g_lastWasCapture = true;
+  g_lastCaptureBatch = batch;
+  g_lastCaptureUID = uid;
+  g_lastWasQR = false;
+  g_lastQRUrl = String();
+
+  drawHeader();
+  clearContentArea();
+
+  if (batch) {
+    drawCenteredText("CAPTURA EN LOTE", 28, 2, ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_WHITE);
+    int left = 8;
+    int y = 56;
+    tft.setCursor(left, y);
+    tft.print("Acerca varias tarjetas. Cada UID se pondrÃ¡ en la cola.");
+    tft.setCursor(left, y + 14);
+    tft.print("Revise la app / web para ver la lista y terminar.");
+  } else {
+    drawCenteredText("CAPTURA INDIVIDUAL", 28, 2, ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.setTextColor(ST77XX_WHITE);
+    int left = 8;
+    int y = 56;
+    tft.setCursor(left, y);
+    tft.print("Acerca una tarjeta para generar el formulario.");
+    tft.setCursor(left, y + 14);
+    tft.print("Complete los datos en la web o en el QR.");
+  }
+
+  // Mostrar UID en proceso (si se dio) en renglones cortos
+  if (uid.length()) {
+    String uu = uid;
+    if (uu.length() > 16) uu = uu.substring(0, 16);
+    if (uu.length() > 8) {
+      String r1 = uu.substring(0, uu.length()/2);
+      String r2 = uu.substring(uu.length()/2);
+      drawCenteredText(r1, tft.height() - 44, 1, ST77XX_WHITE);
+      drawCenteredText(r2, tft.height() - 32, 1, ST77XX_WHITE);
+    } else {
+      drawCenteredText("UID: " + uu, tft.height() - 38, 1, ST77XX_WHITE);
+    }
+  }
+
+  unsigned long m = millis();
+  int dots = (m / 400) % 4; // 0..3
+  String dotsStr = "";
+  for (int i = 0; i < dots; ++i) dotsStr += ".";
+  String waiting = "Esperando tarjeta" + dotsStr;
+  drawCenteredText(waiting, tft.height() - 18, 1, ST77XX_WHITE);
+}
+
+// ----------------- Mensajes temporales (rojo) -----------------
+void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
+  if (durationMs == 0) durationMs = TEMP_RED_MS;
+  int wpad = 8;
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_WHITE);
+  int16_t x1,y1; uint16_t w,h;
+  tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  int boxW = w + 2*wpad;
+  int boxH = h + 8;
+  int left = (tft.width() - boxW) / 2;
+  int top = (tft.height() - boxH) / 2;
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+
+  tft.fillRect(left, top, boxW, boxH, ST77XX_RED);
+  tft.drawRect(left, top, boxW, boxH, ST77XX_WHITE);
+  tft.setCursor(left + wpad, top + 4);
+  tft.print(msg);
+
+  unsigned long start = millis();
+  while (millis() - start < durationMs) {
+    delay(10);
+  }
+
+  // Restaurar pantalla previa según estado guardado
+  if (g_lastWasQR && g_lastQRUrl.length() > 0) {
+    showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
+  } else if (g_lastWasCapture) {
+    showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
+    showCaptureMode(g_lastCaptureBatch, false);
+  } else {
+    showWaitingMessage();
+  }
 }
 
 // ----------------- LEDs -----------------
