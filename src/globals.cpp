@@ -14,7 +14,7 @@
 
 // --- Config values (definiciones) ---
 const char* WIFI_SSID = "Totalplay-2.4G-1cc8";
-const char* WIFI_PASS = "pHh5XfaynxccRz5H"; 
+const char* WIFI_PASS = "pHh5XfaynxccRz5H";
 const char* TZ = "America/Mexico_City";
 
 // --- Pins ---
@@ -26,7 +26,7 @@ const int TFT_RST   = 4;
 const int SERVO_PIN = 15;
 const int RGB_R_PIN = 25;
 const int RGB_G_PIN = 26;
-const int BUZZER_PIN = -1; // ajustar si usas buzzer
+const int BUZZER_PIN = -1;
 
 // --- Files (SPIFFS paths) ---
 const char* USERS_FILE     = "/users.csv";
@@ -61,12 +61,15 @@ String captureName = "";
 String captureAccount = "";
 unsigned long captureDetectedAt = 0;
 
-// --- Self-register sessions (vector global) ---
+// --- Self-register sessions ---
 std::vector<SelfRegSession> selfRegSessions;
 
-// --- Self-register display state (nuevas variables) ---
+// --- Self-register display state ---
 volatile bool awaitingSelfRegister = false;
 unsigned long awaitingSinceMs = 0;
-unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL; // 5 minutos por defecto
+unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL; 
 String currentSelfRegToken = String();
 String currentSelfRegUID = String();
+
+// *** NUEVA VARIABLE PARA BLOQUEO RFID DURANTE REGISTRO ***
+volatile bool blockRFIDForSelfReg = false;

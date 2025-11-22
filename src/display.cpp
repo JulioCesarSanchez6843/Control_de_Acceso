@@ -36,6 +36,13 @@ static bool g_lastWasCapture = false;
 static bool g_lastCaptureBatch = false;
 static String g_lastCaptureUID = String();
 
+// Estado para mensajes temporales no bloqueantes
+static bool g_showTempMessage = false;
+static String g_tempMessage = "";
+static unsigned long g_tempMessageStart = 0;
+static unsigned long g_tempMessageDuration = 0;
+static bool g_tempMessageActive = false;
+
 // ----------------- Helpers gráficos -----------------
 static void drawCheckIcon(int cx, int cy, int r) {
   tft.fillCircle(cx, cy, r, ST77XX_GREEN);
@@ -85,6 +92,26 @@ static void drawHeader() {
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
+// Función auxiliar para dibujar el mensaje rojo
+static void drawTemporaryRedMessageNow(const String &msg) {
+  int wpad = 8;
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_WHITE);
+  int16_t x1,y1; uint16_t w,h;
+  tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
+  int boxW = w + 2*wpad;
+  int boxH = h + 8;
+  int left = (tft.width() - boxW) / 2;
+  int top = (tft.height() - boxH) / 2;
+  if (left < 0) left = 0;
+  if (top < 0) top = 0;
+
+  tft.fillRect(left, top, boxW, boxH, ST77XX_RED);
+  tft.drawRect(left, top, boxW, boxH, ST77XX_WHITE);
+  tft.setCursor(left + wpad, top + 4);
+  tft.print(msg);
+}
+
 // ----------------- API pública -----------------
 void displayInit() {
   tft.initR(INITR_BLACKTAB);
@@ -106,6 +133,8 @@ void showWaitingMessage() {
   g_lastQRUrl = String();
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
 
   drawHeader();
   clearContentArea();
@@ -119,6 +148,8 @@ void showAccessGranted(const String &name, const String &materia, const String &
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
 
   tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
@@ -148,6 +179,8 @@ void showAccessDenied(const String &reason, const String &uid) {
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
 
   tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
@@ -196,6 +229,8 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   g_lastQRSize = pixelBoxSize;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
 
   // limpiar pantalla completa (NO header) para tener todo el espacio
   tft.fillScreen(ST77XX_BLACK);
@@ -305,6 +340,8 @@ void showCaptureInProgress(bool batch, const String &uid) {
   g_lastCaptureUID = uid;
   g_lastWasQR = false;
   g_lastQRUrl = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
 
   drawHeader();
   clearContentArea();
@@ -328,7 +365,7 @@ void showCaptureInProgress(bool batch, const String &uid) {
     tft.setCursor(left, y);
     tft.print("Acerca una tarjeta para generar el formulario.");
     tft.setCursor(left, y + 14);
-    tft.print("Complete los datos en la web o en el QR.");
+    tft.print("Complete los datos en la web.");
   }
 
   // Mostrar UID en proceso (si se dio) en renglones cortos
@@ -353,39 +390,40 @@ void showCaptureInProgress(bool batch, const String &uid) {
   drawCenteredText(waiting, tft.height() - 18, 1, ST77XX_WHITE);
 }
 
-// ----------------- Mensajes temporales (rojo) -----------------
+// ----------------- Mensajes temporales (rojo) NO BLOQUEANTE -----------------
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   if (durationMs == 0) durationMs = TEMP_RED_MS;
-  int wpad = 8;
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE);
-  int16_t x1,y1; uint16_t w,h;
-  tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-  int boxW = w + 2*wpad;
-  int boxH = h + 8;
-  int left = (tft.width() - boxW) / 2;
-  int top = (tft.height() - boxH) / 2;
-  if (left < 0) left = 0;
-  if (top < 0) top = 0;
+  
+  // Configurar el mensaje temporal
+  g_showTempMessage = true;
+  g_tempMessage = msg;
+  g_tempMessageStart = millis();
+  g_tempMessageDuration = durationMs;
+  g_tempMessageActive = true;
+  
+  // Dibujar el mensaje inmediatamente
+  drawTemporaryRedMessageNow(msg);
+}
 
-  tft.fillRect(left, top, boxW, boxH, ST77XX_RED);
-  tft.drawRect(left, top, boxW, boxH, ST77XX_WHITE);
-  tft.setCursor(left + wpad, top + 4);
-  tft.print(msg);
-
-  unsigned long start = millis();
-  while (millis() - start < durationMs) {
-    delay(10);
-  }
-
-  // Restaurar pantalla previa según estado guardado
-  if (g_lastWasQR && g_lastQRUrl.length() > 0) {
-    showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
-  } else if (g_lastWasCapture) {
-    showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
-    showCaptureMode(g_lastCaptureBatch, false);
-  } else {
-    showWaitingMessage();
+// ----------------- Función de actualización no bloqueante -----------------
+void updateDisplay() {
+  // Manejar mensajes temporales
+  if (g_showTempMessage && g_tempMessageActive) {
+    unsigned long currentTime = millis();
+    if (currentTime - g_tempMessageStart >= g_tempMessageDuration) {
+      g_showTempMessage = false;
+      g_tempMessageActive = false;
+      
+      // Restaurar pantalla previa según estado guardado
+      if (g_lastWasQR && g_lastQRUrl.length() > 0) {
+        showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
+      } else if (g_lastWasCapture) {
+        showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
+        showCaptureMode(g_lastCaptureBatch, false);
+      } else {
+        showWaitingMessage();
+      }
+    }
   }
 }
 

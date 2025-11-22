@@ -11,7 +11,7 @@
 #include "files_utils.h"
 #include "display.h"
 #include "time_utils.h"
-#include "web/self_register.h" // header en src/web/
+#include "web/self_register.h"
 #include <ctype.h>
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
@@ -84,11 +84,22 @@ void rfidLoopHandler() {
   // --- Si estamos en Batch y hay un self-register en curso -> bloquear lecturas ---
   if (captureBatchMode && awaitingSelfRegister) {
     Serial.println("Lectura bloqueada: hay un auto-registro en curso. Ignorando tarjeta.");
+    
+    // CORRECCIÓN CRÍTICA: ACTUALIZAR captureUID PARA QUE handleCaptureBatchPollGET LO DETECTE
+    captureUID = uid;
+    captureName = "";
+    captureAccount = "";
+    captureDetectedAt = now;
+    
+    // CORRECCIÓN: Forzar que wrong_card se detecte inmediatamente
+    // Esto hará que el display y la web se sincronicen
+    Serial.println("DEBUG: Activando wrong_card inmediatamente");
+    
     // Mostrar banner en pantalla para informar (sin UID para evitar sobreimpresiones)
-    showSelfRegisterBanner(String()); // banner sin UID
-
-    // Mostrar mensaje rojo temporal indicando que espere su turno (3s)
-    showTemporaryRedMessage("Espere su turno: registro en curso", 3000UL);
+    showSelfRegisterBanner(String());
+    
+    // Mostrar mensaje rojo temporal indicando que espere su turno (2s para sincronizar con web)
+    showTemporaryRedMessage("Espere su turno: registro en curso", 2000UL);
 
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
@@ -125,17 +136,16 @@ void rfidLoopHandler() {
           s.materia = String();
           selfRegSessions.push_back(s);
 
-          // marcar esperando
+          // CORRECCIÓN CRÍTICA: Establecer currentSelfRegUID con la UID esperada
           awaitingSelfRegister = true;
           currentSelfRegToken = s.token;
-          // NO seteamos currentSelfRegUID para evitar que el QR muestre la ID en pantalla
-          // Guardamos internamente la UID en la sesión pero no en la variable usada por la UI del QR.
-          currentSelfRegUID = String(); // <- vacío para que la pantalla QR no muestre UID
+          currentSelfRegUID = uid;  // ← ESTA ES LA CORRECCIÓN CLAVE
           awaitingSinceMs = millis();
 
           // Crear URL completa (usar IP)
           String url = String("http://") + WiFi.localIP().toString() + String("/self_register?token=") + currentSelfRegToken;
           Serial.printf("Mostrando QR con URL: %s\n", url.c_str());
+          Serial.printf("SelfRegister UID esperada: %s\n", currentSelfRegUID.c_str());
 
           // Mostrar QR en display (bloquea nuevas capturas hasta que alumno complete)
           int boxSize = min(tft.width(), tft.height()) - 24;
@@ -166,8 +176,18 @@ void rfidLoopHandler() {
       captureDetectedAt = now;
       Serial.printf("Capture mode: UID=%s -> name='%s' acc='%s'\n", captureUID.c_str(), captureName.c_str(), captureAccount.c_str());
 
-      // actualizar display de captura individual si quieres animación/indicador:
-      showCaptureInProgress(false, captureUID);
+      // CORRECCIÓN: Mostrar mensaje "Espere su turno" también en modo individual si hay self-register
+      if (awaitingSelfRegister && currentSelfRegUID.length() > 0 && captureUID != currentSelfRegUID) {
+        showTemporaryRedMessage("Espere su turno: registro en curso", 2000UL);
+        // Limpiar la UID para evitar procesamiento incorrecto
+        captureUID = "";
+        captureName = "";
+        captureAccount = "";
+        captureDetectedAt = 0;
+      } else {
+        // actualizar display de captura individual si no hay conflicto
+        showCaptureInProgress(false, captureUID);
+      }
     }
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();

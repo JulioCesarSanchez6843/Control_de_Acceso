@@ -23,6 +23,9 @@ void showCaptureInProgress(bool batch, const String &uid);
 // Muestra mensaje rojo temporal (por ejemplo "Espere su turno") que reemplaza texto del QR durante durationMs ms
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs);
 
+// Función no bloqueante para actualizar el display - debe llamarse en el loop principal
+void updateDisplay();
+
 // LEDs
 void ledOff();
 void ledRedOn();

@@ -84,6 +84,9 @@ extern unsigned long SELF_REG_TIMEOUT_MS;
 extern String currentSelfRegToken;
 extern String currentSelfRegUID;
 
+// *** NUEVA VARIABLE PARA BLOQUEO DE RFID DURANTE REGISTRO ***
+extern volatile bool blockRFIDForSelfReg;
+
 // ---------------- Tipos ----------------
 struct Course {
   String materia;

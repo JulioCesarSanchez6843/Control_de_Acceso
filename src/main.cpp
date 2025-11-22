@@ -230,6 +230,9 @@ void loop() {
   // Atiende peticiones HTTP entrantes.
   server.handleClient();
 
+  // Actualiza el display (importante para mensajes temporales no bloqueantes)
+  updateDisplay();
+
   // Ejecuta el handler de RFID periódicamente según POLL_INTERVAL.
   if (millis() - lastPoll > POLL_INTERVAL) {
     lastPoll = millis();
