@@ -175,7 +175,8 @@ void handleCaptureBatchPage() {
   html += "<div style='display:flex;gap:12px;align-items:flex-start;'>";
   html += "<div style='width:220px;display:flex;flex-direction:column;gap:8px;'>";
   html += "<form method='POST' action='/capture_remove_last' style='display:inline'><button class='btn btn-yellow' type='submit'>Borrar última</button></form>";
-  html += "<form method='POST' action='/capture_cancel' style='display:inline' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'><button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
+  // *** CORREGIDO: Usar /cancel_capture en lugar de /capture_cancel ***
+  html += "<form method='POST' action='/cancel_capture' style='display:inline' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'><button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
   html += "<form method='POST' action='/capture_finish' style='display:inline' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'><button class='btn btn-green' type='submit'>Terminar y Guardar</button></form>";
   html += "<div style='margin-top:16px'><a class='btn btn-blue' href='/'>Inicio</a></div>";
   html += "</div>";
@@ -399,9 +400,10 @@ void handleCaptureBatchStopPOST() {
 void handleCaptureStopGET() {
   captureMode = false; captureBatchMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
-  #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
-  #endif
+  
+  // *** NUEVO: Llamar a la función del display para restaurar pantalla ***
+  cancelCaptureAndReturnToNormal();
+  
   server.sendHeader("Location", "/");
   server.send(303, "text/plain", "stopped");
 }
@@ -505,16 +507,7 @@ void handleCaptureBatchPollGET() {
   server.send(200, "application/json", j);
 }
 
-// Limpiar cola (POST) -> detiene batch y limpia
-void handleCaptureBatchClearPOST() {
-  clearCaptureQueueFile();
-  captureMode = false; captureBatchMode = false;
-  #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
-  #endif
-  server.sendHeader("Location", "/capture");
-  server.send(303, "text/plain", "cleared");
-}
+// *** ELIMINADO: handleCaptureBatchClearPOST - Ya no se usa ***
 
 // Pause / Resume (toggle) - POST (lo dejamos por compatibilidad)
 void handleCaptureBatchPausePOST() {
@@ -559,18 +552,7 @@ void handleCaptureRemoveLastPOST() {
   server.send(303, "text/plain", "removed last");
 }
 
-// Cancelar batch (Volver): limpiar cola y volver a landing (no guardar nada)
-void handleCaptureCancelPOST() {
-  clearCaptureQueueFile();
-  captureMode = false;
-  captureBatchMode = false;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
-  #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
-  #endif
-  server.sendHeader("Location", "/capture");
-  server.send(303, "text/plain", "cancelled");
-}
+// *** ELIMINADO: handleCaptureCancelPOST - Ya no se usa, ahora usamos /cancel_capture ***
 
 // Generar links de auto-registro desde la cola (POST) - mantenido por compatibilidad
 void handleCaptureGenerateLinksPOST() {

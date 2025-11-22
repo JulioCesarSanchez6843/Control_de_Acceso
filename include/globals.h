@@ -67,6 +67,11 @@ extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
+// Variables para captura batch
+extern std::vector<String> capturedUIDs;
+extern bool isCapturing;
+extern bool isBatchCapture;
+
 // ---------------- Self-register session type ----------------
 struct SelfRegSession {
   String token;
@@ -148,3 +153,6 @@ void ledGreenOn();
 
 // Mostrar QR en pantalla
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize);
+
+// Nueva función para cancelar captura y volver a pantalla normal
+void cancelCaptureAndReturnToNormal();

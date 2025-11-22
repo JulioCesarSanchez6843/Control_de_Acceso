@@ -14,10 +14,11 @@ void handleCaptureBatchStopPOST();
 void handleCaptureStopGET();
 
 void handleCaptureBatchPollGET();
-void handleCaptureBatchClearPOST();
+// *** ELIMINAR estas líneas ***
+// void handleCaptureBatchClearPOST();
+// void handleCaptureCancelPOST();
 void handleCaptureBatchPausePOST();
 void handleCaptureRemoveLastPOST();
-void handleCaptureCancelPOST();
 void handleCaptureGenerateLinksPOST();
 
 void handleCaptureEditPage();

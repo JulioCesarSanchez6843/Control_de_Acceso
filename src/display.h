@@ -26,6 +26,9 @@ void showTemporaryRedMessage(const String &msg, unsigned long durationMs);
 // Función no bloqueante para actualizar el display - debe llamarse en el loop principal
 void updateDisplay();
 
+// Nueva función: Cancelar captura y volver a pantalla normal
+void cancelCaptureAndReturnToNormal();
+
 // LEDs
 void ledOff();
 void ledRedOn();

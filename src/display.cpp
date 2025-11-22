@@ -427,6 +427,21 @@ void updateDisplay() {
   }
 }
 
+// ----------------- Cancelar captura y volver a normal -----------------
+void cancelCaptureAndReturnToNormal() {
+  // Limpiar todos los estados de captura y QR
+  g_lastWasQR = false;
+  g_lastQRUrl = String();
+  g_lastWasCapture = false;
+  g_lastCaptureBatch = false;
+  g_lastCaptureUID = String();
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
+  
+  // Volver directamente a la pantalla de bienvenido
+  showWaitingMessage();
+}
+
 // ----------------- LEDs -----------------
 void ledOff() {
   digitalWrite(RGB_R_PIN, HIGH);

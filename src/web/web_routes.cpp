@@ -5,6 +5,7 @@
 
 #include "web_routes.h"
 #include "globals.h"
+#include "display.h"
 
 // incluye las cabeceras de cada módulo web (deben existir en src/web/)
 #include "capture.h"
@@ -47,11 +48,44 @@ void registerRoutes() {
   // Batch endpoints
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
   server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
-  server.on("/capture_clear_queue", HTTP_POST, handleCaptureBatchClearPOST);
   server.on("/capture_batch_pause", HTTP_POST, handleCaptureBatchPausePOST);
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
-  server.on("/capture_cancel", HTTP_POST, handleCaptureCancelPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
+
+  // NUEVA RUTA: cancelar captura y resetear display - CORREGIDA
+  server.on("/cancel_capture", HTTP_POST, []() {
+    Serial.println("Cancelando captura y limpiando cola desde /cancel_capture...");
+    
+    // Limpiar la cola de UIDs en memoria
+    capturedUIDs.clear();
+    
+    // Limpiar archivo de cola en SPIFFS
+    if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) {
+      SPIFFS.remove(CAPTURE_QUEUE_FILE);
+      Serial.println("Archivo de cola eliminado: " + String(CAPTURE_QUEUE_FILE));
+    }
+    
+    // Limpiar estados de captura globales
+    isCapturing = false;
+    isBatchCapture = false;
+    
+    // Limpiar estados de captura del módulo RFID
+    captureMode = false;
+    captureBatchMode = false;
+    captureUID = "";
+    captureName = "";
+    captureAccount = "";
+    captureDetectedAt = 0;
+    
+    // Llamar a la función del display para volver a pantalla normal
+    cancelCaptureAndReturnToNormal();
+    
+    Serial.println("Captura cancelada completamente - display resetado a pantalla de bienvenido");
+    
+    // *** CORRECCIÓN: Redirigir a /capture en lugar de enviar JSON ***
+    server.sendHeader("Location", "/capture");
+    server.send(303, "text/plain", "Canceled");
+  });
 
   // NUEVO: terminar y guardar batch
   server.on("/capture_finish", HTTP_POST, handleCaptureFinishPOST);

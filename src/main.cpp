@@ -11,6 +11,11 @@
 #include "rfid_handler.h"
 #include "web/web_routes.h"
 
+// Declarar variables globales
+std::vector<String> capturedUIDs;
+bool isCapturing = false;
+bool isBatchCapture = false;
+
 // cuánto esperar (ms) a que NTP sincronice antes de seguir 
 static const unsigned long NTP_TIMEOUT_MS = 30UL * 1000UL; // 30 segundos
 static const unsigned long NTP_POLL_MS    = 500UL;        // poll cada 500 ms
