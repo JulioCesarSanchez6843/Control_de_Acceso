@@ -17,6 +17,13 @@
 #include "web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
 
+// Declaraciones externas para acceder a las variables de self-register
+extern volatile bool awaitingSelfRegister;
+extern String currentSelfRegUID;
+extern String currentSelfRegToken;
+extern volatile bool blockRFIDForSelfReg;
+extern std::vector<SelfRegSession> selfRegSessions;
+
 void registerRoutes() {
   server.on("/", handleRoot);
 
@@ -52,7 +59,7 @@ void registerRoutes() {
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
-  // NUEVA RUTA: cancelar captura y resetear display - CORREGIDA
+  // NUEVA RUTA: cancelar captura y resetear display - COMPLETAMENTE MEJORADA
   server.on("/cancel_capture", HTTP_POST, []() {
     Serial.println("Cancelando captura y limpiando cola desde /cancel_capture...");
     
@@ -77,12 +84,20 @@ void registerRoutes() {
     captureAccount = "";
     captureDetectedAt = 0;
     
+    // *** NUEVO: LIMPIAR ESTADO DE SELF-REGISTER ***
+    awaitingSelfRegister = false;
+    currentSelfRegUID = "";
+    currentSelfRegToken = "";
+    blockRFIDForSelfReg = false;
+    
+    // También limpiar cualquier sesión de self-register activa
+    selfRegSessions.clear();
+    
     // Llamar a la función del display para volver a pantalla normal
     cancelCaptureAndReturnToNormal();
     
     Serial.println("Captura cancelada completamente - display resetado a pantalla de bienvenido");
     
-    // *** CORRECCIÓN: Redirigir a /capture en lugar de enviar JSON ***
     server.sendHeader("Location", "/capture");
     server.send(303, "text/plain", "Canceled");
   });
