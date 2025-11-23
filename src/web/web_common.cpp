@@ -115,12 +115,13 @@ String htmlHeader(const char* title) {
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
-  // Menú de navegación principal
+  // Menú de navegación principal (añadido botón Maestros)
   h += "<div class='nav'>";
   h += "<a class='btn btn-blue' href='/capture'>🎴 Capturar</a>";
   h += "<a class='btn btn-blue' href='/schedules'>📅 Horarios</a>";
   h += "<a class='btn btn-blue' href='/materias'>📚 Materias</a>";
   h += "<a class='btn btn-blue' href='/students_all'>🧑‍🎓 Alumnos</a>";
+  h += "<a class='btn btn-blue' href='/teachers_all'>👩‍🏫 Maestros</a>"; // <-- NUEVO botón para Maestros
   h += "<a class='btn btn-blue' href='/history'>📜 Historial</a>";
   h += "<a class='btn btn-blue' href='/status'>🔧 Estado ESP</a>";
   h += "</div></div>";
@@ -134,9 +135,9 @@ String htmlHeader(const char* title) {
 // ==================== PIE DE PÁGINA CON AUTORES ====================
 // Construye el footer fijo con autores del proyecto.
 String htmlFooter() {
-  String f = "</div>"; 
+  String f = "</div>";
   f += "<footer>Proyecto desarrollado por: Kevin González Gutiérrez • Julio César Sánchez Méndez • Dylan Adayr de la Rosa Ramos</footer>";
-  f += "</div></body></html>"; 
+  f += "</div></body></html>";
   return f;
 }
 
@@ -166,6 +167,10 @@ void handleRoot() {
   html += "<div class='card'><span class='icon'>🧑‍🎓</span><h3>Gestión de Alumnos</h3>"
           "<p class='small'>Consulta la lista de alumnos registrados, asigna sus tarjetas RFID y vincúlalos con sus materias correspondientes.</p>"
           "<a class='btn btn-green' href='/students_all'>Ver Alumnos</a></div>";
+
+  html += "<div class='card'><span class='icon'>👩‍🏫</span><h3>Gestión de Maestros</h3>"
+          "<p class='small'>Administra los maestros del laboratorio: revisa su lista, edítalos o elimínalos fácilmente.</p>"
+          "<a class='btn btn-green' href='/teachers_all'>Ver Maestros</a></div>";
 
   html += "<div class='card'><span class='icon'>📜</span><h3>Historial de Accesos</h3>"
           "<p class='small'>Consulta el historial completo de entradas al laboratorio, exporta registros en formato CSV y analiza la asistencia.</p>"

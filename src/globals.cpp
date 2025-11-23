@@ -36,6 +36,7 @@ const char* SCHEDULES_FILE = "/schedules.csv";
 const char* NOTIF_FILE     = "/notifications.csv";
 const char* COURSES_FILE   = "/courses.csv";
 const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv";
+const char* TEACHERS_FILE  = "/teachers.csv"; // NEW: archivo para maestros
 
 // --- Timings ---
 const unsigned long DISPLAY_MS = 4000UL;
@@ -61,13 +62,18 @@ String captureName = "";
 String captureAccount = "";
 unsigned long captureDetectedAt = 0;
 
+// --- Variables para captura batch (DEFINICIONES únicas) ---
+std::vector<String> capturedUIDs;
+bool isCapturing = false;
+bool isBatchCapture = false;
+
 // --- Self-register sessions ---
 std::vector<SelfRegSession> selfRegSessions;
 
 // --- Self-register display state ---
 volatile bool awaitingSelfRegister = false;
 unsigned long awaitingSinceMs = 0;
-unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL; 
+unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 String currentSelfRegToken = String();
 String currentSelfRegUID = String();
 

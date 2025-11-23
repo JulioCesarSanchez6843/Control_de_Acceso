@@ -16,6 +16,7 @@
 #include "notifications.h"
 #include "web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
+#include "teachers.h"       // NEW: handlers para maestros (debes crear src/web/teachers.h + teachers.cpp)
 
 // Declaraciones externas para acceder a las variables de self-register
 extern volatile bool awaitingSelfRegister;
@@ -27,6 +28,7 @@ extern std::vector<SelfRegSession> selfRegSessions;
 void registerRoutes() {
   server.on("/", handleRoot);
 
+  // Materias / Cursos
   server.on("/materias", handleMaterias);
   server.on("/materias/new", handleMateriasNew);
   server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
@@ -38,10 +40,17 @@ void registerRoutes() {
   server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
   server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
 
+  // Students
   server.on("/students", handleStudentsForMateria);
   server.on("/students_all", handleStudentsAll);
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
+
+  // Teachers (nuevo conjunto de rutas, espejo de students)
+  server.on("/teachers", handleTeachersForMateria);
+  server.on("/teachers_all", handleTeachersAll);
+  server.on("/teacher_remove_course", HTTP_POST, handleTeacherRemoveCourse);
+  server.on("/teacher_delete", HTTP_POST, handleTeacherDelete);
 
   // Captura
   server.on("/capture", HTTP_GET, handleCapturePage);
@@ -125,12 +134,13 @@ void registerRoutes() {
   server.on("/edit", handleEditGet);
   server.on("/edit_post", HTTP_POST, handleEditPost);
 
+  // Self-register
   server.on("/self_register_start", HTTP_POST, handleSelfRegisterStartPOST);
   server.on("/self_register", HTTP_GET, handleSelfRegisterGET);
   server.on("/self_register_submit", HTTP_POST, handleSelfRegisterPost);
-  // NUEVA RUTA: cancelar self-register (desde el formulario del alumno)
   server.on("/self_register_cancel", HTTP_POST, handleSelfRegisterCancelPOST);
 
+  // CSV endpoints (descarga directa)
   server.on("/users.csv", [](){
     if (!SPIFFS.exists(USERS_FILE)) { server.send(404,"text/plain","No users"); return; }
     File f = SPIFFS.open(USERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
@@ -144,6 +154,12 @@ void registerRoutes() {
   server.on("/notifications.csv", [](){
     if (!SPIFFS.exists(NOTIF_FILE)) { server.send(404,"text/plain","no"); return; }
     File f = SPIFFS.open(NOTIF_FILE, FILE_READ); server.streamFile(f,"text/csv"); f.close();
+  });
+
+  // Teachers CSV
+  server.on("/teachers.csv", [](){
+    if (!SPIFFS.exists(TEACHERS_FILE)) { server.send(404,"text/plain","No teachers"); return; }
+    File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
   });
 
   server.on("/history", handleHistoryPage);
