@@ -1,3 +1,4 @@
+// src/main.cpp  (versión corregida - asegura updateDisplay() se ejecute)
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
@@ -12,7 +13,7 @@
 #include "web/web_routes.h"
 
 // NOTA: las variables globales relacionadas con captura (capturedUIDs,
-// isCapturing, isBatchCapture) se DEFI NEN en globals.cpp. Aquí NO deben
+// isCapturing, isBatchCapture) se DEFINEN en globals.cpp. Aquí NO deben
 // volver a definirse para evitar errores de linkeo.
 
 // cuánto esperar (ms) a que NTP sincronice antes de seguir 
@@ -211,14 +212,11 @@ unsigned long lastPoll = 0;
 void loop() {
   server.handleClient();
 
-  // Si tu display necesita actualizar no bloqueante, define updateDisplay en display.*
-  // Si no existe, esta llamada es inofensiva si la implementas vacía.
-  #if defined(UPDATE_DISPLAY_AVAILABLE)
-    updateDisplay();
-  #else
-    // Si no tienes updateDisplay(), no hacer nada.
-  #endif
+  // >>> LLAMADA CORREGIDA: actualizar display de forma no bloqueante
+  // Esto permite que overlays temporales (mensaje rojo) expiren correctamente.
+  updateDisplay();
 
+  // Manejo RFID / polling periodic
   if (millis() - lastPoll > POLL_INTERVAL) {
     lastPoll = millis();
     rfidLoopHandler();

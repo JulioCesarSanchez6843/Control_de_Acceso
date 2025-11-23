@@ -1,4 +1,4 @@
-// src/display.cpp
+// src/display.cpp  (corregido)
 #include "display.h"
 #include "globals.h"
 #include "config.h"
@@ -23,8 +23,8 @@
 #pragma pop_macro("HIGH")
 #pragma pop_macro("LOW")
 
-static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s
-static const unsigned long TEMP_RED_MS = 2000UL;      // 2s para mensajes rojos (ajustado)
+static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s>
+static const unsigned long TEMP_RED_MS = 3000UL;      // 2s para mensajes rojos (ajustado)
 
 // Estado interno para restauración de pantalla tras mensajes temporales
 static bool g_lastWasQR = false;
@@ -36,11 +36,11 @@ static bool g_lastCaptureBatch = false;
 static String g_lastCaptureUID = String();
 
 // Estado para mensajes temporales no bloqueantes
-static bool g_showTempMessage = false;
+static bool g_showTempMessage = false;           // requested to show
 static String g_tempMessage = "";
 static unsigned long g_tempMessageStart = 0;
 static unsigned long g_tempMessageDuration = 0;
-static bool g_tempMessageActive = false;
+static bool g_tempMessageActive = false;         // currently drawn on screen
 
 // ----------------- Helpers gráficos -----------------
 static void drawCheckIcon(int cx, int cy, int r) {
@@ -131,6 +131,7 @@ void showWaitingMessage() {
   g_lastQRUrl = String();
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+  // reset mensajes temporales
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
@@ -142,11 +143,13 @@ void showWaitingMessage() {
 }
 
 void showAccessGranted(const String &name, const String &materia, const String &uid) {
+  // cancelar cualquier temp message activo
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
+
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
-  g_showTempMessage = false;
-  g_tempMessageActive = false;
 
   tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
@@ -172,11 +175,13 @@ void showAccessGranted(const String &name, const String &materia, const String &
 }
 
 void showAccessDenied(const String &reason, const String &uid) {
+  // cancelar cualquier temp message activo
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
+
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
-  g_showTempMessage = false;
-  g_tempMessageActive = false;
 
   tft.fillScreen(ST77XX_BLACK);
   int cx = tft.width() / 2;
@@ -222,6 +227,8 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   g_lastQRSize = pixelBoxSize;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
+
+  // reset temp temporary message states so QR shows clean
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
@@ -329,8 +336,9 @@ void showCaptureInProgress(bool batch, const String &uid) {
   g_lastCaptureUID = uid;
   g_lastWasQR = false;
   g_lastQRUrl = String();
-  g_showTempMessage = false;
-  g_tempMessageActive = false;
+
+  // no borrar un temp message activo aquí; updateDisplay() se encargará de restaurar si corresponde
+  g_showTempMessage = g_showTempMessage; // no-op to indicate we preserve it
 
   drawHeader();
   clearContentArea();
@@ -380,8 +388,16 @@ void showCaptureInProgress(bool batch, const String &uid) {
 }
 
 // ----------------- Mensajes temporales (rojo) NO BLOQUEANTE -----------------
+// Ahora: si ya hay un mensaje temporal activo, NO lo sobreescribimos ni reiniciamos.
+// Esto evita efectos de 'pegado' cuando varias partes llaman a la función.
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   if (durationMs == 0) durationMs = TEMP_RED_MS;
+
+  // Si ya hay un mensaje temporal activo, ignorar nuevas solicitudes
+  if (g_tempMessageActive) {
+    // opcional: podemos extender la duración si se quiere; por ahora no extiende
+    return;
+  }
 
   // Configurar el mensaje temporal
   g_showTempMessage = true;
@@ -394,12 +410,18 @@ void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   drawTemporaryRedMessageNow(msg);
 }
 
+// Complemento: consulta (opcional) para otros módulos
+bool isTemporaryMessageActive() {
+  return g_tempMessageActive;
+}
+
 // ----------------- Función de actualización no bloqueante -----------------
 void updateDisplay() {
   // Manejar mensajes temporales
-  if (g_showTempMessage && g_tempMessageActive) {
+  if (g_tempMessageActive) {
     unsigned long currentTime = millis();
     if (currentTime - g_tempMessageStart >= g_tempMessageDuration) {
+      // tiempo cumplido -> limpiar overlay y restaurar pantalla anterior
       g_showTempMessage = false;
       g_tempMessageActive = false;
 
@@ -413,8 +435,6 @@ void updateDisplay() {
       } else {
         showWaitingMessage();
       }
-    } else {
-      // Si todavía está activo, no hacemos nada (se quedó el overlay dibujado)
     }
   }
 }

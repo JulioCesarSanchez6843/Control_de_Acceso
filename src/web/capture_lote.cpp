@@ -250,19 +250,27 @@ void capture_lote_batchPollGET() {
   }
 
   static unsigned long wrongCardStartTime = 0;
+  static unsigned long lastShowWrongRedMs = 0; // <<-- evita re-dibujar mensaje rojo cada poll
   bool wrongCard = false;
 
   if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
     if (captureUID.length() > 0) {
       if (captureUID != currentSelfRegUID) {
         wrongCard = true;
-        wrongCardStartTime = millis();
-        Serial.println("DEBUG: WRONG_CARD activado - Iniciando temporizador");
-
+        // solo iniciar temporizador la primera vez que detectamos wrong card o si ya expiró
+        if (wrongCardStartTime == 0) {
+          wrongCardStartTime = millis();
+          Serial.println("DEBUG: WRONG_CARD activado - Iniciando temporizador");
+        }
+        // Mostrar mensaje rojo en display, pero evitar invocarlo en cada poll (evita 'pegado')
         #ifdef USE_DISPLAY
-        showTemporaryRedMessage("Espere su turno: registro en curso", 2000);
+        if (lastShowWrongRedMs == 0 || (millis() - lastShowWrongRedMs) > 2000) {
+          showTemporaryRedMessage("Espere su turno: registro en curso", 2000);
+          lastShowWrongRedMs = millis();
+        }
         #endif
 
+        // descartar la tarjeta leída (para no acumular)
         captureUID = "";
         captureName = "";
         captureAccount = "";
@@ -279,11 +287,14 @@ void capture_lote_batchPollGET() {
     }
   }
 
+  // Mantener wrongCard como true por una ventana corta (2.5s) después del inicio
   if (wrongCardStartTime > 0 && (millis() - wrongCardStartTime) < 2500) {
     wrongCard = true;
     Serial.println("DEBUG: WRONG_CARD mantenido activo por temporizador");
   } else {
     wrongCardStartTime = 0;
+    // resetear lastShowWrongRedMs si ya pasaron >2.5s para permitir futuros mensajes
+    if (lastShowWrongRedMs != 0 && (millis() - lastShowWrongRedMs) > 2500) lastShowWrongRedMs = 0;
   }
 
   if (!awaitingSelfRegister && captureUID.length() > 0) {
