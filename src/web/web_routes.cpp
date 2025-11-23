@@ -16,9 +16,10 @@
 #include "notifications.h"
 #include "web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
-#include "teachers.h"       // NEW: handlers para maestros (debes crear src/web/teachers.h + teachers.cpp)
+#include "teachers.h"       // handlers para maestros
 
-// Declaraciones externas para acceder a las variables de self-register
+// Declaraciones externas para acceder a las variables de self-register (ya declaradas en globals.h,
+// pero mantenemos estas declaraciones para claridad local si quieres depurar desde aquí)
 extern volatile bool awaitingSelfRegister;
 extern String currentSelfRegUID;
 extern String currentSelfRegToken;
@@ -46,7 +47,7 @@ void registerRoutes() {
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // Teachers (nuevo conjunto de rutas, espejo de students)
+  // Teachers
   server.on("/teachers", handleTeachersForMateria);
   server.on("/teachers_all", handleTeachersAll);
   server.on("/teacher_remove_course", HTTP_POST, handleTeacherRemoveCourse);
@@ -68,23 +69,23 @@ void registerRoutes() {
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
-  // NUEVA RUTA: cancelar captura y resetear display - COMPLETAMENTE MEJORADA
+  // NUEVA RUTA: cancelar captura y resetear display - acepta return_to (query o body)
   server.on("/cancel_capture", HTTP_POST, []() {
     Serial.println("Cancelando captura y limpiando cola desde /cancel_capture...");
-    
+
     // Limpiar la cola de UIDs en memoria
     capturedUIDs.clear();
-    
+
     // Limpiar archivo de cola en SPIFFS
     if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) {
       SPIFFS.remove(CAPTURE_QUEUE_FILE);
       Serial.println("Archivo de cola eliminado: " + String(CAPTURE_QUEUE_FILE));
     }
-    
+
     // Limpiar estados de captura globales
     isCapturing = false;
     isBatchCapture = false;
-    
+
     // Limpiar estados de captura del módulo RFID
     captureMode = false;
     captureBatchMode = false;
@@ -92,26 +93,33 @@ void registerRoutes() {
     captureName = "";
     captureAccount = "";
     captureDetectedAt = 0;
-    
-    // *** NUEVO: LIMPIAR ESTADO DE SELF-REGISTER ***
+
+    // *** LIMPIAR ESTADO DE SELF-REGISTER ***
     awaitingSelfRegister = false;
     currentSelfRegUID = "";
     currentSelfRegToken = "";
     blockRFIDForSelfReg = false;
-    
+
     // También limpiar cualquier sesión de self-register activa
     selfRegSessions.clear();
-    
+
     // Llamar a la función del display para volver a pantalla normal
     cancelCaptureAndReturnToNormal();
-    
+
     Serial.println("Captura cancelada completamente - display resetado a pantalla de bienvenido");
-    
-    server.sendHeader("Location", "/capture");
+
+    // Redirigir a 'return_to' si se pasó (query o body), o a / por defecto
+    String rt = "/";
+    if (server.hasArg("return_to")) {
+      rt = server.arg("return_to");
+      if (rt.length() == 0) rt = "/";
+    }
+
+    server.sendHeader("Location", rt);
     server.send(303, "text/plain", "Canceled");
   });
 
-  // NUEVO: terminar y guardar batch
+  // NUEVO: terminar y guardar batch (llama al handler existente)
   server.on("/capture_finish", HTTP_POST, handleCaptureFinishPOST);
 
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);

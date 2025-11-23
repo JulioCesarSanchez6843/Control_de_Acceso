@@ -10,7 +10,7 @@
 #include "web_common.h"
 #include "files_utils.h"
 
-// URL-encode simple: convierte caracteres no seguros a %XX (espacio -> %20)
+// URL-encode simple
 static String urlEncode(const String &str) {
   String ret;
   ret.reserve(str.length() * 3);
@@ -32,7 +32,6 @@ static String urlEncode(const String &str) {
   return ret;
 }
 
-// GET /students?materia=...
 void handleStudentsForMateria() {
   if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
   String materia = server.arg("materia");
@@ -75,19 +74,16 @@ void handleStudentsForMateria() {
   server.send(200,"text/html",html);
 }
 
-// GET /students_all
 void handleStudentsAll() {
   String html = htmlHeader("Alumnos - Todos");
   html += "<div class='card'><h2>Todos los alumnos</h2>";
 
-  // Top controls: filtros a la izquierda, botones de captura a la derecha
-  html += "<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap'>";
-  html += "<div style='flex:1;min-width:260px;'>";
+  // Add capture buttons to top-right
+  html += "<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;'>";
   html += "<div class='filters'><input id='sa_name' placeholder='Filtrar Nombre'><input id='sa_acc' placeholder='Filtrar Cuenta'><input id='sa_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllStudentFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllStudentFilters()'>Limpiar</button></div>";
-  html += "</div>";
-  html += "<div style='display:flex;gap:8px;align-items:center;white-space:nowrap;'>";
-  html += "<a class='btn btn-green' href='/capture_individual?target=students'>🎴 Capturar (Individual)</a>";
-  html += "<a class='btn btn-blue' href='/capture_batch?target=students'>📥 Capturar (Lote)</a>";
+  html += "<div style='display:flex;gap:8px;align-items:center;'>";
+  html += "<a class='btn btn-blue' href='/capture_individual?target=students'>🎴 Capturar Individual (Alumno)</a>";
+  html += "<a class='btn btn-blue' href='/capture_batch?target=students'>📦 Capturar por Lote</a>";
   html += "</div></div>";
 
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -112,7 +108,7 @@ void handleStudentsAll() {
 
   if (uids.size()==0) html += "<p>No hay alumnos registrados.</p>";
   else {
-    html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+    html += "<table id='students_all_table' style='margin-top:12px;'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
     for (int i=0;i<(int)uids.size();i++) {
       SRec &r = recs[i];
       String mats="";
@@ -139,7 +135,6 @@ void handleStudentsAll() {
   server.send(200,"text/html",html);
 }
 
-// POST /student_remove_course
 void handleStudentRemoveCourse() {
   if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid"); String materia = server.arg("materia");
@@ -158,7 +153,6 @@ void handleStudentRemoveCourse() {
   server.send(303,"text/plain","Removed");
 }
 
-// POST /student_delete
 void handleStudentDelete() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid");

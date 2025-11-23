@@ -1,5 +1,6 @@
-// capture_common.h
+// src/web/capture_common.h
 #pragma once
+
 #include <Arduino.h>
 #include <vector>
 #include <FS.h>
@@ -67,7 +68,13 @@ static inline bool writeCaptureQueue(const std::vector<String> &q) {
   return true;
 }
 
-static inline String sanitizeReturnTo(const String &rt) {
+// Sanitizers separados para alumnos / maestros — evita redirigir maestros a students_all
+static inline String sanitizeReturnToStudents(const String &rt) {
   if (rt.length() > 0 && rt[0] == '/') return rt;
   return String("/students_all");
+}
+
+static inline String sanitizeReturnToTeachers(const String &rt) {
+  if (rt.length() > 0 && rt[0] == '/') return rt;
+  return String("/teachers_all");
 }

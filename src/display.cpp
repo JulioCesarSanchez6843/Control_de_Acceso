@@ -25,7 +25,7 @@
 #pragma pop_macro("LOW")
 
 static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s
-static const unsigned long TEMP_RED_MS = 3000UL;      // 3s para mensajes rojos
+static const unsigned long TEMP_RED_MS = 2000UL;      // **2s** para mensajes rojos temporales (ajustado)
 
 // Estado interno para restauración de pantalla tras mensajes temporales
 static bool g_lastWasQR = false;
@@ -67,7 +67,6 @@ static void drawCrossIcon(int cx, int cy, int r) {
   }
 }
 
-// Texto centrado (tamaño reducido por defecto para evitar solapamiento)
 static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
   tft.setTextSize(size);
   tft.setTextColor(color);
@@ -92,7 +91,6 @@ static void drawHeader() {
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
-// Función auxiliar para dibujar el mensaje rojo
 static void drawTemporaryRedMessageNow(const String &msg) {
   int wpad = 8;
   tft.setTextSize(1);
@@ -128,7 +126,6 @@ void displayInit() {
 }
 
 void showWaitingMessage() {
-  // actualizar estado
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
@@ -144,7 +141,6 @@ void showWaitingMessage() {
 }
 
 void showAccessGranted(const String &name, const String &materia, const String &uid) {
-  // limpiar estado activo (no QR ni captura)
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
@@ -175,7 +171,6 @@ void showAccessGranted(const String &name, const String &materia, const String &
 }
 
 void showAccessDenied(const String &reason, const String &uid) {
-  // limpiar estado activo
   g_lastWasQR = false;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
@@ -206,24 +201,20 @@ void showAccessDenied(const String &reason, const String &uid) {
   showWaitingMessage();
 }
 
-// ----------------- Dibujar QR en la pantalla -----------------
-// Dibuja QR en pantalla sin header para maximizar espacio.
-// pixelBoxSize es sugerido; lo limitamos para evitar solapamiento.
+// ----------------- Dibujar QR -----------------
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   using qrcodegen::QrCode;
   QrCode qr = QrCode::encodeText(url.c_str(), static_cast<qrcodegen::QrCode::Ecc>(0));
   int s = qr.getSize();
 
-  // Hacemos el QR un poco más pequeño para evitar solapamientos: usar el 52% del lado menor
   int screenMin = std::min(tft.width(), tft.height());
-  int allowed = (screenMin * 52) / 100; // 52% del lado menor
+  int allowed = (screenMin * 52) / 100;
   int maxBox = std::min(pixelBoxSize, allowed);
 
   int modulePx = maxBox / s;
   if (modulePx <= 0) modulePx = 1;
   int totalPx = modulePx * s;
 
-  // marcar estado QR activo (para restauración luego)
   g_lastWasQR = true;
   g_lastQRUrl = url;
   g_lastQRSize = pixelBoxSize;
@@ -232,7 +223,6 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
-  // limpiar pantalla completa (NO header) para tener todo el espacio
   tft.fillScreen(ST77XX_BLACK);
 
   int left = (tft.width() - totalPx) / 2;
@@ -261,7 +251,6 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
     }
   }
 
-  // Mensaje más pequeño y colocado para no sobreponer el QR
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
 
@@ -277,18 +266,14 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   tft.setCursor(tx, textY);
   tft.print(hint);
 
-  // Mostrar info adicional (titulo) en lugar del UID para evitar sobreimpresiones
   String title = "Registrando nuevo usuario";
   int titleY = textY + 14;
   if (titleY + 12 > tft.height()) titleY = textY - 12;
   drawCenteredText(title, titleY, 1, ST77XX_WHITE);
 
-  // Mostrar banner superior pequeño para instrucción (no borra QR)
   showSelfRegisterBanner(String());
 }
 
-// Mostrar banner pequeño indicando bloqueo por auto-registro (overlay sobre pantalla actual).
-// No imprime UID para evitar superposiciones sobre el QR.
 void showSelfRegisterBanner(const String & /*uid_unused_for_qr*/) {
   int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
@@ -332,9 +317,7 @@ void showCaptureMode(bool batch, bool paused) {
   tft.print(txt);
 }
 
-// ----------------- Pantalla: captura en progreso -----------------
 void showCaptureInProgress(bool batch, const String &uid) {
-  // actualizar estado
   g_lastWasCapture = true;
   g_lastCaptureBatch = batch;
   g_lastCaptureUID = uid;
@@ -368,7 +351,6 @@ void showCaptureInProgress(bool batch, const String &uid) {
     tft.print("Complete los datos en la web.");
   }
 
-  // Mostrar UID en proceso (si se dio) en renglones cortos
   if (uid.length()) {
     String uu = uid;
     if (uu.length() > 16) uu = uu.substring(0, 16);
@@ -383,7 +365,7 @@ void showCaptureInProgress(bool batch, const String &uid) {
   }
 
   unsigned long m = millis();
-  int dots = (m / 400) % 4; // 0..3
+  int dots = (m / 400) % 4;
   String dotsStr = "";
   for (int i = 0; i < dots; ++i) dotsStr += ".";
   String waiting = "Esperando tarjeta" + dotsStr;
@@ -393,27 +375,24 @@ void showCaptureInProgress(bool batch, const String &uid) {
 // ----------------- Mensajes temporales (rojo) NO BLOQUEANTE -----------------
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   if (durationMs == 0) durationMs = TEMP_RED_MS;
-  
-  // Configurar el mensaje temporal
+
   g_showTempMessage = true;
   g_tempMessage = msg;
   g_tempMessageStart = millis();
   g_tempMessageDuration = durationMs;
   g_tempMessageActive = true;
-  
-  // Dibujar el mensaje inmediatamente
+
   drawTemporaryRedMessageNow(msg);
 }
 
 // ----------------- Función de actualización no bloqueante -----------------
 void updateDisplay() {
-  // Manejar mensajes temporales
   if (g_showTempMessage && g_tempMessageActive) {
     unsigned long currentTime = millis();
     if (currentTime - g_tempMessageStart >= g_tempMessageDuration) {
       g_showTempMessage = false;
       g_tempMessageActive = false;
-      
+
       // Restaurar pantalla previa según estado guardado
       if (g_lastWasQR && g_lastQRUrl.length() > 0) {
         showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
@@ -429,7 +408,6 @@ void updateDisplay() {
 
 // ----------------- Cancelar captura y volver a normal -----------------
 void cancelCaptureAndReturnToNormal() {
-  // Limpiar todos los estados de captura y QR
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
@@ -437,8 +415,7 @@ void cancelCaptureAndReturnToNormal() {
   g_lastCaptureUID = String();
   g_showTempMessage = false;
   g_tempMessageActive = false;
-  
-  // Volver directamente a la pantalla de bienvenido
+
   showWaitingMessage();
 }
 

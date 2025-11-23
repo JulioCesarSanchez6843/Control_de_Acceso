@@ -10,7 +10,7 @@
 #include "web_common.h"
 #include "files_utils.h"
 
-// simple url encode (reutilizable)
+// urlEncode
 static String urlEncodeLocal(const String &str) {
   String ret;
   ret.reserve(str.length() * 3);
@@ -32,7 +32,6 @@ static String urlEncodeLocal(const String &str) {
   return ret;
 }
 
-// Helper local: devuelve vector<String> con filas (raw CSV) para una materia en TEACHERS_FILE
 static std::vector<String> teachersForMateriaLocal(const String &materia) {
   std::vector<String> out;
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
@@ -51,7 +50,6 @@ static std::vector<String> teachersForMateriaLocal(const String &materia) {
   return out;
 }
 
-// GET /teachers?materia=...
 void handleTeachersForMateria() {
   if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
   String materia = server.arg("materia");
@@ -94,18 +92,15 @@ void handleTeachersForMateria() {
   server.send(200,"text/html",html);
 }
 
-// GET /teachers_all
 void handleTeachersAll() {
   String html = htmlHeader("Maestros - Todos");
   html += "<div class='card'><h2>Todos los maestros</h2>";
 
-  // Top controls: filtros a la izquierda, botón captura individual a la derecha
-  html += "<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap'>";
-  html += "<div style='flex:1;min-width:260px;'>";
+  // Top area: filters + capture individual button (teachers)
+  html += "<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;'>";
   html += "<div class='filters'><input id='ta_name' placeholder='Filtrar Nombre'><input id='ta_acc' placeholder='Filtrar Cuenta'><input id='ta_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllTeacherFilters()'>Limpiar</button></div>";
-  html += "</div>";
-  html += "<div style='display:flex;gap:8px;align-items:center;white-space:nowrap;'>";
-  html += "<a class='btn btn-green' href='/capture_individual?target=teachers'>🎴 Capturar Maestro</a>";
+  html += "<div style='display:flex;gap:8px;align-items:center;'>";
+  html += "<a class='btn btn-blue' href='/capture_individual?target=teachers'>🎴 Capturar Maestro (Individual)</a>";
   html += "</div></div>";
 
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
@@ -130,7 +125,7 @@ void handleTeachersAll() {
 
   if (uids.size()==0) html += "<p>No hay maestros registrados.</p>";
   else {
-    html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+    html += "<table id='teachers_all_table' style='margin-top:12px;'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
     for (int i=0;i<(int)uids.size();i++) {
       TRec &r = recs[i];
       String mats="";
@@ -156,7 +151,6 @@ void handleTeachersAll() {
   server.send(200,"text/html",html);
 }
 
-// POST /teacher_remove_course
 void handleTeacherRemoveCourse() {
   if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid"); String materia = server.arg("materia");
@@ -175,7 +169,6 @@ void handleTeacherRemoveCourse() {
   server.send(303,"text/plain","Removed");
 }
 
-// POST /teacher_delete
 void handleTeacherDelete() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid");
