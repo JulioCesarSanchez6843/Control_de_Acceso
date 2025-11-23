@@ -18,8 +18,7 @@
 #include "self_register.h"  // declara handlers para self-registration
 #include "teachers.h"       // handlers para maestros
 
-// Declaraciones externas para acceder a las variables de self-register (ya declaradas en globals.h,
-// pero mantenemos estas declaraciones para claridad local si quieres depurar desde aquí)
+// Declaraciones externas para acceder a las variables de self-register
 extern volatile bool awaitingSelfRegister;
 extern String currentSelfRegUID;
 extern String currentSelfRegToken;
@@ -47,13 +46,13 @@ void registerRoutes() {
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // Teachers
+  // Teachers (nuevo conjunto de rutas)
   server.on("/teachers", handleTeachersForMateria);
   server.on("/teachers_all", handleTeachersAll);
   server.on("/teacher_remove_course", HTTP_POST, handleTeacherRemoveCourse);
   server.on("/teacher_delete", HTTP_POST, handleTeacherDelete);
 
-  // Captura
+  // Captura (shim delega en capture_individual / capture_lote)
   server.on("/capture", HTTP_GET, handleCapturePage);
   server.on("/capture_individual", HTTP_GET, handleCaptureIndividualPage);
   server.on("/capture_batch", HTTP_GET, handleCaptureBatchPage);
@@ -69,9 +68,16 @@ void registerRoutes() {
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
-  // NUEVA RUTA: cancelar captura y resetear display - acepta return_to (query o body)
+  // Cancel capture & reset display. Ahora respeta return_to si se envía.
   server.on("/cancel_capture", HTTP_POST, []() {
     Serial.println("Cancelando captura y limpiando cola desde /cancel_capture...");
+
+    // Leer return_to si fue enviado en el POST
+    String return_to = "/";
+    if (server.hasArg("return_to")) {
+      String rt = server.arg("return_to"); rt.trim();
+      if (rt.length() && rt[0] == '/') return_to = rt;
+    }
 
     // Limpiar la cola de UIDs en memoria
     capturedUIDs.clear();
@@ -94,7 +100,7 @@ void registerRoutes() {
     captureAccount = "";
     captureDetectedAt = 0;
 
-    // *** LIMPIAR ESTADO DE SELF-REGISTER ***
+    // LIMPIAR ESTADO DE SELF-REGISTER
     awaitingSelfRegister = false;
     currentSelfRegUID = "";
     currentSelfRegToken = "";
@@ -108,18 +114,11 @@ void registerRoutes() {
 
     Serial.println("Captura cancelada completamente - display resetado a pantalla de bienvenido");
 
-    // Redirigir a 'return_to' si se pasó (query o body), o a / por defecto
-    String rt = "/";
-    if (server.hasArg("return_to")) {
-      rt = server.arg("return_to");
-      if (rt.length() == 0) rt = "/";
-    }
-
-    server.sendHeader("Location", rt);
+    server.sendHeader("Location", return_to);
     server.send(303, "text/plain", "Canceled");
   });
 
-  // NUEVO: terminar y guardar batch (llama al handler existente)
+  // NUEVO: terminar y guardar batch
   server.on("/capture_finish", HTTP_POST, handleCaptureFinishPOST);
 
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);

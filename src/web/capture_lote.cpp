@@ -1,78 +1,46 @@
 // src/web/capture_lote.cpp
-#include <Arduino.h>
+#include "capture_lote.h"
+#include "capture_common.h"
+#include "web_common.h"
+#include "globals.h"
+#include "files_utils.h"
+
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ctype.h>
-#include <vector>
 
-#include "capture.h"
-#include "globals.h"
-#include "web_common.h"
-#include "files_utils.h"
-#include "self_register.h"
-#include "display.h"
+// Externals
+extern volatile bool captureMode;
+extern volatile bool captureBatchMode;
+extern String captureUID;
+extern String captureName;
+extern String captureAccount;
+extern unsigned long captureDetectedAt;
 
-// Globals from globals.h:
 extern volatile bool awaitingSelfRegister;
 extern String currentSelfRegUID;
+extern unsigned long awaitingSinceMs;
 extern std::vector<SelfRegSession> selfRegSessions;
 
-#ifndef CAPTURE_QUEUE_FILE
-static const char *CAPTURE_QUEUE_FILE_LOCAL = "/capture_queue.csv";
-#define CAPTURE_QUEUE_FILE CAPTURE_QUEUE_FILE_LOCAL
-#endif
-
-static String jsonEscape(const String &s) {
-  String o = s;
-  o.replace("\\", "\\\\");
-  o.replace("\"", "\\\"");
-  return o;
-}
-
-// Helpers queue
-static std::vector<String> readCaptureQueue() {
-  std::vector<String> out;
-  if (!SPIFFS.exists(CAPTURE_QUEUE_FILE)) return out;
-  File f = SPIFFS.open(CAPTURE_QUEUE_FILE, FILE_READ);
-  if (!f) return out;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (l.length()) out.push_back(l);
-  }
-  f.close();
-  return out;
-}
-
-static bool appendUidToCaptureQueue(const String &uid) {
-  if (uid.length() == 0) return false;
-  if (awaitingSelfRegister) {
-    #ifdef USE_DISPLAY
-    showTemporaryRedMessage("Espere su turno: registro en curso", 2000);
-    #endif
-    return false;
-  }
-  auto q = readCaptureQueue();
-  for (auto &u : q) if (u == uid) return false;
-  return appendLineToFile(CAPTURE_QUEUE_FILE, uid);
-}
-
-static bool clearCaptureQueueFile() {
-  if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) return SPIFFS.remove(CAPTURE_QUEUE_FILE);
-  return true;
-}
-
-static bool writeCaptureQueue(const std::vector<String> &q) {
-  if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) SPIFFS.remove(CAPTURE_QUEUE_FILE);
-  if (q.size() == 0) return true;
-  for (auto &u : q) {
-    if (!appendLineToFile(CAPTURE_QUEUE_FILE, u)) return false;
-  }
-  return true;
+// Helper: obtain scheduleBaseMat (same approach as before)
+static String computeScheduleBaseMat() {
+  String scheduleOwner = currentScheduledMateria();
+  String scheduleBaseMat;
+  int idx = scheduleOwner.indexOf("||");
+  if (idx < 0) { scheduleBaseMat = scheduleOwner; scheduleBaseMat.trim(); }
+  else { scheduleBaseMat = scheduleOwner.substring(0, idx); scheduleBaseMat.trim(); }
+  return scheduleBaseMat;
 }
 
 void capture_lote_page() {
-  // default target - students (batch is used for students)
-  String target = server.hasArg("target") ? server.arg("target") : "students";
+  // Optional return_to param (from students page)
+  String return_to = "/";
+  if (server.hasArg("return_to")) {
+    String rt = server.arg("return_to"); rt.trim();
+    if (rt.length() && rt[0] == '/') return_to = rt;
+  }
+
+  // Clear capture queue file at page load
   clearCaptureQueueFile();
 
   captureMode = true;
@@ -86,23 +54,42 @@ void capture_lote_page() {
   showCaptureMode(true, false);
   #endif
 
+  String scheduleBaseMat = computeScheduleBaseMat();
+
   String html = htmlHeader("Capturar - Batch");
   html += "<div class='card'><h2>Batch capture</h2>";
   html += "<p class='small'>Acerca varias tarjetas; las UIDs quedarán en una cola. Revise los datos a la derecha y luego 'Terminar y Guardar'.</p>";
 
   html += "<div style='display:flex;gap:12px;align-items:flex-start;'>";
-  html += "<div style='width:260px;display:flex;flex-direction:column;gap:8px;align-items:stretch;'>";
+  html += "<div style='width:220px;display:flex;flex-direction:column;gap:8px;'>";
 
-  // borrar ultima
+  // Borrar última (amarillo)
   html += "<form method='POST' action='/capture_remove_last' style='display:inline'><button class='btn btn-yellow' type='submit'>Borrar última</button></form>";
 
-  // cancelar: permitimos return_to param
-  html += "<form method='POST' action='/cancel_capture?return_to=/students_all' style='display:inline' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'><button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
+  // Cancel (POST /cancel_capture) - agregar return_to hidden
+  html += "<form method='POST' action='/cancel_capture' style='display:inline' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'>";
+  html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
+  html += "<button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
 
-  // Terminar y Guardar -> btn id finish_btn
-  html += "<form method='POST' action='/capture_finish' style='display:inline' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'><button id='finish_btn' class='btn btn-green' type='submit'>Terminar y Guardar</button></form>";
+  // Terminar y Guardar - si schedule no tiene materia mostramos select
+  html += "<form id='finishForm' method='POST' action='/capture_finish' style='display:inline' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'>";
+  html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
+  if (scheduleBaseMat.length() > 0) {
+    html += "<input type='hidden' name='materia' value='" + scheduleBaseMat + "'>";
+    html += "<button id='finishBtn' class='btn btn-green' type='submit'>Terminar y Guardar</button>";
+  } else {
+    // No hay materia en el horario — forzamos seleccionar una
+    auto courses = loadCourses();
+    html += "<label>Asignar materia para este lote:</label><br>";
+    html += "<select id='batch_materia' name='materia' required>";
+    html += "<option value=''>-- Seleccionar materia --</option>";
+    for (auto &c : courses) html += "<option value='" + c.materia + "'>" + c.materia + " (" + c.profesor + ")</option>";
+    html += "</select><br>";
+    html += "<button id='finishBtn' class='btn btn-green' type='submit' disabled>Terminar y Guardar</button>";
+    // JS will enable button when a materia is chosen and no awaitingSelfRegister
+  }
+  html += "</form>";
 
-  html += "<div style='margin-top:8px'><a class='btn btn-blue' href='/students_all'>Volver a Alumnos</a></div>";
   html += "</div>";
 
   html += "<div style='flex:1;min-width:260px;'>";
@@ -113,6 +100,7 @@ void capture_lote_page() {
   html += "</div>";
   html += "</div>" + htmlFooter();
 
+  // Client JS: polling + preventing finish while awaiting self-register + enable/disable finish button according to materia selection
   html += R"rawliteral(
     <script>
     var redTimer = null;
@@ -177,13 +165,6 @@ void capture_lote_page() {
           var list = document.getElementById('queue_list');
           if(cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
 
-          // controlar boton finish
-          var finishBtn = document.getElementById('finish_btn');
-          if (finishBtn) {
-            finishBtn.disabled = !!j.awaiting;
-            finishBtn.title = j.awaiting ? "Hay un registro en curso. Espere a que termine antes de Terminar y Guardar." : "";
-          }
-
           if (j.awaiting) {
             showYellowBanner(j.awaiting_uid || '');
           } else {
@@ -215,14 +196,40 @@ void capture_lote_page() {
             html += '</table>';
             list.innerHTML = html;
           }
+
+          // Disable finish button if awaitingSelfRegister is true or if materia needed and not selected
+          var finishBtn = document.getElementById('finishBtn');
+          var matSel = document.getElementById('batch_materia');
+          if (finishBtn) {
+            var disable = false;
+            if (j.awaiting) disable = true;
+            if (matSel && (!matSel.value || matSel.value.trim()=='')) disable = true;
+            finishBtn.disabled = disable;
+            if (disable) finishBtn.classList.remove('btn-green'); else finishBtn.classList.add('btn-green');
+          }
         })
         .catch(e=>{
           fastPolling = false;
         });
 
-      if (fastPolling) setTimeout(pollQueue, 300); else setTimeout(pollQueue, 1000);
+      if (fastPolling) setTimeout(pollQueue, 300);
+      else setTimeout(pollQueue, 1000);
     }
     pollQueue();
+
+    // Enable finish button when a materia is selected (if selection exists)
+    document.addEventListener('DOMContentLoaded', function(){
+      var sel = document.getElementById('batch_materia');
+      if (sel) {
+        sel.addEventListener('change', function(){
+          var finishBtn = document.getElementById('finishBtn');
+          if (!finishBtn) return;
+          if (sel.value && sel.value.trim()!='') finishBtn.disabled = false;
+          else finishBtn.disabled = true;
+        });
+      }
+    });
+
     window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
     </script>
   )rawliteral";
@@ -230,6 +237,7 @@ void capture_lote_page() {
   server.send(200, "text/html", html);
 }
 
+// Batch poll (mejor sincronización y wrong_card timing)
 void capture_lote_batchPollGET() {
   auto u = readCaptureQueue();
   if (u.size() == 1 && u[0].length() == 0) u.clear();
@@ -250,9 +258,11 @@ void capture_lote_batchPollGET() {
         wrongCard = true;
         wrongCardStartTime = millis();
         Serial.println("DEBUG: WRONG_CARD activado - Iniciando temporizador");
+
         #ifdef USE_DISPLAY
         showTemporaryRedMessage("Espere su turno: registro en curso", 2000);
         #endif
+
         captureUID = "";
         captureName = "";
         captureAccount = "";
@@ -273,12 +283,6 @@ void capture_lote_batchPollGET() {
     wrongCard = true;
     Serial.println("DEBUG: WRONG_CARD mantenido activo por temporizador");
   } else {
-    if (wrongCardStartTime != 0) {
-      // temporizador terminó -> limpiar display (restaurar pantalla)
-      #ifdef USE_DISPLAY
-      showCaptureMode(false,false);
-      #endif
-    }
     wrongCardStartTime = 0;
   }
 
@@ -314,11 +318,13 @@ void capture_lote_batchPollGET() {
     j += "\"materia\":\"" + jsonEscape(materia) + "\"}";
   }
   j += "],";
+
   j += "\"awaiting\":" + String(awaitingSelfRegister ? "true" : "false") + ",";
   j += "\"card_triggered\":" + String(cardTriggered ? "true" : "false") + ",";
   j += "\"wrong_card\":" + String(wrongCard ? "true" : "false") + ",";
   j += "\"awaiting_uid\":\"" + jsonEscape(currentSelfRegUID) + "\"";
   j += "}";
+
   Serial.println("DEBUG: Enviando JSON - wrong_card: " + String(wrongCard ? "true" : "false"));
   server.send(200, "application/json", j);
 }
@@ -360,7 +366,10 @@ void capture_lote_removeLastPOST() {
   }
   q.pop_back();
   writeCaptureQueue(q);
-  server.sendHeader("Location", "/capture_batch");
+  // Respect return_to if provided
+  String rt = "/";
+  if (server.hasArg("return_to")) rt = server.arg("return_to");
+  server.sendHeader("Location", rt.length() ? rt : String("/capture_batch"));
   server.send(303, "text/plain", "removed last");
 }
 
@@ -402,33 +411,51 @@ void capture_lote_generateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
+// Finish batch: requerir materia si no hay scheduleBaseMat, y bloquear si awaitingSelfRegister
 void capture_lote_finishPOST() {
-  // Server-side guard: do not finish if a self-register is in progress
-  if (awaitingSelfRegister) {
-    server.sendHeader("Location", "/capture_batch");
-    server.send(303, "text/plain", "Cannot finish: self-register in progress");
-    return;
-  }
-
+  // If queue empty, just redirect back (respect return_to)
   auto q = readCaptureQueue();
   if (q.size() == 0) {
     captureMode = false; captureBatchMode = false;
     #ifdef USE_DISPLAY
     showCaptureMode(false,false);
     #endif
-    server.sendHeader("Location", "/capture_batch");
+    String rt = server.hasArg("return_to") ? server.arg("return_to") : String("/capture_batch");
+    server.sendHeader("Location", rt);
     server.send(303, "text/plain", "nothing");
     return;
   }
 
-  String scheduleOwner = currentScheduledMateria();
-  String scheduleBaseMat;
-  {
-    int idx = scheduleOwner.indexOf("||");
-    if (idx < 0) { scheduleBaseMat = scheduleOwner; scheduleBaseMat.trim(); }
-    else { scheduleBaseMat = scheduleOwner.substring(0, idx); scheduleBaseMat.trim(); }
+  // If there is an awaiting self-register, disallow finishing
+  if (awaitingSelfRegister) {
+    // Redirect back with alert (simple)
+    String html = htmlHeader("No se puede terminar");
+    html += "<div class='card'><h3 style='color:red;'>No se puede terminar: hay un registro en curso. Espere a que termine.</h3>";
+    html += "<p><a class='btn btn-blue' href='/capture_batch'>Volver</a></p></div>" + htmlFooter();
+    server.send(200, "text/html", html);
+    return;
   }
 
+  // Determine chosen materia: if supplied use it; else try schedule
+  String chosenMateria;
+  if (server.hasArg("materia")) {
+    chosenMateria = server.arg("materia"); chosenMateria.trim();
+  }
+  if (chosenMateria.length() == 0) {
+    // try compute from schedule
+    chosenMateria = computeScheduleBaseMat();
+  }
+  if (chosenMateria.length() == 0) {
+    // cannot finish without materia
+    String html = htmlHeader("Materia requerida");
+    html += "<div class='card'><h3 style='color:red;'>Seleccione una materia antes de terminar el lote.</h3>";
+    html += "<p><a class='btn btn-blue' href='/capture_batch'>Volver</a></p></div>" + htmlFooter();
+    server.send(200, "text/html", html);
+    return;
+  }
+
+  // Process queue
+  String scheduleBaseMat = chosenMateria;
   for (auto &uid : q) {
     uid.trim();
     if (uid.length() == 0) continue;
@@ -458,6 +485,7 @@ void capture_lote_finishPOST() {
   showCaptureMode(false,false);
   #endif
 
-  server.sendHeader("Location", "/students_all");
+  String rt = server.hasArg("return_to") ? server.arg("return_to") : String("/capture");
+  server.sendHeader("Location", rt);
   server.send(303, "text/plain", "finished");
 }

@@ -9,7 +9,6 @@
 #include <Adafruit_ST7735.h>
 #include <algorithm> // std::min
 
-// Guardar y quitar macros problemáticas antes de incluir qrcodegen.hpp
 #pragma push_macro("LOW")
 #pragma push_macro("HIGH")
 #ifdef LOW
@@ -25,7 +24,7 @@
 #pragma pop_macro("LOW")
 
 static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s
-static const unsigned long TEMP_RED_MS = 2000UL;      // **2s** para mensajes rojos temporales (ajustado)
+static const unsigned long TEMP_RED_MS = 2000UL;      // 2s para mensajes rojos (ajustado)
 
 // Estado interno para restauración de pantalla tras mensajes temporales
 static bool g_lastWasQR = false;
@@ -91,6 +90,7 @@ static void drawHeader() {
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
+// Dibuja mensaje rojo (no bloqueante) encima de lo que haya
 static void drawTemporaryRedMessageNow(const String &msg) {
   int wpad = 8;
   tft.setTextSize(1);
@@ -126,6 +126,7 @@ void displayInit() {
 }
 
 void showWaitingMessage() {
+  // actualizar estado
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
@@ -215,6 +216,7 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   if (modulePx <= 0) modulePx = 1;
   int totalPx = modulePx * s;
 
+  // marcar estado QR activo (para restauración luego)
   g_lastWasQR = true;
   g_lastQRUrl = url;
   g_lastQRSize = pixelBoxSize;
@@ -271,9 +273,11 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   if (titleY + 12 > tft.height()) titleY = textY - 12;
   drawCenteredText(title, titleY, 1, ST77XX_WHITE);
 
+  // Mostrar banner superior pequeño para instrucción (no borra QR)
   showSelfRegisterBanner(String());
 }
 
+// Mostrar banner pequeño indicando bloqueo por auto-registro (overlay sobre pantalla actual).
 void showSelfRegisterBanner(const String & /*uid_unused_for_qr*/) {
   int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
@@ -317,7 +321,9 @@ void showCaptureMode(bool batch, bool paused) {
   tft.print(txt);
 }
 
+// ----------------- Pantalla: captura en progreso -----------------
 void showCaptureInProgress(bool batch, const String &uid) {
+  // actualizar estado
   g_lastWasCapture = true;
   g_lastCaptureBatch = batch;
   g_lastCaptureUID = uid;
@@ -351,6 +357,7 @@ void showCaptureInProgress(bool batch, const String &uid) {
     tft.print("Complete los datos en la web.");
   }
 
+  // Mostrar UID en proceso (si se dio) en renglones cortos
   if (uid.length()) {
     String uu = uid;
     if (uu.length() > 16) uu = uu.substring(0, 16);
@@ -365,7 +372,7 @@ void showCaptureInProgress(bool batch, const String &uid) {
   }
 
   unsigned long m = millis();
-  int dots = (m / 400) % 4;
+  int dots = (m / 400) % 4; // 0..3
   String dotsStr = "";
   for (int i = 0; i < dots; ++i) dotsStr += ".";
   String waiting = "Esperando tarjeta" + dotsStr;
@@ -376,17 +383,20 @@ void showCaptureInProgress(bool batch, const String &uid) {
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   if (durationMs == 0) durationMs = TEMP_RED_MS;
 
+  // Configurar el mensaje temporal
   g_showTempMessage = true;
   g_tempMessage = msg;
   g_tempMessageStart = millis();
   g_tempMessageDuration = durationMs;
   g_tempMessageActive = true;
 
+  // Dibujar el mensaje inmediatamente
   drawTemporaryRedMessageNow(msg);
 }
 
 // ----------------- Función de actualización no bloqueante -----------------
 void updateDisplay() {
+  // Manejar mensajes temporales
   if (g_showTempMessage && g_tempMessageActive) {
     unsigned long currentTime = millis();
     if (currentTime - g_tempMessageStart >= g_tempMessageDuration) {
@@ -395,6 +405,7 @@ void updateDisplay() {
 
       // Restaurar pantalla previa según estado guardado
       if (g_lastWasQR && g_lastQRUrl.length() > 0) {
+        // volver a redibujar QR
         showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
       } else if (g_lastWasCapture) {
         showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
@@ -402,12 +413,15 @@ void updateDisplay() {
       } else {
         showWaitingMessage();
       }
+    } else {
+      // Si todavía está activo, no hacemos nada (se quedó el overlay dibujado)
     }
   }
 }
 
 // ----------------- Cancelar captura y volver a normal -----------------
 void cancelCaptureAndReturnToNormal() {
+  // Limpiar todos los estados de captura y QR
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
@@ -416,6 +430,7 @@ void cancelCaptureAndReturnToNormal() {
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
+  // Volver directamente a la pantalla de bienvenido
   showWaitingMessage();
 }
 
