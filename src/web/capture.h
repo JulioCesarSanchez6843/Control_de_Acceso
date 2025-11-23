@@ -1,7 +1,8 @@
-// src/web/capture.h
+// capture.h
 #pragma once
 #include <Arduino.h>
 
+// Rutas públicas (mantienen la API original)
 void handleCapturePage();
 void handleCaptureIndividualPage();
 void handleCaptureBatchPage();
@@ -14,15 +15,13 @@ void handleCaptureBatchStopPOST();
 void handleCaptureStopGET();
 
 void handleCaptureBatchPollGET();
-// *** ELIMINAR estas líneas ***
-// void handleCaptureBatchClearPOST();
-// void handleCaptureCancelPOST();
 void handleCaptureBatchPausePOST();
 void handleCaptureRemoveLastPOST();
 void handleCaptureGenerateLinksPOST();
+void handleCaptureFinishPOST();
 
 void handleCaptureEditPage();
 void handleCaptureEditPost();
 
-// NUEVO: terminar y guardar batch
-void handleCaptureFinishPOST();
+// Inicializador opcional
+void handleCaptureInit();
