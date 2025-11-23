@@ -294,7 +294,7 @@ void handleSelfRegisterPost() {
   html += "<meta charset='utf-8'><title>Registro completado</title>";
   html += "<style>body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:12px;} .card{background:#07203a;padding:14px;border-radius:8px;} .small{font-size:13px;color:#cfe9ff;margin-top:6px;}</style></head><body>";
   html += "<div class='card'><h2>✅ Registro completado</h2>";
-  html += "<div class='small'>Gracias — su tarjeta ha sido registrada correctamente.<br>Puede cerrar esta página. (Se cerrará automáticamente en 5 s)</div>";
+  html += "<div class='small'>Gracias — su tarjeta ha sido registrada correctamente.<br>Puede cerrar esta página.</div>";
   // bloqueo "back": añadimos pushState y onpopstate para impedir volver al form
   html += "<script>"
           "try{ history.pushState(null,'',location.href); window.onpopstate = function(){ history.pushState(null,'',location.href); }; }catch(e){}"

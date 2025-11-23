@@ -1,12 +1,12 @@
 // src/web/capture.cpp  (shim - delega en capture_individual / capture_lote)
+#include <Arduino.h>
 #include "capture.h"
 #include "capture_common.h"
 
-// NECESARIO: incluir web_common para htmlHeader/htmlFooter
+// NECESARIO: incluir web_common para htmlHeader/htmlFooter y server
 #include "web_common.h"
 
-// Declarations implemented in capture_individual.cpp / capture_lote.cpp
-// (el linker debe encontrar las implementaciones)
+// Declaraciones (implementadas en capture_individual.cpp / capture_lote.cpp)
 void capture_individual_page();
 void capture_individual_poll();
 void capture_individual_confirm();
@@ -22,11 +22,12 @@ void capture_lote_removeLastPOST();
 void capture_lote_generateLinksPOST();
 void capture_lote_finishPOST();
 
+// placeholder initializer (compatibilidad)
 void handleCaptureInit() {
-  // placeholder para compatibilidad; no hace nada por ahora
+  // no-op: compatibilidad si alguien lo llama
 }
 
-// Landing (misma UI)
+// Landing (UI antigua) - se mantiene por compatibilidad con rutas existentes
 void handleCapturePage() {
   String html = htmlHeader("Capturar Tarjeta");
   html += "<div class='card'><h2>Capturar Tarjeta</h2>";
@@ -38,7 +39,7 @@ void handleCapturePage() {
   server.send(200, "text/html", html);
 }
 
-// Delegation handlers (mantienen los nombres originales usados por web_routes.cpp)
+// Delegación: estas funciones mantienen los nombres que usa web_routes.cpp
 void handleCaptureIndividualPage() { capture_individual_page(); }
 void handleCaptureBatchPage()      { capture_lote_page(); }
 
@@ -46,7 +47,7 @@ void handleCapturePoll()           { capture_individual_poll(); }
 void handleCaptureConfirm()        { capture_individual_confirm(); }
 
 void handleCaptureStartPOST()      { capture_individual_startPOST(); }
-void handleCaptureBatchStopPOST()  { capture_individual_stopGET(); } // legacy
+void handleCaptureBatchStopPOST()  { capture_individual_stopGET(); } // legacy mapping
 void handleCaptureStopGET()        { capture_individual_stopGET(); }
 
 void handleCaptureBatchPollGET()   { capture_lote_batchPollGET(); }

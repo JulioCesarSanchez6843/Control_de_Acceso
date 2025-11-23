@@ -58,7 +58,6 @@ void handleTeachersForMateria() {
   String html = htmlHeader(("Maestros - " + materia).c_str());
   html += "<div class='card'><h2>Maestros - " + materia + "</h2>";
 
-  // filtros
   html += "<div class='filters'><input id='tf_name' placeholder='Filtrar Nombre'><input id='tf_acc' placeholder='Filtrar Cuenta'><button class='search-btn btn btn-blue' onclick='applyTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearTeacherFilters()'>Limpiar</button></div>";
 
   auto users = teachersForMateriaLocal(materia);
@@ -84,7 +83,6 @@ void handleTeachersForMateria() {
     }
     html += "</table>";
 
-    // script filtros
     html += "<script>"
             "function applyTeacherFilters(){ const table=document.getElementById('teachers_mat_table'); if(!table) return; const f1=document.getElementById('tf_name').value.trim().toLowerCase(); const f2=document.getElementById('tf_acc').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<3) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1); row.style.display = ok ? '' : 'none'; } }"
             "function clearTeacherFilters(){ document.getElementById('tf_name').value=''; document.getElementById('tf_acc').value=''; applyTeacherFilters(); }"
@@ -100,7 +98,15 @@ void handleTeachersForMateria() {
 void handleTeachersAll() {
   String html = htmlHeader("Maestros - Todos");
   html += "<div class='card'><h2>Todos los maestros</h2>";
+
+  // Top controls: filtros a la izquierda, botón captura individual a la derecha
+  html += "<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap'>";
+  html += "<div style='flex:1;min-width:260px;'>";
   html += "<div class='filters'><input id='ta_name' placeholder='Filtrar Nombre'><input id='ta_acc' placeholder='Filtrar Cuenta'><input id='ta_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllTeacherFilters()'>Limpiar</button></div>";
+  html += "</div>";
+  html += "<div style='display:flex;gap:8px;align-items:center;white-space:nowrap;'>";
+  html += "<a class='btn btn-green' href='/capture_individual?target=teachers'>🎴 Capturar Maestro</a>";
+  html += "</div></div>";
 
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (!f) { html += "<p>No hay archivo de maestros.</p>"; html += htmlFooter(); server.send(200,"text/html",html); return; }
@@ -160,7 +166,7 @@ void handleTeacherRemoveCourse() {
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size()>=4 && c[0]==uid && c[3]==materia) continue; // omitir la fila objetivo
+    if (c.size()>=4 && c[0]==uid && c[3]==materia) continue;
     lines.push_back(l);
   }
   f.close();
@@ -179,7 +185,7 @@ void handleTeacherDelete() {
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size()>=1 && c[0]==uid) continue; // omitir todas las filas del UID
+    if (c.size()>=1 && c[0]==uid) continue;
     lines.push_back(l);
   }
   f.close();
