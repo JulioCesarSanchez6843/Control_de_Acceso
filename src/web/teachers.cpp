@@ -1,4 +1,3 @@
-// src/web/teachers.cpp
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -55,24 +54,7 @@ static std::vector<String> profsFromCoursesForMateria(const String &materia) {
   return out;
 }
 
-static std::vector<String> teachersForMateriaFile(const String &materia) {
-  std::vector<String> out;
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return out;
-  String header = f.readStringUntil('\n'); (void)header;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      String mat = c[3];
-      if (mat == materia) out.push_back(l);
-    }
-  }
-  f.close();
-  return out;
-}
-
+// Nota: usamos teachersForMateriaFile(...) DECLARADA en files_utils.h y DEFINIDA en files_utils.cpp
 static std::vector<String> getProfessorsForMateriaCombined(const String &materia) {
   std::vector<String> out;
   auto fromCourses = profsFromCoursesForMateria(materia);
@@ -81,7 +63,7 @@ static std::vector<String> getProfessorsForMateriaCombined(const String &materia
     for (auto &x : out) if (x == p) { f = true; break; }
     if (!f) out.push_back(p);
   }
-  auto fromFile = teachersForMateriaFile(materia);
+  auto fromFile = teachersForMateriaFile(materia); // usa la función centralizada
   for (auto &ln : fromFile) {
     auto c = parseQuotedCSVLine(ln);
     if (c.size() >= 2) {
@@ -199,7 +181,6 @@ void handleTeachersAll() {
     bool found = false;
     for (auto &r : recs) {
       if (r.name == c.profesor) {
-        // add materia if not present -- but here we only keep summary of materias in a local string later
         found = true; break;
       }
     }
@@ -218,7 +199,7 @@ void handleTeachersAll() {
     for (auto &r : recs) {
       // collect materias
       std::vector<String> mats;
-      // from TEACHERS_FILE rows (we already read them earlier; need to scan file to pick per-uid or per-name)
+      // from TEACHERS_FILE rows
       File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (f) {
         String header = f.readStringUntil('\n'); (void)header;
