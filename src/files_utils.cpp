@@ -1,7 +1,7 @@
-// src/files_utils.cpp
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
+#include "rfid_handler.h"  
 #include <SPIFFS.h>
 #include <algorithm>
 
@@ -96,16 +96,10 @@ void initFiles() {
       f.close();
     }
   }
-  if (!SPIFFS.exists(TEACHERS_FILE)) {
-    File f = SPIFFS.open(TEACHERS_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"uid\",\"name\",\"account\",\"materia\",\"created_at\"");
-      f.close();
-    }
-  }
 }
 
 // --- Horarios (schedules) ---
+// Carga todas las entradas de SCHEDULES_FILE y las devuelve.
 std::vector<ScheduleEntry> loadSchedules() {
   std::vector<ScheduleEntry> res;
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -124,6 +118,7 @@ std::vector<ScheduleEntry> loadSchedules() {
   return res;
 }
 
+// Comprueba si ya existe un slot para día+hora.
 bool slotOccupied(const String &day, const String &start, const String &materiaFilter) {
   auto v = loadSchedules();
   for (auto &e : v) {
@@ -133,12 +128,14 @@ bool slotOccupied(const String &day, const String &start, const String &materiaF
   return false;
 }
 
+// Añade una entrada de horario al CSV de schedules.
 void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end) {
   String line = "\"" + materia + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + end + "\"";
   appendLineToFile(SCHEDULES_FILE, line);
 }
 
 // --- Cursos (courses) ---
+// Carga cursos desde COURSES_FILE y los devuelve.
 std::vector<Course> loadCourses() {
   std::vector<Course> res;
   File f = SPIFFS.open(COURSES_FILE, FILE_READ);
@@ -157,6 +154,7 @@ std::vector<Course> loadCourses() {
   return res;
 }
 
+// Devuelve true si la materia ya existe en cursos.
 bool courseExists(const String &materia) {
   if (materia.length() == 0) return false;
   auto v = loadCourses();
@@ -164,20 +162,24 @@ bool courseExists(const String &materia) {
   return false;
 }
 
+// Añade un curso con timestamp actual.
 void addCourse(const String &materia, const String &prof) {
   String rec = "\"" + materia + "\"," + "\"" + prof + "\"," + "\"" + nowISO() + "\"";
   appendLineToFile(COURSES_FILE, rec);
 }
 
+// Sobrescribe el CSV de cursos con la lista proporcionada.
 void writeCourses(const std::vector<Course> &list) {
   std::vector<String> lines;
   lines.push_back("\"materia\",\"profesor\",\"created_at\"");
   for (auto &c : list)
     lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
+  // writeAllLines ahora devuelve bool; se omite la comprobación aquí.
   writeAllLines(COURSES_FILE, lines);
 }
 
 // --- Usuarios ---
+// Busca cualquier fila de usuario cuyo UID coincida; devuelve la línea CSV completa o "".
 String findAnyUserByUID(const String &uid) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return "";
@@ -191,6 +193,7 @@ String findAnyUserByUID(const String &uid) {
   return "";
 }
 
+// Comprueba existencia de usuario por UID + materia.
 bool existsUserUidMateria(const String &uid, const String &materia) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
@@ -204,6 +207,7 @@ bool existsUserUidMateria(const String &uid, const String &materia) {
   return false;
 }
 
+// Comprueba existencia de usuario por account + materia.
 bool existsUserAccountMateria(const String &account, const String &materia) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
@@ -217,6 +221,7 @@ bool existsUserAccountMateria(const String &account, const String &materia) {
   return false;
 }
 
+// Devuelve todas las líneas de usuarios que pertenecen a una materia.
 std::vector<String> usersForMateria(const String &materia) {
   std::vector<String> res;
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -233,11 +238,13 @@ std::vector<String> usersForMateria(const String &materia) {
 }
 
 // --- Notificaciones ---
+// Añade una notificación al CSV con timestamp ahora.
 void addNotification(const String &uid, const String &name, const String &account, const String &note) {
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + note + "\"";
   appendLineToFile(NOTIF_FILE, rec);
 }
 
+// Lee todas las notificaciones y devuelve las últimas `limit`.
 std::vector<String> readNotifications(int limit) {
   std::vector<String> res;
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
@@ -254,6 +261,7 @@ std::vector<String> readNotifications(int limit) {
   return out;
 }
 
+// Cuenta las notificaciones (excluye cabecera).
 int notifCount() {
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   if (!f) return 0;
@@ -266,51 +274,7 @@ int notifCount() {
   return count;
 }
 
+// Restaura el CSV de notificaciones a la cabecera (borra todo).
 void clearNotifications() {
   writeAllLines(NOTIF_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"")});
-}
-
-// --- TEACHERS helpers añadidos ---
-String findTeacherByUID(const String &uid) {
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return "";
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto cols = parseQuotedCSVLine(line);
-    if (cols.size() > 0 && cols[0] == uid) { f.close(); return line; }
-  }
-  f.close();
-  return "";
-}
-
-bool teacherNameExists(const String &name) {
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto cols = parseQuotedCSVLine(line);
-    if (cols.size() > 1 && cols[1] == name) { f.close(); return true; }
-  }
-  f.close();
-  return false;
-}
-
-std::vector<String> teachersForMateriaFile(const String &materia) {
-  std::vector<String> out;
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return out;
-  String header = f.readStringUntil('\n'); (void)header;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      String mat = c[3];
-      if (mat == materia) out.push_back(l);
-    }
-  }
-  f.close();
-  return out;
 }
