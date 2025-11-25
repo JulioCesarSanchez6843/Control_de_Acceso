@@ -3,13 +3,11 @@
 #include "files_utils.h"
 #include "globals.h"
 #include <SPIFFS.h>
-#include "web_utils.h"   // para htmlEscape(), csvEscape(), etc.
+#include "web_utils.h"
 #include <algorithm>
-#include "display.h"     // para showWaitingMessage()
-#include "web_common.h"  // no usamos header/footer aquí pero a veces helpers
+#include "display.h"
+#include "web_common.h"
 #include <ctype.h>
-
-// Nota: SelfRegSession y selfRegSessions deben estar declarados en globals.h
 
 static String makeRandomToken() {
   uint32_t r = (uint32_t)esp_random();
@@ -17,6 +15,21 @@ static String makeRandomToken() {
   char buf[32];
   snprintf(buf, sizeof(buf), "%08X%08X", r, m);
   return String(buf);
+}
+
+static String jsEscape(const String &s) {
+  String r;
+  r.reserve(s.length() * 2);
+  for (size_t i = 0; i < (size_t)s.length(); ++i) {
+    char c = s[i];
+    if (c == '\\') r += "\\\\";
+    else if (c == '\'') r += "\\\'";
+    else if (c == '"') r += "\\\"";
+    else if (c == '\n') r += "\\n";
+    else if (c == '\r') r += "\\r";
+    else r += c;
+  }
+  return r;
 }
 
 int findSelfRegSessionIndexByToken(const String &token) {
@@ -40,18 +53,7 @@ static void cleanupExpiredSessions() {
   }
 }
 
-// Helper: extrae la parte "materia" si owner viene como "Materia||Profesor"
-static String baseMateriaFromOwner(const String &owner) {
-  int idx = owner.indexOf("||");
-  if (idx < 0) {
-    String o = owner; o.trim(); return o;
-  }
-  String b = owner.substring(0, idx);
-  b.trim();
-  return b;
-}
-
-// POST /self_register_start (profesor crea sesión)
+// ---------------- POST /self_register_start ----------------
 void handleSelfRegisterStartPOST() {
   cleanupExpiredSessions();
 
@@ -60,8 +62,6 @@ void handleSelfRegisterStartPOST() {
     return;
   }
   String uid = server.arg("uid"); uid.trim();
-  String materia = server.hasArg("materia") ? server.arg("materia") : String();
-  materia.trim();
 
   if (uid.length() == 0) {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"uid empty\"}");
@@ -77,8 +77,8 @@ void handleSelfRegisterStartPOST() {
   s.token = makeRandomToken();
   s.uid = uid;
   s.createdAtMs = millis();
-  s.ttlMs = 5UL * 60UL * 1000UL; // 5 minutos
-  s.materia = materia; // si el admin envía materia, la guardamos para prefijarla en el formulario
+  s.ttlMs = 5UL * 60UL * 1000UL;
+  s.materia = ""; // Ya no manejamos materia aquí
 
   selfRegSessions.push_back(s);
 
@@ -87,7 +87,7 @@ void handleSelfRegisterStartPOST() {
   server.send(200, "application/json", resp);
 }
 
-// GET /self_register?token=...
+// ---------------- GET /self_register?token=... (page) ----------------
 void handleSelfRegisterGET() {
   cleanupExpiredSessions();
 
@@ -104,35 +104,15 @@ void handleSelfRegisterGET() {
 
   SelfRegSession &s = selfRegSessions[idx];
 
-  // Determinar materia actual por horario (si hay)
-  String currOwner = currentScheduledMateria(); // puede venir "Materia" o "Materia||Profesor"
-  String currMateriaBase = baseMateriaFromOwner(currOwner);
-
-  // Si la sesión fue creada con una materia por el admin (s.materia), la consideramos también
-  String sessionMateria = s.materia;
-  sessionMateria.trim();
-
-  // Construir HTML minimalista (responsive)
   String html;
+  html.reserve(1200);
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<meta charset='utf-8'><title>Auto-registro</title>";
-  html += "<style>"
-          "body{font-family:Arial,Helvetica,sans-serif;background:#0b1220;color:#fff;margin:0;padding:12px;}"
-          ".card{background:#0f1724;padding:14px;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.4);}"
-          "h1{font-size:18px;margin:0 0 8px 0;color:#fff}"
-          ".small{font-size:13px;color:#cbd5e1;margin-bottom:10px}"
-          "label{display:block;font-size:13px;margin-top:8px;margin-bottom:3px}"
-          "input[type=text],input[type=tel],select{width:100%;padding:8px;border-radius:6px;border:1px solid #334155;background:#071026;color:#fff;box-sizing:border-box}"
-          ".btn{display:inline-block;padding:10px 14px;border-radius:6px;border:none;font-weight:600;margin-top:12px;cursor:pointer;text-decoration:none}"
-          ".btn-green{background:#10b981;color:#04201b}"
-          ".msg{margin-top:8px;padding:8px;border-radius:6px;background:#05203b;color:#dbeafe}"
-          ".warn{margin-top:8px;padding:8px;border-radius:6px;background:#1f2937;color:#ffdede}"
-          "</style></head><body>";
-  html += "<div class='card'>";
-  html += "<h1>Registro rápido</h1>";
-  html += "<div class='small'>Complete Nombre y Cuenta (7 dígitos). UID prellenado. Esta página expira en breve.</div>";
+  html += "<style>body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:12px} .card{background:#0f1724;padding:12px;border-radius:8px} label{display:block;margin-top:8px} input{width:100%;padding:8px;border-radius:6px;border:1px solid #334155;background:#071026;color:#fff;box-sizing:border-box} .btn{padding:8px 12px;border-radius:6px;border:none;margin-top:12px} .small{font-size:13px;color:#cbd5e1;margin-top:6px}</style>";
+  html += "</head><body>";
+  html += "<div class='card'><h2>Registro rápido</h2>";
+  html += "<div class='small'>Complete Nombre y Cuenta (7 dígitos). UID prellenado. Esta página expira pronto.</div>";
 
-  // Form
   html += "<form method='POST' action='/self_register_submit' id='srForm'>";
   html += "<input type='hidden' name='token' value='" + htmlEscape(s.token) + "'>";
   html += "<label>UID</label>";
@@ -141,86 +121,35 @@ void handleSelfRegisterGET() {
   html += "<input name='name' required placeholder='Nombre completo'>";
   html += "<label>Cuenta (7 dígitos)</label>";
   html += "<input name='account' inputmode='numeric' pattern='[0-9]{7}' maxlength='7' minlength='7' placeholder='Ej: 2123456'>";
+  
+  // Campo materia oculto - será asignado después por el administrador
+  html += "<input type='hidden' name='materia' value=''>";
 
-  // Decide comportamiento del campo materia:
-  // PRIORIDAD:
-  // 1) Si hay clase en horario -> usar currMateriaBase (readonly)
-  // 2) Else if sessionMateria (admin set) -> usar sessionMateria (readonly)
-  // 3) Else -> NO permitir que el alumno elija (mostrar mensaje y deshabilitar submit)
-  if (currMateriaBase.length() > 0) {
-    html += "<label>Materia (en sesión ahora)</label>";
-    html += "<input name='materia' readonly value='" + htmlEscape(currMateriaBase) + "'>";
-    html += "<div class='small'>La materia está fijada por el horario actual.</div>";
-    html += "<input type='hidden' id='materia_state' value='fixed'>";
-  } else if (sessionMateria.length() > 0) {
-    html += "<label>Materia (preseleccionada por administrador)</label>";
-    html += "<input name='materia' readonly value='" + htmlEscape(sessionMateria) + "'>";
-    html += "<div class='small'>La materia fue asignada por el administrador al crear esta sesión.</div>";
-    html += "<input type='hidden' id='materia_state' value='fixed'>";
-  } else {
-    // No hay materia por horario ni por admin -> NO permitir que el alumno seleccione.
-    html += "<div class='warn'>La materia no está asignada para esta sesión. Por favor solicite al administrador que inicie la sesión con una materia. No puede elegir materia desde aquí.</div>";
-    html += "<input type='hidden' name='materia' value=''>";
-    html += "<input type='hidden' id='materia_state' value='missing'>";
-  }
+  html += "<div style='display:flex;gap:8px;'><button class='btn' type='submit' style='background:#10b981;color:#04201b'>Registrar</button></div>";
+  html += "<div id='msg' class='small' style='display:none;margin-top:8px;color:#ffdede;'></div>";
+  html += "</form></div>";
 
-  html += "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>";
-  html += "<button class='btn btn-green' type='submit' id='srSubmitBtn'>Registrar</button>";
-  html += "</div>";
+  html += "<script>";
+  html += "document.addEventListener('DOMContentLoaded',function(){";
+  html += "  var f=document.getElementById('srForm');";
+  html += "  f.addEventListener('submit', function(ev){";
+  html += "    var acc=f.account.value.trim();";
+  html += "    var name=f.name.value.trim();";
+  html += "    if(!name){ ev.preventDefault(); showMsg('Por favor escriba su nombre.'); return false;}";
+  html += "    if(!/^[0-9]{7}$/.test(acc)){ ev.preventDefault(); showMsg('Cuenta inválida: debe tener 7 dígitos.'); return false;}";
+  html += "    var btn=f.querySelector('button[type=submit]'); if(btn) btn.disabled=true;";
+  html += "    return true;";
+  html += "  });";
+  html += "});";
+  html += "function showMsg(t){ var d=document.getElementById('msg'); d.style.display='block'; d.textContent = t; }";
+  html += "</script>";
 
-  html += "<div id='msg' class='msg' style='display:none;'></div>";
-  html += "</form>";
-
-  // JS: validar cuenta es numérico de 7 y mostrar errores en línea; además deshabilitar submit si materia_state=='missing'
-  html += "<script>"
-          "const f=document.getElementById('srForm');"
-          "const submitBtn = document.getElementById('srSubmitBtn');"
-          "document.addEventListener('DOMContentLoaded', function(){"
-          "  var ms = document.getElementById('materia_state');"
-          "  if (ms && ms.value === 'missing') { if (submitBtn) submitBtn.disabled = true; }"
-          "});"
-          "f.addEventListener('submit', function(ev){"
-          "  var ms = document.getElementById('materia_state');"
-          "  if (ms && ms.value === 'missing') { ev.preventDefault(); showMsg('No se puede registrar: la materia no está asignada.'); return false; }"
-          "  var acc = f.account.value.trim();"
-          "  var name = f.name.value.trim();"
-          "  if(!name){ ev.preventDefault(); showMsg('Por favor escriba su nombre.'); return false; }"
-          "  if(!/^[0-9]{7}$/.test(acc)){ ev.preventDefault(); showMsg('Cuenta inválida: debe tener 7 dígitos.'); return false; }"
-          "  var btn = f.querySelector('button[type=submit]'); if(btn) btn.disabled = true;"
-          "  return true;"
-          "});"
-          "function showMsg(t){ var d=document.getElementById('msg'); d.style.display='block'; d.textContent = t; }"
-          "</script>";
-
-  html += "</div></body></html>";
+  html += "</body></html>";
 
   server.send(200, "text/html", html);
 }
 
-// POST /self_register_cancel
-// Cancela la sesión (token) y, si coincide con el QR activo, limpia flags y actualiza display.
-void handleSelfRegisterCancelPOST() {
-  if (!server.hasArg("token")) {
-    server.send(400, "application/json", "{\"ok\":false,\"err\":\"token required\"}");
-    return;
-  }
-  String token = server.arg("token"); token.trim();
-  int idx = findSelfRegSessionIndexByToken(token);
-  if (idx >= 0) removeSelfRegSessionByIndex(idx);
-
-  // Si coincide con currentSelfRegToken limpiar flags y volver a pantalla de espera
-  if (token == currentSelfRegToken) {
-    awaitingSelfRegister = false;
-    currentSelfRegToken = String();
-    currentSelfRegUID = String();
-    awaitingSinceMs = 0;
-    showWaitingMessage();
-  }
-
-  server.send(200, "application/json", "{\"ok\":true}");
-}
-
-// POST /self_register_submit
+// ---------------- POST /self_register_submit ----------------
 void handleSelfRegisterPost() {
   cleanupExpiredSessions();
 
@@ -232,8 +161,6 @@ void handleSelfRegisterPost() {
   String uid = server.arg("uid"); uid.trim();
   String name = server.arg("name"); name.trim();
   String account = server.arg("account"); account.trim();
-  String materia = server.hasArg("materia") ? server.arg("materia") : String();
-  materia.trim();
 
   int idx = findSelfRegSessionIndexByToken(token);
   if (idx < 0) {
@@ -241,78 +168,40 @@ void handleSelfRegisterPost() {
     return;
   }
 
-  // Validaciones básicas
   if (uid.length() == 0 || name.length() == 0 || account.length() != 7) {
     server.send(400, "text/plain", "datos invalidos");
     return;
   }
   for (size_t i = 0; i < account.length(); ++i) {
-    if (!isDigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
+    if (!isdigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
   }
 
-  // Revisar UID no registrado ya
   if (findAnyUserByUID(uid).length() > 0) {
     removeSelfRegSessionByIndex(idx);
     server.send(409, "text/plain", "UID already registered");
     return;
   }
 
-  // Obtener sesión (por referencia)
-  SelfRegSession s = selfRegSessions[idx];
-
-  // Determinar materia actual por horario (si hay)
-  String currOwner = currentScheduledMateria();
-  String currMateriaBase = baseMateriaFromOwner(currOwner);
-
-  // Si la sesión tiene materia definida por admin, respetarla
-  String sessionMateria = s.materia;
-  sessionMateria.trim();
-
-  // VALIDACIÓN FINAL (coincide con lo mostrado al usuario en GET):
-  // 1) Si hay clase en curso -> forzar currMateriaBase (no permitir cambiar)
-  // 2) Else if sessionMateria set -> forzar sessionMateria (no permitir cambiar)
-  // 3) Else -> NO permitir registro: devolver error (porque el alumno no puede elegir)
-  if (currMateriaBase.length() > 0) {
-    if (materia.length() > 0 && materia != currMateriaBase) {
-      server.send(400, "text/plain", "No puede cambiar la materia: hay una sesión en curso");
-      return;
-    }
-    materia = currMateriaBase;
-  } else if (sessionMateria.length() > 0) {
-    if (materia.length() > 0 && materia != sessionMateria) {
-      server.send(400, "text/plain", "No puede cambiar la materia: preseleccionada por admin");
-      return;
-    }
-    materia = sessionMateria;
-  } else {
-    // No hay materia por horario ni por admin: no permitimos que el alumno registre la materia por su cuenta.
-    server.send(400, "text/plain", "Materia no asignada. Solicite al administrador iniciar la sesión con una materia.");
-    return;
-  }
-
-  // Guardar usuario
+  // Guardar usuario SIN materia - será asignada después por el administrador
   String created = nowISO();
-  String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
+  String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"" + created + "\"";
   if (!appendLineToFile(USERS_FILE, line)) {
     server.send(500, "text/plain", "Error guardando usuario");
     return;
   }
 
-  // Guardar attendance (captura_self)
-  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura_self\"";
+  // Guardar attendance SIN materia por ahora
+  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"captura_self\"";
   if (!appendLineToFile(ATT_FILE, rec)) {
     server.send(500, "text/plain", "Error guardando attendance");
     return;
   }
 
-  // Notificación para admin
-  String note = "Auto-registro completado. Usuario: " + name + " (" + account + ")";
+  String note = "Auto-registro completado. Usuario: " + name + " (" + account + ") - Materia pendiente de asignar";
   addNotification(uid, name, account, note);
 
-  // Eliminar la sesión (si exista)
   removeSelfRegSessionByIndex(idx);
 
-  // Si por algún motivo el token coincidiera con currentSelfRegToken (caso display) limpiar flags.
   if (token == currentSelfRegToken) {
     awaitingSelfRegister = false;
     currentSelfRegToken = String();
@@ -321,18 +210,66 @@ void handleSelfRegisterPost() {
     showWaitingMessage();
   }
 
-  // Página de confirmación MINIMALISTA
+  // Página de confirmación MEJORADA con diseño atractivo
   String html;
+  html.reserve(800);
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<meta charset='utf-8'><title>Registro completado</title>";
-  html += "<style>body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:12px;} .card{background:#07203a;padding:14px;border-radius:8px;} .small{font-size:13px;color:#cfe9ff;margin-top:6px;}</style></head><body>";
-  html += "<div class='card'><h2>✅ Registro completado</h2>";
-  html += "<div class='small'>Gracias — su tarjeta ha sido registrada correctamente.<br>Puede cerrar esta página.</div>";
-  html += "<script>"
-          "try{ history.pushState(null,'',location.href); window.onpopstate = function(){ history.pushState(null,'',location.href); }; }catch(e){}"
-          "setTimeout(function(){ try{ window.close(); }catch(e){} },5000);"
-          "</script>";
-  html += "</div></body></html>";
+  html += "<meta charset='utf-8'><title>Registro Completado</title>";
+  html += "<style>";
+  html += "body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:20px;display:flex;justify-content:center;align-items:center;min-height:100vh;}";
+  html += ".success-card{background:#0f1b2e;padding:30px;border-radius:12px;text-align:center;box-shadow:0 8px 25px rgba(0,0,0,0.3);border:1px solid #1e3a5f;max-width:400px;width:100%;}";
+  html += ".success-icon{font-size:64px;margin-bottom:20px;color:#10b981;text-shadow:0 0 20px rgba(16,185,129,0.5);}";
+  html += ".success-title{font-size:24px;font-weight:bold;margin-bottom:15px;color:#10b981;}";
+  html += ".success-message{font-size:16px;color:#cbd5e1;line-height:1.5;margin-bottom:25px;}";
+  html += ".success-note{font-size:14px;color:#94a3b8;font-style:italic;margin-top:20px;padding-top:15px;border-top:1px solid #1e3a5f;}";
+  html += "</style>";
+  html += "</head><body>";
+  html += "<div class='success-card'>";
+  html += "<div class='success-icon'>✓</div>";
+  html += "<div class='success-title'>Registro Completado</div>";
+  html += "<div class='success-message'>";
+  html += "Su registro ha sido exitoso.<br>Gracias por completar el proceso.";
+  html += "</div>";
+  html += "<div class='success-note'>Puede cerrar esta página</div>";
+  html += "</div>";
+  html += "<script>";
+  html += "setTimeout(function(){ try{ window.close(); }catch(e){} }, 3000);";
+  html += "</script>";
+  html += "</body></html>";
 
   server.send(200, "text/html", html);
+}
+
+// ---------------- POST /self_register_cancel ----------------
+void handleSelfRegisterCancelPOST() {
+  if (!server.hasArg("token")) {
+    server.send(400, "application/json", "{\"ok\":false,\"err\":\"token required\"}");
+    return;
+  }
+  String token = server.arg("token"); token.trim();
+  int idx = findSelfRegSessionIndexByToken(token);
+  if (idx >= 0) removeSelfRegSessionByIndex(idx);
+
+  if (token == currentSelfRegToken) {
+    awaitingSelfRegister = false;
+    currentSelfRegToken = String();
+    currentSelfRegUID = String();
+    awaitingSinceMs = 0;
+    showWaitingMessage();
+  }
+
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// Las otras funciones las mantenemos por si se usan en otro lugar
+void handleSelfRegisterPollGET() {
+  server.send(200, "application/json", "{\"ok\":true,\"status\":\"active\"}");
+}
+
+void handleSelfRegisterSetMateriaPOST() {
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Materia assignment handled in batch\"}");
+}
+
+void handleSelfRegisterSetMateriaBatchPOST() {
+  server.send(200, "application/json", "{\"ok\":true,\"message\":\"Materia assignment handled in batch\"}");
 }

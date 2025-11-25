@@ -22,8 +22,6 @@ extern volatile bool awaitingSelfRegister;
 extern String currentSelfRegUID;
 extern unsigned long awaitingSinceMs;
 extern std::vector<SelfRegSession> selfRegSessions;
-
-// (en algunos ficheros se usa currentSelfRegToken; declarar extern por si existe en globals)
 extern String currentSelfRegToken;
 
 // Small helpers
@@ -43,6 +41,7 @@ static String htmlEscape(const String &s) {
   }
   return r;
 }
+
 static String jsEscape(const String &s) {
   String r;
   r.reserve(s.length() * 2);
@@ -67,7 +66,6 @@ static String computeScheduleBaseMat() {
 }
 
 // New helper: try append uid to capture queue but refuse if it's a teacher.
-// Returns true if appended, false if not (and in that case logs denial).
 static bool appendUidToCaptureQueueIfStudent(const String &uid) {
   if (uid.length() == 0) return false;
   // If it's a teacher, do not allow adding to batch
@@ -82,7 +80,6 @@ static bool appendUidToCaptureQueueIfStudent(const String &uid) {
     #endif
     return false;
   }
-  // fallback to existing append function (assumed available)
   return appendUidToCaptureQueue(uid);
 }
 
@@ -137,7 +134,7 @@ void capture_lote_page() {
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   html += "<button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
 
-  // Terminar y Guardar - hidden materia
+  // Terminar y Guardar
   html += "<form id='finishForm' method='POST' action='/capture_finish' style='display:inline;margin-top:6px;' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'>";
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   if (scheduleBaseMat.length() > 0) {
@@ -172,7 +169,6 @@ void capture_lote_page() {
   html += "</div></div>" + htmlFooter();
 
   // Client JS
-  String optionsJs = jsEscape(coursesOptionsHtml);
   String scheduleFlag = scheduleBaseMat.length() ? "true" : "false";
 
   html += R"rawliteral(
@@ -194,10 +190,15 @@ void capture_lote_page() {
         .then(j=>{
           var cntEl = document.getElementById('queue_count');
           if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
+          
+          // NO BLOQUEAR POR SELF-REGISTER - solo mostrar info
           var bc = document.getElementById('banners_container');
+          
+          // Mensaje informativo amarillo durante self-register
           if (j.awaiting) {
             if (bc && !document.getElementById('batch_yellow_msg')) {
-              var y = document.createElement('div'); y.id='batch_yellow_msg';
+              var y = document.createElement('div'); 
+              y.id='batch_yellow_msg';
               y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
               y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
               y.innerHTML='Atención: Registrando nuevo usuario. No pasar tarjeta hasta terminar el registro.';
@@ -206,21 +207,30 @@ void capture_lote_page() {
             var ex = document.getElementById('batch_yellow_msg');
             if (ex) ex.innerHTML = 'Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
           } else {
-            var e = document.getElementById('batch_yellow_msg'); if (e) e.remove();
+            var e = document.getElementById('batch_yellow_msg'); 
+            if (e) e.remove();
           }
+
+          // Mensaje rojo sincronizado con display cuando hay tarjeta incorrecta
           if (j.wrong_card) {
             if (bc && !document.getElementById('batch_red_msg')) {
-              var red = document.createElement('div'); red.id='batch_red_msg';
+              var red = document.createElement('div'); 
+              red.id='batch_red_msg';
               red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
               red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
-              red.textContent='Espere su turno: registro en curso';
+              red.textContent = 'Espere su turno: registro en curso';
               bc.insertBefore(red, bc.firstChild);
-              setTimeout(function(){ var rr = document.getElementById('batch_red_msg'); if (rr) rr.remove(); }, 2000);
+              setTimeout(function(){ 
+                var rr = document.getElementById('batch_red_msg'); 
+                if (rr) rr.remove(); 
+              }, 2000);
             }
           }
+
           var list = document.getElementById('queue_list');
-          if (!j.uids || j.uids.length==0) { list.innerHTML = 'No hay UIDs capturadas aún.'; }
-          else {
+          if (!j.uids || j.uids.length==0) { 
+            list.innerHTML = 'No hay UIDs capturadas aún.'; 
+          } else {
             var html = '<table style="width:100%;border-collapse:collapse;"><tr><th style="text-align:left;padding:6px">UID</th><th style="text-align:left;padding:6px">Reg</th><th style="text-align:left;padding:6px">Nombre</th><th style="text-align:left;padding:6px">Cuenta</th><th style="text-align:left;padding:6px">Materia</th></tr>';
             for (var i=0;i<j.uids.length;i++){
               var u = j.uids[i];
@@ -239,19 +249,22 @@ void capture_lote_page() {
             html += '</table>';
             list.innerHTML = html;
           }
+          
           if (!scheduleHasMateria) {
             var g = document.getElementById('global_materia_select');
             if (g) g.value = selectedMateria || '';
           }
+          
           var finishBtn = document.getElementById('finishBtn');
           if (finishBtn) {
             var disable = false;
-            if (j.awaiting) disable = true;
+            // NO deshabilitar por self-register
             if (!scheduleHasMateria) {
               if (!selectedMateria || selectedMateria.trim()=='') disable = true;
             }
             finishBtn.disabled = disable;
-            if (disable) finishBtn.classList.remove('btn-green'); else finishBtn.classList.add('btn-green');
+            if (disable) finishBtn.classList.remove('btn-green'); 
+            else finishBtn.classList.add('btn-green');
           }
         }).catch(e=>{});
       setTimeout(pollQueue, 900);
@@ -260,7 +273,9 @@ void capture_lote_page() {
       var g = document.getElementById('global_materia_select');
       if (g) g.addEventListener('change', function(){ setGlobalMateriaValue(this.value); });
       var hidden = document.getElementById('batch_materia');
-      if (hidden && hidden.value && hidden.value.trim()!='') { selectedMateria = hidden.value; }
+      if (hidden && hidden.value && hidden.value.trim()!='') { 
+        selectedMateria = hidden.value; 
+      }
       pollQueue();
     });
     </script>
@@ -269,12 +284,11 @@ void capture_lote_page() {
   server.send(200, "text/html", html);
 }
 
-// Batch poll
+// Batch poll - CON LOGICA DE MENSAJE ROJO SINCRONIZADO DEL SEGUNDO CÓDIGO
 void capture_lote_batchPollGET() {
   auto u = readCaptureQueue();
   if (u.size() == 1 && u[0].length() == 0) u.clear();
 
-  // compute schedule base materia once
   String scheduleBaseMat = computeScheduleBaseMat();
 
   bool cardTriggered = false;
@@ -284,6 +298,7 @@ void capture_lote_batchPollGET() {
     }
   }
 
+  // LÓGICA DEL MENSAJE ROJO DEL SEGUNDO CÓDIGO (FUNCIONAL)
   static unsigned long wrongCardStartTime = 0;
   static unsigned long lastShowWrongRedMs = 0;
   bool wrongCard = false;
@@ -323,6 +338,7 @@ void capture_lote_batchPollGET() {
     if (lastShowWrongRedMs != 0 && (millis() - lastShowWrongRedMs) > 2500) lastShowWrongRedMs = 0;
   }
 
+  // Procesar tarjetas normales (cuando no hay self-register activo)
   if (!awaitingSelfRegister && captureUID.length() > 0) {
     if (appendUidToCaptureQueueIfStudent(captureUID)) {
       captureUID = "";
@@ -465,14 +481,7 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  if (awaitingSelfRegister) {
-    String html = htmlHeader("No se puede terminar");
-    html += "<div class='card'><h3 style='color:red;'>No se puede terminar: hay un registro en curso. Espere a que termine.</h3>";
-    html += "<p><a class='btn btn-blue' href='/capture_batch'>Volver</a></p></div>" + htmlFooter();
-    server.send(200, "text/html", html);
-    return;
-  }
-
+  // NO BLOQUEAR por self-register - se puede terminar incluso durante registro
   // Determine chosen materia: if supplied use it; else try schedule
   String chosenMateria;
   if (server.hasArg("materia")) {
