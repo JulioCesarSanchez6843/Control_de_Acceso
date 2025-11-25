@@ -1,3 +1,4 @@
+// src/web/courses.cpp
 #include "courses.h"
 #include "web_common.h"
 #include "files_utils.h"
@@ -8,15 +9,12 @@
 
 // ---------- Helpers locales ----------
 
-// Separador para clave curso "materia||profesor"
 static const char *COURSE_KEY_SEP = "||";
 
-// Construye clave única "Materia||Profesor"
 static String makeCourseKey(const String &materia, const String &profesor) {
   return materia + String(COURSE_KEY_SEP) + profesor;
 }
 
-// Si key contiene separador, separa en materiaOut/profesorOut y devuelve true.
 static bool splitCourseKey(const String &key, String &materiaOut, String &profesorOut) {
   int idx = key.indexOf(String(COURSE_KEY_SEP));
   if (idx < 0) return false;
@@ -25,7 +23,6 @@ static bool splitCourseKey(const String &key, String &materiaOut, String &profes
   return true;
 }
 
-// URL-encode simple
 static String urlEncode(const String &str) {
   String encoded = "";
   char buf[8];
@@ -44,7 +41,18 @@ static String urlEncode(const String &str) {
   return encoded;
 }
 
-// Cuenta cursos con el mismo nombre de materia
+// ---------- Helper JSON-escape local (asegura que esté disponible aquí) ----------
+static String jsonEscape(const String &s) {
+  String o = s;
+  o.replace("\\", "\\\\");
+  o.replace("\"", "\\\"");
+  o.replace("\n", "\\n");
+  o.replace("\r", "\\r");
+  return o;
+}
+
+// ---------- Manipulación cursos / schedules helpers ----------
+
 static int countCoursesWithName(const String &materia) {
   auto courses = loadCourses();
   int cnt = 0;
@@ -52,7 +60,6 @@ static int countCoursesWithName(const String &materia) {
   return cnt;
 }
 
-// Comprueba existencia exacta materia+profesor
 static bool coursePairExists(const String &materia, const String &profesor) {
   auto courses = loadCourses();
   for (auto &c : courses) {
@@ -61,7 +68,6 @@ static bool coursePairExists(const String &materia, const String &profesor) {
   return false;
 }
 
-// Comprueba si un slot (day,start) está ocupado; opcionalmente devuelve owner
 static bool slotOccupiedLocal(const String &day, const String &start, String *ownerOut = nullptr) {
   auto schedules = loadSchedules();
   for (auto &s : schedules) {
@@ -73,7 +79,6 @@ static bool slotOccupiedLocal(const String &day, const String &start, String *ow
   return false;
 }
 
-// Añade slot si está libre; acepta courseKey composite o legacy
 static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &day, const String &start, const String &end, String *err = nullptr) {
   String owner;
   if (slotOccupiedLocal(day, start, &owner)) {
@@ -88,16 +93,66 @@ static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &d
   return true;
 }
 
+// Devuelve lista única de nombres de materia (sin repetir por profesor)
+static std::vector<String> getUniqueMateriaNames() {
+  std::vector<String> out;
+  auto courses = loadCourses();
+  for (auto &c : courses) {
+    bool found = false;
+    for (auto &x : out) if (x == c.materia) { found = true; break; }
+    if (!found) out.push_back(c.materia);
+  }
+  return out;
+}
+
+// Devuelve lista de profesores para una materia (puede haber varios)
+static std::vector<String> getProfessorsForMateria(const String &materia) {
+  std::vector<String> out;
+  auto courses = loadCourses();
+  for (auto &c : courses) {
+    if (c.materia == materia) {
+      bool found = false;
+      for (auto &p : out) if (p == c.profesor) { found = true; break; }
+      if (!found) out.push_back(c.profesor);
+    }
+  }
+  return out;
+}
+
+// Lee los maestros registrados (TEACHERS_FILE) y devuelve lista de nombres únicos
+static std::vector<String> loadRegisteredTeachersNames() {
+  std::vector<String> out;
+  if (!SPIFFS.exists(TEACHERS_FILE)) return out;
+  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  if (!f) return out;
+  // saltar header si existe
+  if (f.available()) {
+    String header = f.readStringUntil('\n');
+    (void)header;
+  }
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim();
+    if (l.length() == 0) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 2) {
+      String name = c[1]; // asumimos formato: uid,name,account,materia,created
+      bool found = false;
+      for (auto &x : out) if (x == name) { found = true; break; }
+      if (!found) out.push_back(name);
+    }
+  }
+  f.close();
+  return out;
+}
+
 // ---------- Handlers: materias ----------
 
-// GET /materias - lista materias y acciones
 void handleMaterias() {
   String html = htmlHeader("Materias");
   html += "<div class='card'><h2>Materias disponibles</h2>";
   auto courses = loadCourses();
   html += "<p class='small'>Pulse 'Agregar nueva materia' para registrar una materia. Desde aquí puede administrar estudiantes o ver el historial por días.</p>";
 
-  // Filtros: materia y profesor
   html += "<div class='filters'><input id='f_mat' placeholder='Filtrar por materia'><input id='f_prof' placeholder='Filtrar por profesor'><button class='search-btn btn btn-blue' onclick='applyMateriaFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearMateriaFilters()'>Limpiar</button></div>";
 
   if (courses.size() == 0) {
@@ -107,7 +162,6 @@ void handleMaterias() {
     html += "<table id='materias_table'><tr><th>Materia</th><th>Profesor</th><th>Creado</th><th>Horarios</th><th>Acción</th></tr>";
     for (auto &c : courses) {
       String schedStr = "";
-      // Asociar schedules a este curso (composite o legacy si único)
       for (auto &s : schedules) {
         String schedOwner = s.materia;
         String ownerMat, ownerProf;
@@ -129,7 +183,6 @@ void handleMaterias() {
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
-      // Acciones: editar, horarios, administrar estudiantes, historial, eliminar
       html += "<a class='btn btn-green' href='/materias/edit?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "'>✏️ Editar</a> ";
       html += "<a class='btn btn-yellow' href='/materias_new_schedule?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#f1c40f;color:#111;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📅 Horarios</a> ";
       html += "<a class='btn btn-purple' href='/students?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>👥 Administrar Estudiantes</a> ";
@@ -142,7 +195,6 @@ void handleMaterias() {
     }
     html += "</table>";
 
-    // Script de filtros cliente
     html += "<script>"
             "function applyMateriaFilters(){"
             "const table=document.getElementById('materias_table');"
@@ -162,27 +214,44 @@ void handleMaterias() {
             "</script>";
   }
 
-  // Botones inferiores
   html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>➕ Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200, "text/html", html);
 }
 
-// GET /materias/new - formulario para crear nueva materia
 void handleMateriasNew() {
+  // Intentar cargar profesores registrados para mostrar en desplegable (si existen)
+  auto teachers = loadRegisteredTeachersNames();
+
   String html = htmlHeader("Agregar Materia");
   html += "<div class='card'><h2>Agregar nueva materia</h2>";
+  html += "<p class='small'>Preferible: registre profesores primero (Menú → Maestros). Aquí puede elegir un profesor registrado o escribir uno nuevo.</p>";
   html += "<form method='POST' action='/materias_add'>";
   html += "Nombre materia:<br><input name='materia' required><br>";
-  html += "Profesor:<br><input name='profesor' required><br><br>";
-  html += "<p class='small'>Opcional: después de crear la materia podrás asignarle horarios (solo podrás agregar horarios para la materia que acabas de crear).</p>";
+
+  if (teachers.size() == 0) {
+    // No hay profesores registrados -> permitir ingresar texto y avisar
+    html += "Profesor (no hay profesores registrados — ingrese nombre):<br>";
+    html += "<input name='profesor' required placeholder='Nombre del profesor'><br>";
+    html += "<p class='small' style='color:#b00020;'>No se encontraron profesores registrados. Puede registrar profesores en el menú de Maestros o escribir el nombre aquí.</p>";
+  } else {
+    // Hay profesores -> desplegable con lista; si quieres permitir texto libre también, se puede añadir.
+    html += "Profesor (seleccione):<br>";
+    html += "<select name='profesor' required>";
+    for (auto &t : teachers) {
+      html += "<option value='" + t + "'>" + t + "</option>";
+    }
+    html += "</select><br>";
+    html += "<p class='small'>Si desea usar un profesor no registrado, primero regístrelo en Maestros.</p>";
+  }
+
+  html += "<br>";
   html += "<input class='btn btn-green' type='submit' value='Agregar materia'> ";
   html += "<a class='btn btn-red' href='/materias'>Cancelar</a>";
   html += "</form></div>" + htmlFooter();
   server.send(200, "text/html", html);
 }
 
-// POST /materias_add - valida y crea curso
 void handleMateriasAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) {
     server.send(400, "text/plain", "materia y profesor requeridos");
@@ -197,8 +266,6 @@ void handleMateriasAddPOST() {
     String html = htmlHeader("Operación inválida");
     html += "<div class='card'><h3>Operación inválida — duplicado de materia y profesor</h3>";
     html += "<p class='small'>No se puede registrar la misma materia con el mismo profesor porque ya existe una entrada idéntica en el sistema.</p>";
-    html += "<p class='small'><b>Materia:</b> " + mat + " &nbsp; <b>Profesor:</b> " + prof + "</p>";
-    html += "<p class='small'>Si desea asociar esta materia a otro profesor, vuelva al formulario de registro y cambie el nombre del profesor. Si lo que desea es ver o editar materias existentes, use la lista de materias.</p>";
     html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>Regresar</a> <a class='btn btn-blue' href='/materias'>Lista de materias</a></p>";
     html += htmlFooter();
     server.send(200, "text/html", html);
@@ -207,12 +274,10 @@ void handleMateriasAddPOST() {
 
   addCourse(mat, prof);
 
-  // Redirige a asignar horarios para la nueva materia
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
 }
 
-// GET /materias_new_schedule - muestra grilla de horarios para un curso
 void handleMateriasNewScheduleGET() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -221,13 +286,11 @@ void handleMateriasNewScheduleGET() {
   if (!coursePairExists(mat, prof)) { server.send(404, "text/plain", "Curso no encontrado"); return; }
 
   bool fromNewFlow = (server.hasArg("new") && server.arg("new") == "1");
-
   auto schedules = loadSchedules();
   String headerTitle = String("Asignar horarios - ") + mat + " (" + prof + ")";
   String html = htmlHeader(headerTitle.c_str());
   html += "<div class='card'><h2>Horarios para: " + mat + " — " + prof + "</h2>";
 
-  // Grilla editable por franjas
   html += "<table><tr><th>Hora</th>";
   for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";
@@ -247,7 +310,6 @@ void handleMateriasNewScheduleGET() {
       bool occ = slotOccupiedLocal(day, start, &owner);
       html += "<td style='min-width:150px'>";
       if (occ) {
-        // Mostrar propietario y permitir eliminar si pertenece a este curso
         String ownerMat, ownerProf;
         if (splitCourseKey(owner, ownerMat, ownerProf)) {
           if (owner == courseKey) {
@@ -277,7 +339,6 @@ void handleMateriasNewScheduleGET() {
           }
         }
       } else {
-        // Libre: permitir agregar con clave compuesta
         html += "<form method='POST' action='/materias_new_schedule_add' style='display:inline'>";
         html += "<input type='hidden' name='materia' value='" + mat + "'>";
         html += "<input type='hidden' name='profesor' value='" + prof + "'>";
@@ -310,7 +371,6 @@ void handleMateriasNewScheduleGET() {
   server.send(200, "text/html", html);
 }
 
-// POST /materias_new_schedule_add - añade horario (valida curso)
 void handleMateriasNewScheduleAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -331,7 +391,6 @@ void handleMateriasNewScheduleAddPOST() {
   server.send(303, "text/plain", "Agregado");
 }
 
-// POST /materias_new_schedule_del - elimina horario si pertenece a este curso
 void handleMateriasNewScheduleDelPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start")) {
     server.send(400, "text/plain", "faltan"); return;
@@ -344,7 +403,6 @@ void handleMateriasNewScheduleDelPOST() {
 
   String courseKey = makeCourseKey(mat, prof);
 
-  // Reescribe schedules sin la entrada objetivo (solo si aplica)
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   std::vector<String> slines;
   if (f) {
@@ -377,7 +435,6 @@ void handleMateriasNewScheduleDelPOST() {
   server.send(303, "text/plain", "Eliminado");
 }
 
-// GET /materias/edit - formulario de edición para materia+profesor
 void handleMateriasEditGET() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -396,13 +453,12 @@ void handleMateriasEditGET() {
   html += "<input type='hidden' name='orig_profesor' value='" + prof + "'>";
   html += "Nombre materia:<br><input name='materia' value='" + courses[idx].materia + "' required><br>";
   html += "Profesor:<br><input name='profesor' value='" + courses[idx].profesor + "' required><br><br>";
-  html += "<input class='btn btn-green' type='submit' value='Guardar cambios'>"; // guardar verde
+  html += "<input class='btn btn-green' type='submit' value='Guardar cambios'>";
   html += "</form>";
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>" + htmlFooter();
   server.send(200, "text/html", html);
 }
 
-// POST /materias_edit - valida y aplica cambios (actualiza cursos, schedules y usuarios)
 void handleMateriasEditPOST() {
   if (!server.hasArg("orig_materia") || !server.hasArg("orig_profesor") || !server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "faltan"); return; }
   String orig = server.arg("orig_materia"); orig.trim();
@@ -419,7 +475,6 @@ void handleMateriasEditPOST() {
   }
   if (origIndex == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
-  // Evitar duplicado materia+profesor
   for (int i = 0; i < (int)courses.size(); i++) {
     if (i == origIndex) continue;
     if (courses[i].materia == mat && courses[i].profesor == prof) {
@@ -433,14 +488,12 @@ void handleMateriasEditPOST() {
     }
   }
 
-  // Actualizar curso en memoria y persistir
   String oldMat = courses[origIndex].materia;
   String oldProf = courses[origIndex].profesor;
   courses[origIndex].materia = mat;
   courses[origIndex].profesor = prof;
   writeCourses(courses);
 
-  // Actualizar schedules: reemplaza owner cuando corresponda
   String oldKey = makeCourseKey(oldMat, oldProf);
   String newKey = makeCourseKey(mat, prof);
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -475,7 +528,6 @@ void handleMateriasEditPOST() {
     writeAllLines(SCHEDULES_FILE, slines);
   }
 
-  // Actualizar usuarios: reemplaza campo materia textual cuando coincida
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<String> ulines;
   if (fu) {
@@ -500,7 +552,6 @@ void handleMateriasEditPOST() {
   server.send(303, "text/plain", "Editado");
 }
 
-// POST /materias_delete - elimina curso y datos asociados (horarios/usuarios) si procede
 void handleMateriasDeletePOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
   String mat = server.arg("materia"); mat.trim();
@@ -514,7 +565,6 @@ void handleMateriasDeletePOST() {
   }
   writeCourses(newCourses);
 
-  // Eliminar schedules que pertenecen exactamente a esta pareja; legacy solo si queda ninguno.
   String targetKey = makeCourseKey(mat, prof);
 
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
@@ -529,7 +579,7 @@ void handleMateriasDeletePOST() {
         String owner = c[0];
         if (owner == targetKey) continue;
         if (owner == mat) {
-          if (countCoursesWithName(mat) == 0) continue; 
+          if (countCoursesWithName(mat) == 0) continue;
         }
       }
       slines.push_back(l);
@@ -538,7 +588,6 @@ void handleMateriasDeletePOST() {
     writeAllLines(SCHEDULES_FILE, slines);
   }
 
-  // Eliminar usuarios asociados si su materia queda sin cursos con ese nombre
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<String> ulines;
   if (fu) {
@@ -561,6 +610,24 @@ void handleMateriasDeletePOST() {
   server.send(303, "text/plain", "Eliminado");
 }
 
+// --- NUEVO: endpoint JSON para obtener profesores por materia ---
+// GET /profesores_for?materia=...
+void handleProfesoresForMateriaGET() {
+  if (!server.hasArg("materia")) {
+    server.send(400, "application/json", "{\"error\":\"materia required\"}");
+    return;
+  }
+  String mat = server.arg("materia"); mat.trim();
+  std::vector<String> profs = getProfessorsForMateria(mat);
+  String j = "{\"profesores\":[";
+  for (size_t i = 0; i < profs.size(); ++i) {
+    if (i) j += ",";
+    j += "\"" + jsonEscape(profs[i]) + "\"";
+  }
+  j += "]}";
+  server.send(200, "application/json", j);
+}
+
 // Registro de rutas relacionadas con materias
 void registerCoursesHandlers() {
   server.on("/materias", HTTP_GET, handleMaterias);
@@ -574,4 +641,7 @@ void registerCoursesHandlers() {
   server.on("/materias/edit", HTTP_GET, handleMateriasEditGET);
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
+
+  // nuevo endpoint JSON
+  server.on("/profesores_for", HTTP_GET, handleProfesoresForMateriaGET);
 }

@@ -1,3 +1,4 @@
+// src/main.cpp  (versión corregida - asegura updateDisplay() se ejecute)
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
@@ -11,10 +12,9 @@
 #include "rfid_handler.h"
 #include "web/web_routes.h"
 
-// Declarar variables globales
-std::vector<String> capturedUIDs;
-bool isCapturing = false;
-bool isBatchCapture = false;
+// NOTA: las variables globales relacionadas con captura (capturedUIDs,
+// isCapturing, isBatchCapture) se DEFINEN en globals.cpp. Aquí NO deben
+// volver a definirse para evitar errores de linkeo.
 
 // cuánto esperar (ms) a que NTP sincronice antes de seguir 
 static const unsigned long NTP_TIMEOUT_MS = 30UL * 1000UL; // 30 segundos
@@ -78,7 +78,6 @@ static void wifiEvent(WiFiEvent_t event) {
 }
 
 // Conexión WiFi mejorada: scan + eventos + estado, con timeout.
-// Reemplaza tu función anterior por esta.
 void connectWiFiWithTimeout(unsigned long timeout_ms = 30000UL) {
   Serial.printf("connectWiFiWithTimeout: intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms/1000UL);
 
@@ -103,20 +102,15 @@ void connectWiFiWithTimeout(unsigned long timeout_ms = 30000UL) {
   }
   WiFi.scanDelete();
 
-  // Preparar STA y limpiar estado previo
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true); // borrar estado anterior
   delay(200);
 
-  // Mostrar longitud y contenido (visible) de SSID/PSK para diagnosticar espacios ocultos
-  Serial.printf("WIFI_SSID length=%d, WIFI_PASS length=%d\n", (int)strlen(WIFI_SSID), (int)strlen(WIFI_PASS));
-  // NO imprimas la contraseña completa por seguridad; imprime primeros/caracteres si quieres.
   if (strlen(WIFI_SSID) == 0) {
     Serial.println("WARN: WIFI_SSID vacío.");
     return;
   }
 
-  // Iniciar conexión
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   unsigned long t0 = millis();
@@ -129,7 +123,6 @@ void connectWiFiWithTimeout(unsigned long timeout_ms = 30000UL) {
     }
     if (st == WL_CONNECTED) {
       Serial.println(String("Conectado — IP: ") + WiFi.localIP().toString());
-      // info adicional
       Serial.print("  RSSI (de AP conectado): "); Serial.println(WiFi.RSSI());
       Serial.print("  MAC: "); Serial.println(WiFi.macAddress());
       return;
@@ -143,18 +136,14 @@ void connectWiFiWithTimeout(unsigned long timeout_ms = 30000UL) {
 
   Serial.println("Intento de conexión terminado / timeout.");
   Serial.printf("Estado final WiFi.status() = %d\n", (int)WiFi.status());
-  // Si estás en una red con portal cautivo o bloqueo, el ESP se conectará al AP pero no tendrá internet.
-  // Verifica detalles en el log del router si es posible.
 }
 
 void setup() {
-  // Inicializa Serial y mensajes de arranque.
   Serial.begin(115200);
   delay(200);
   Serial.println();
   Serial.println("Iniciando ESP32 Registro Asistencia - Materias + Horarios (TZ fix)");
 
-  // Monta SPIFFS; si falla continúa pero puede faltar archivos.
   Serial.println("Montando SPIFFS...");
   if (!SPIFFS.begin(true)) {
     Serial.println("ERR: SPIFFS.begin() falló. Se continuará pero archivos pueden faltar.");
@@ -162,27 +151,20 @@ void setup() {
     Serial.println("SPIFFS montado OK.");
   }
 
-  // Inicializa archivos de aplicación (estructura/archivos por defecto).
   initFiles();
   Serial.println("initFiles() -> OK.");
 
-  // Conecta WiFi con timeout prolongado (30s).
   connectWiFiWithTimeout(30000UL); // 30s
 
-  // Configura zona horaria y NTP; aplica fallback POSIX si es necesario.
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6"; // fallback POSIX para UTC-6
 
-  // Primero intenta usar TZ definido en globals (IANA). Si falla NTP, reintentamos con POSIX.
   configTzTime(TZ, "pool.ntp.org", "time.nist.gov");
-  // Además establecer variable de entorno por si getLocalTime depende de TZ env var
   setenv("TZ", TZ, 1);
   tzset();
 
-  // Espera sincronización NTP o timeout.
   waitForNtpSyncOrTimeout();
 
-  // Si no se sincroniza razonablemente, reintenta usando posixTZ directamente.
   if (!systemTimeReasonable()) {
     Serial.println("Reintentando configTzTime con cadena POSIX (fallback)...");
     configTzTime(posixTZ, "pool.ntp.org", "time.nist.gov");
@@ -191,10 +173,8 @@ void setup() {
     waitForNtpSyncOrTimeout();
   }
 
-  // Imprime información de tiempo para verificación.
   printTimeInfo();
 
-  // Inicializa periféricos: SPI, lector RFID, display y servo.
   Serial.println("Iniciando SPI...");
   SPI.begin();
 
@@ -210,7 +190,6 @@ void setup() {
   puerta.attach(SERVO_PIN);
   puerta.write(0);
 
-  // Registra rutas web y arranca servidor HTTP.
   registerRoutes();
 
   // Ruta de depuración para ajustar epoch vía HTTP (solo pruebas).
@@ -219,7 +198,6 @@ void setup() {
     uint32_t e = (uint32_t) server.arg("epoch").toInt();
     struct timeval tv; tv.tv_sec = (time_t)e; tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
-    // después de setear, asegurar TZ
     setenv("TZ", "GMT-6", 1); tzset();
     server.send(200,"text/plain", String("Time set to: ") + nowISO());
   });
@@ -232,13 +210,13 @@ void setup() {
 unsigned long lastPoll = 0;
 
 void loop() {
-  // Atiende peticiones HTTP entrantes.
   server.handleClient();
 
-  // Actualiza el display (importante para mensajes temporales no bloqueantes)
+  // >>> LLAMADA CORREGIDA: actualizar display de forma no bloqueante
+  // Esto permite que overlays temporales (mensaje rojo) expiren correctamente.
   updateDisplay();
 
-  // Ejecuta el handler de RFID periódicamente según POLL_INTERVAL.
+  // Manejo RFID / polling periodic
   if (millis() - lastPoll > POLL_INTERVAL) {
     lastPoll = millis();
     rfidLoopHandler();

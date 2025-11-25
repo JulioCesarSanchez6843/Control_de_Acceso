@@ -41,6 +41,7 @@ extern const char* SCHEDULES_FILE;
 extern const char* NOTIF_FILE;
 extern const char* COURSES_FILE;
 extern const char* CAPTURE_QUEUE_FILE;
+extern const char* TEACHERS_FILE; // archivo para maestros
 // -----------------------------------------------
 
 // Timing constants
@@ -67,7 +68,7 @@ extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
-// Variables para captura batch
+// Variables para captura batch (declaraciones ONLY -> definidas en globals.cpp)
 extern std::vector<String> capturedUIDs;
 extern bool isCapturing;
 extern bool isBatchCapture;
