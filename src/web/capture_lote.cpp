@@ -8,6 +8,7 @@
 #include <FS.h>
 #include <SPIFFS.h>
 #include <ctype.h>
+#include <vector>
 
 // Externals (asegúrate están declaradas en globals.h)
 extern volatile bool captureMode;
@@ -25,7 +26,7 @@ extern std::vector<SelfRegSession> selfRegSessions;
 // (en algunos ficheros se usa currentSelfRegToken; declarar extern por si existe en globals)
 extern String currentSelfRegToken;
 
-// escape HTML para insertar de forma segura
+// Small helpers
 static String htmlEscape(const String &s) {
   String r;
   r.reserve(s.length());
@@ -42,8 +43,6 @@ static String htmlEscape(const String &s) {
   }
   return r;
 }
-
-// escape para incrustar HTML generado en JS (simple)
 static String jsEscape(const String &s) {
   String r;
   r.reserve(s.length() * 2);
@@ -58,7 +57,6 @@ static String jsEscape(const String &s) {
   return r;
 }
 
-// Helper: obtain scheduleBaseMat (same approach)
 static String computeScheduleBaseMat() {
   String scheduleOwner = currentScheduledMateria();
   String scheduleBaseMat;
@@ -68,29 +66,52 @@ static String computeScheduleBaseMat() {
   return scheduleBaseMat;
 }
 
+// New helper: try append uid to capture queue but refuse if it's a teacher.
+// Returns true if appended, false if not (and in that case logs denial).
+static bool appendUidToCaptureQueueIfStudent(const String &uid) {
+  if (uid.length() == 0) return false;
+  // If it's a teacher, do not allow adding to batch
+  String tr = findTeacherByUID(uid);
+  if (tr.length() > 0) {
+    // Log denied and notify
+    String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_NO_BATCH\"";
+    appendLineToFile(DENIED_FILE, recDenied);
+    addNotification(uid, String(""), String(""), String("Intento de captura por lote de tarjeta registrada como maestro (no permitido)."));
+    #ifdef USE_DISPLAY
+    showTemporaryRedMessage("Maestro - no permitido en Lote", 2000);
+    #endif
+    return false;
+  }
+  // fallback to existing append function (assumed available)
+  return appendUidToCaptureQueue(uid);
+}
+
+// -------------------- Page --------------------
 void capture_lote_page() {
-  // respect optional return_to
+  // Optional return_to param (from students page)
   String return_to = "/";
   if (server.hasArg("return_to")) {
     String rt = server.arg("return_to"); rt.trim();
     if (rt.length() && rt[0] == '/') return_to = rt;
   }
 
-  // Start fresh: clear queue and reset capture state
+  // Clear capture queue file at page load (fresh start)
   clearCaptureQueueFile();
+
   captureMode = true;
   captureBatchMode = true;
   captureUID = "";
   captureName = "";
   captureAccount = "";
   captureDetectedAt = 0;
+
   #ifdef USE_DISPLAY
   showCaptureMode(true, false);
   #endif
 
   String scheduleBaseMat = computeScheduleBaseMat();
 
-  // If there's no scheduled materia, build the options HTML now (server-side) to be inserted into the global select.
+  // Prepare server-side options for global select if needed
   String coursesOptionsHtml = "";
   if (scheduleBaseMat.length() == 0) {
     auto courses = loadCourses();
@@ -108,15 +129,15 @@ void capture_lote_page() {
   html += "<div style='display:flex;gap:12px;align-items:flex-start;'>";
   html += "<div style='width:260px;display:flex;flex-direction:column;gap:8px;'>";
 
-  // Borrar última
+  // Borrar última (amarillo)
   html += "<form method='POST' action='/capture_remove_last' style='display:inline;margin-bottom:6px;'><button class='btn btn-yellow' type='submit'>Borrar última</button></form>";
 
-  // Cancel / Limpiar Cola
+  // Cancel (POST /cancel_capture)
   html += "<form method='POST' action='/cancel_capture' style='display:inline;margin-bottom:6px;' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'>";
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   html += "<button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
 
-  // Finish form: hidden batch_materia (filled by JS or schedule)
+  // Terminar y Guardar - hidden materia
   html += "<form id='finishForm' method='POST' action='/capture_finish' style='display:inline;margin-top:6px;' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'>";
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   if (scheduleBaseMat.length() > 0) {
@@ -131,10 +152,7 @@ void capture_lote_page() {
 
   html += "</div>"; // left column
 
-  // Right area: queue + banners
   html += "<div style='flex:1;min-width:320px;'>";
-
-  // If no scheduled materia, show ONE global select above the list (this is the single select the user asked for)
   if (scheduleBaseMat.length() == 0) {
     html += "<div style='margin-bottom:8px;display:flex;gap:8px;align-items:center;'>";
     html += "<label style='font-weight:600;'>Materia (aplica a todo el lote):</label>";
@@ -143,7 +161,6 @@ void capture_lote_page() {
     html += "</select>";
     html += "</div>";
   } else {
-    // show current scheduled materia as info
     html += "<div style='margin-bottom:8px;color:#0b1220;font-weight:600;'>Materia en horario: " + htmlEscape(scheduleBaseMat) + "</div>";
   }
 
@@ -154,123 +171,78 @@ void capture_lote_page() {
 
   html += "</div></div>" + htmlFooter();
 
-  // Insert JS. We pass the server-built options HTML via a JS variable (escaped)
+  // Client JS
   String optionsJs = jsEscape(coursesOptionsHtml);
   String scheduleFlag = scheduleBaseMat.length() ? "true" : "false";
 
   html += R"rawliteral(
     <script>
-    // Client JS for batch page
     var scheduleHasMateria = )rawliteral";
   html += scheduleFlag;
   html += R"rawliteral(;
-    var coursesOptionsHtml = ')rawliteral";
-  html += optionsJs;
-  html += R"rawliteral(';
-    var selectedMateria = ''; // chosen by operator when schedule empty
-
-    // Set global materia (applies to all rows visually and sets hidden form input)
+    var selectedMateria = '';
     function setGlobalMateriaValue(val) {
       selectedMateria = val || '';
       var hidden = document.getElementById('batch_materia');
       if (hidden) hidden.value = selectedMateria;
-      // Update displayed rows immediately (they will be re-rendered by poll too)
-      var rows = document.querySelectorAll('#queue_list table tr');
-      // skip header row: start at index 1
-      for (var i = 1; i < rows.length; i++) {
-        var matCell = rows[i].cells[4];
-        if (matCell) matCell.textContent = selectedMateria;
-      }
-      // enable/disable finish
       var finishBtn = document.getElementById('finishBtn');
       if (finishBtn) finishBtn.disabled = (!selectedMateria || selectedMateria.trim() == '');
     }
-
-    // Poll queue and render table (no selects per-row; only one global select)
     function pollQueue() {
       fetch('/capture_batch_poll')
-        .then(resp => resp.json())
-        .then(j => {
-          var cnt = document.getElementById('queue_count');
-          if (cnt) cnt.textContent = j.uids ? j.uids.length : 0;
-
-          // awaiting banner
+        .then(r=>r.json())
+        .then(j=>{
+          var cntEl = document.getElementById('queue_count');
+          if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
           var bc = document.getElementById('banners_container');
           if (j.awaiting) {
             if (bc && !document.getElementById('batch_yellow_msg')) {
-              var y = document.createElement('div');
-              y.id = 'batch_yellow_msg';
-              y.style.marginBottom = '8px';
-              y.style.padding = '8px';
-              y.style.borderRadius = '6px';
-              y.style.background = '#fff8d6';
-              y.style.color = '#111';
-              y.style.fontWeight = '700';
-              y.style.textAlign = 'center';
-              y.innerHTML = 'Atención: Registrando nuevo usuario. No pasar tarjeta hasta terminar el registro.';
+              var y = document.createElement('div'); y.id='batch_yellow_msg';
+              y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
+              y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
+              y.innerHTML='Atención: Registrando nuevo usuario. No pasar tarjeta hasta terminar el registro.';
               bc.appendChild(y);
             }
             var ex = document.getElementById('batch_yellow_msg');
             if (ex) ex.innerHTML = 'Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
           } else {
-            var e = document.getElementById('batch_yellow_msg');
-            if (e) e.remove();
+            var e = document.getElementById('batch_yellow_msg'); if (e) e.remove();
           }
-
-          // wrong card temporary red banner
           if (j.wrong_card) {
             if (bc && !document.getElementById('batch_red_msg')) {
-              var red = document.createElement('div');
-              red.id = 'batch_red_msg';
-              red.style.marginBottom = '8px';
-              red.style.padding = '8px';
-              red.style.borderRadius = '6px';
-              red.style.background = '#ef4444';
-              red.style.color = '#ffffff';
-              red.style.fontWeight = '700';
-              red.style.textAlign = 'center';
-              red.textContent = 'Espere su turno: registro en curso';
+              var red = document.createElement('div'); red.id='batch_red_msg';
+              red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
+              red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
+              red.textContent='Espere su turno: registro en curso';
               bc.insertBefore(red, bc.firstChild);
               setTimeout(function(){ var rr = document.getElementById('batch_red_msg'); if (rr) rr.remove(); }, 2000);
             }
           }
-
           var list = document.getElementById('queue_list');
-          if (!j.uids || j.uids.length == 0) {
-            list.innerHTML = 'No hay UIDs capturadas aún.';
-          } else {
+          if (!j.uids || j.uids.length==0) { list.innerHTML = 'No hay UIDs capturadas aún.'; }
+          else {
             var html = '<table style="width:100%;border-collapse:collapse;"><tr><th style="text-align:left;padding:6px">UID</th><th style="text-align:left;padding:6px">Reg</th><th style="text-align:left;padding:6px">Nombre</th><th style="text-align:left;padding:6px">Cuenta</th><th style="text-align:left;padding:6px">Materia</th></tr>';
-            for (var i=0;i<j.uids.length;i++) {
+            for (var i=0;i<j.uids.length;i++){
               var u = j.uids[i];
               var reg = u.registered ? '✅' : '❌';
               var nm = u.name || '';
               var acc = u.account || '';
-              // If schedule has materia, server set it in j.uids[].materia.
-              // If not, server sets materia = "" (we require operator selection). Display selectedMateria if set.
               var mat = '';
               if (scheduleHasMateria) mat = u.materia || '';
               else mat = (selectedMateria && selectedMateria.length) ? selectedMateria : (u.materia || '');
-
-              html += '<tr><td style="padding:6px;border-top:1px solid #ddd;">' + (u.uid ? u.uid : '') + '</td>';
+              html += '<tr><td style="padding:6px;border-top:1px solid #ddd;">' + (u.uid||'') + '</td>';
               html += '<td style="padding:6px;border-top:1px solid #ddd;">' + reg + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (nm ? nm : '') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (acc ? acc : '') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (mat ? mat : '') + '</td></tr>';
+              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (nm||'') + '</td>';
+              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (acc||'') + '</td>';
+              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (mat||'') + '</td></tr>';
             }
             html += '</table>';
             list.innerHTML = html;
           }
-
-          // When server returns, ensure global select keeps our selection
           if (!scheduleHasMateria) {
             var g = document.getElementById('global_materia_select');
-            if (g) {
-              if (selectedMateria && selectedMateria.length) g.value = selectedMateria;
-              else g.value = '';
-            }
+            if (g) g.value = selectedMateria || '';
           }
-
-          // control finish button disabling
           var finishBtn = document.getElementById('finishBtn');
           if (finishBtn) {
             var disable = false;
@@ -281,44 +253,28 @@ void capture_lote_page() {
             finishBtn.disabled = disable;
             if (disable) finishBtn.classList.remove('btn-green'); else finishBtn.classList.add('btn-green');
           }
-        })
-        .catch(err => {
-          // ignore transient errors
-        });
-
+        }).catch(e=>{});
       setTimeout(pollQueue, 900);
     }
-
-    // Hook global select change to update selectedMateria
     document.addEventListener('DOMContentLoaded', function(){
       var g = document.getElementById('global_materia_select');
-      if (g) {
-        g.addEventListener('change', function(){
-          setGlobalMateriaValue(this.value);
-        });
-        // if hidden was prefilled (unlikely), initialize selectedMateria
-        var hidden = document.getElementById('batch_materia');
-        if (hidden && hidden.value && hidden.value.trim()!='') {
-          selectedMateria = hidden.value;
-          g.value = selectedMateria;
-        }
-      }
+      if (g) g.addEventListener('change', function(){ setGlobalMateriaValue(this.value); });
+      var hidden = document.getElementById('batch_materia');
+      if (hidden && hidden.value && hidden.value.trim()!='') { selectedMateria = hidden.value; }
       pollQueue();
     });
-
-    // try to gracefully stop capture if user leaves
-    window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
     </script>
   )rawliteral";
 
   server.send(200, "text/html", html);
 }
 
-// Batch poll (sin cambios grandes — mantiene la lógica de manejo de tarjetas)
+// Batch poll
 void capture_lote_batchPollGET() {
   auto u = readCaptureQueue();
   if (u.size() == 1 && u[0].length() == 0) u.clear();
 
+  // compute schedule base materia once
   String scheduleBaseMat = computeScheduleBaseMat();
 
   bool cardTriggered = false;
@@ -343,13 +299,14 @@ void capture_lote_batchPollGET() {
           lastShowWrongRedMs = millis();
         }
         #endif
-        // discard card to avoid blocking
+        // discard the card to avoid blocking future batches
         captureUID = "";
         captureName = "";
         captureAccount = "";
         captureDetectedAt = 0;
       } else {
-        if (appendUidToCaptureQueue(captureUID)) {
+        // correct card for self-register -> try append but forbid teacher
+        if (appendUidToCaptureQueueIfStudent(captureUID)) {
           captureUID = "";
           captureName = "";
           captureAccount = "";
@@ -367,24 +324,26 @@ void capture_lote_batchPollGET() {
   }
 
   if (!awaitingSelfRegister && captureUID.length() > 0) {
-    if (appendUidToCaptureQueue(captureUID)) {
+    if (appendUidToCaptureQueueIfStudent(captureUID)) {
       captureUID = "";
       captureName = "";
       captureAccount = "";
       captureDetectedAt = 0;
+    } else {
+      // if not appended because teacher, already logged/denied by helper
+      captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
     }
   }
 
   u = readCaptureQueue();
 
-  // Build JSON, IMPORTANT: if scheduleBaseMat exists put that in materia so UI shows it; otherwise use blank
   String j = "{\"uids\":[";
   for (size_t i = 0; i < u.size(); ++i) {
     if (i) j += ",";
     String uid = u[i];
     String rec = findAnyUserByUID(uid);
     bool reg = rec.length() > 0;
-    String name = "", account = "", materia = "";
+    String name="", account="", materia="";
     if (reg) {
       auto c = parseQuotedCSVLine(rec);
       if (c.size() > 1) name = c[1];
@@ -392,9 +351,9 @@ void capture_lote_batchPollGET() {
       if (c.size() > 3) materia = c[3];
     }
     if (scheduleBaseMat.length() > 0) materia = scheduleBaseMat;
-    else materia = String(""); // leave blank so operator must pick
+    else materia = String("");
 
-    j += "{\"uid\":\"" + jsonEscape(uid) + "\",";
+    j += "{\"uid\":\"" + jsonEscape(uid) + "\","; 
     j += "\"registered\":" + String(reg ? "true" : "false") + ",";
     j += "\"name\":\"" + jsonEscape(name) + "\",";
     j += "\"account\":\"" + jsonEscape(account) + "\",";
@@ -410,7 +369,7 @@ void capture_lote_batchPollGET() {
   server.send(200, "application/json", j);
 }
 
-// Pause/resume
+// Pause/resume unchanged
 void capture_lote_pausePOST() {
   if (captureBatchMode && captureMode) {
     captureMode = false;
@@ -492,7 +451,7 @@ void capture_lote_generateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
-// Finish batch
+// Finish batch: now also upserts USERS_FILE rows to add materia to users (or creates user rows)
 void capture_lote_finishPOST() {
   auto q = readCaptureQueue();
   if (q.size() == 0) {
@@ -514,7 +473,7 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  // chosen materia priority: form param -> schedule
+  // Determine chosen materia: if supplied use it; else try schedule
   String chosenMateria;
   if (server.hasArg("materia")) {
     chosenMateria = server.arg("materia"); chosenMateria.trim();
@@ -530,21 +489,44 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  // Process queue: use chosenMateria for all
+  // Process queue: for each UID, append ATT and ensure USERS_FILE has a row for chosenMateria
   for (auto &uid : q) {
     uid.trim();
     if (uid.length() == 0) continue;
+
+    // If UID belongs to a teacher, skip and mark denied
+    String trec = findTeacherByUID(uid);
+    if (trec.length() > 0) {
+      String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_NO_BATCH_FINISH\"";
+      appendLineToFile(DENIED_FILE, recDenied);
+      addNotification(uid, String(""), String(""), String("Intento de finalizar lote con tarjeta de maestro (no permitido)."));
+      continue;
+    }
+
+    // find first user row (if any)
     String rec = findAnyUserByUID(uid);
     if (rec.length() > 0) {
+      // parse to get name/account
       auto c = parseQuotedCSVLine(rec);
       String name = (c.size() > 1 ? c[1] : "");
       String account = (c.size() > 2 ? c[2] : "");
+      // If user doesn't yet have this materia recorded, append a new USERS_FILE row with same name/account/materia
+      if (!existsUserUidMateria(uid, chosenMateria)) {
+        String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
+        appendLineToFile(USERS_FILE, userRow);
+      }
+      // append attendance
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, att);
     } else {
-      String note = "Batch capture: UID no registrada: " + uid;
-      addNotification(uid, String(""), String(""), note);
-      appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO_REGISTRADA_BATCH\""));
+      // user not registered: create user row with empty name/account and chosenMateria, plus attendance or denied?
+      // We'll create user row and then write attendance
+      String userRow = "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
+      appendLineToFile(USERS_FILE, userRow);
+      String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
+      appendLineToFile(ATT_FILE, att);
+      // Optionally notify admin that a new user was auto-created with blank data
+      addNotification(uid, String(""), String(""), String("Batch capture: usuario no registrado. Se creó fila nueva (sin nombre/cuenta)."));
     }
   }
 
@@ -574,7 +556,6 @@ void capture_lote_cancelPOST() {
 
   // limpiar flags de self-register y remover sessions pendientes del UID
   if (oldWaitingUID.length()) {
-    // remover cualquier SelfRegSession con uid == oldWaitingUID
     for (int i = (int)selfRegSessions.size() - 1; i >= 0; --i) {
       if (selfRegSessions[i].uid == oldWaitingUID) {
         selfRegSessions.erase(selfRegSessions.begin() + i);
@@ -584,7 +565,6 @@ void capture_lote_cancelPOST() {
   awaitingSelfRegister = false;
   currentSelfRegUID = "";
   awaitingSinceMs = 0;
-  // reset token if present (defensivo)
   currentSelfRegToken = "";
 
   // regresar a modo normal (sin captura)

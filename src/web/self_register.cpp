@@ -61,6 +61,7 @@ void handleSelfRegisterStartPOST() {
   }
   String uid = server.arg("uid"); uid.trim();
   String materia = server.hasArg("materia") ? server.arg("materia") : String();
+  materia.trim();
 
   if (uid.length() == 0) {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"uid empty\"}");
@@ -77,7 +78,7 @@ void handleSelfRegisterStartPOST() {
   s.uid = uid;
   s.createdAtMs = millis();
   s.ttlMs = 5UL * 60UL * 1000UL; // 5 minutos
-  s.materia = materia;
+  s.materia = materia; // si el admin envía materia, la guardamos para prefijarla en el formulario
 
   selfRegSessions.push_back(s);
 
@@ -107,6 +108,10 @@ void handleSelfRegisterGET() {
   String currOwner = currentScheduledMateria(); // puede venir "Materia" o "Materia||Profesor"
   String currMateriaBase = baseMateriaFromOwner(currOwner);
 
+  // Si la sesión fue creada con una materia por el admin (s.materia), la consideramos también
+  String sessionMateria = s.materia;
+  sessionMateria.trim();
+
   // Construir HTML minimalista (responsive)
   String html;
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
@@ -121,6 +126,7 @@ void handleSelfRegisterGET() {
           ".btn{display:inline-block;padding:10px 14px;border-radius:6px;border:none;font-weight:600;margin-top:12px;cursor:pointer;text-decoration:none}"
           ".btn-green{background:#10b981;color:#04201b}"
           ".msg{margin-top:8px;padding:8px;border-radius:6px;background:#05203b;color:#dbeafe}"
+          ".warn{margin-top:8px;padding:8px;border-radius:6px;background:#1f2937;color:#ffdede}"
           "</style></head><body>";
   html += "<div class='card'>";
   html += "<h1>Registro rápido</h1>";
@@ -136,36 +142,46 @@ void handleSelfRegisterGET() {
   html += "<label>Cuenta (7 dígitos)</label>";
   html += "<input name='account' inputmode='numeric' pattern='[0-9]{7}' maxlength='7' minlength='7' placeholder='Ej: 2123456'>";
 
+  // Decide comportamiento del campo materia:
+  // PRIORIDAD:
+  // 1) Si hay clase en horario -> usar currMateriaBase (readonly)
+  // 2) Else if sessionMateria (admin set) -> usar sessionMateria (readonly)
+  // 3) Else -> NO permitir que el alumno elija (mostrar mensaje y deshabilitar submit)
   if (currMateriaBase.length() > 0) {
     html += "<label>Materia (en sesión ahora)</label>";
     html += "<input name='materia' readonly value='" + htmlEscape(currMateriaBase) + "'>";
+    html += "<div class='small'>La materia está fijada por el horario actual.</div>";
+    html += "<input type='hidden' id='materia_state' value='fixed'>";
+  } else if (sessionMateria.length() > 0) {
+    html += "<label>Materia (preseleccionada por administrador)</label>";
+    html += "<input name='materia' readonly value='" + htmlEscape(sessionMateria) + "'>";
+    html += "<div class='small'>La materia fue asignada por el administrador al crear esta sesión.</div>";
+    html += "<input type='hidden' id='materia_state' value='fixed'>";
   } else {
-    auto courses = loadCourses();
-    if (courses.size() > 0) {
-      html += "<label>Materia (opcional)</label>";
-      html += "<select name='materia'><option value=''>-- Ninguna --</option>";
-      for (auto &c : courses) {
-        html += "<option value='" + htmlEscape(c.materia) + "'>" + htmlEscape(c.materia) + (c.profesor.length() ? String(" (") + htmlEscape(c.profesor) + ")" : "") + "</option>";
-      }
-      html += "</select>";
-    } else {
-      html += "<div class='small'>No hay materias registradas.</div>";
-      html += "<input type='hidden' name='materia' value=''>";
-    }
+    // No hay materia por horario ni por admin -> NO permitir que el alumno seleccione.
+    html += "<div class='warn'>La materia no está asignada para esta sesión. Por favor solicite al administrador que inicie la sesión con una materia. No puede elegir materia desde aquí.</div>";
+    html += "<input type='hidden' name='materia' value=''>";
+    html += "<input type='hidden' id='materia_state' value='missing'>";
   }
 
   html += "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>";
-  html += "<button class='btn btn-green' type='submit'>Registrar</button>";
-  // NO mostramos botón 'Cerrar' ni 'Cancelar' para evitar interacción que quite QR; si quieres cancelar, usar endpoint específico.
+  html += "<button class='btn btn-green' type='submit' id='srSubmitBtn'>Registrar</button>";
   html += "</div>";
 
   html += "<div id='msg' class='msg' style='display:none;'></div>";
   html += "</form>";
 
-  // JS: validar cuenta es numérico de 7 y mostrar errores en línea
+  // JS: validar cuenta es numérico de 7 y mostrar errores en línea; además deshabilitar submit si materia_state=='missing'
   html += "<script>"
           "const f=document.getElementById('srForm');"
+          "const submitBtn = document.getElementById('srSubmitBtn');"
+          "document.addEventListener('DOMContentLoaded', function(){"
+          "  var ms = document.getElementById('materia_state');"
+          "  if (ms && ms.value === 'missing') { if (submitBtn) submitBtn.disabled = true; }"
+          "});"
           "f.addEventListener('submit', function(ev){"
+          "  var ms = document.getElementById('materia_state');"
+          "  if (ms && ms.value === 'missing') { ev.preventDefault(); showMsg('No se puede registrar: la materia no está asignada.'); return false; }"
           "  var acc = f.account.value.trim();"
           "  var name = f.name.value.trim();"
           "  if(!name){ ev.preventDefault(); showMsg('Por favor escriba su nombre.'); return false; }"
@@ -241,20 +257,37 @@ void handleSelfRegisterPost() {
     return;
   }
 
-  // Si hay materia en curso, forzarla (no permitir cambiar)
+  // Obtener sesión (por referencia)
+  SelfRegSession s = selfRegSessions[idx];
+
+  // Determinar materia actual por horario (si hay)
   String currOwner = currentScheduledMateria();
   String currMateriaBase = baseMateriaFromOwner(currOwner);
+
+  // Si la sesión tiene materia definida por admin, respetarla
+  String sessionMateria = s.materia;
+  sessionMateria.trim();
+
+  // VALIDACIÓN FINAL (coincide con lo mostrado al usuario en GET):
+  // 1) Si hay clase en curso -> forzar currMateriaBase (no permitir cambiar)
+  // 2) Else if sessionMateria set -> forzar sessionMateria (no permitir cambiar)
+  // 3) Else -> NO permitir registro: devolver error (porque el alumno no puede elegir)
   if (currMateriaBase.length() > 0) {
     if (materia.length() > 0 && materia != currMateriaBase) {
       server.send(400, "text/plain", "No puede cambiar la materia: hay una sesión en curso");
       return;
     }
     materia = currMateriaBase;
-  } else {
-    if (materia.length() && !courseExists(materia)) {
-      server.send(400, "text/plain", "Materia no registrada");
+  } else if (sessionMateria.length() > 0) {
+    if (materia.length() > 0 && materia != sessionMateria) {
+      server.send(400, "text/plain", "No puede cambiar la materia: preseleccionada por admin");
       return;
     }
+    materia = sessionMateria;
+  } else {
+    // No hay materia por horario ni por admin: no permitimos que el alumno registre la materia por su cuenta.
+    server.send(400, "text/plain", "Materia no asignada. Solicite al administrador iniciar la sesión con una materia.");
+    return;
   }
 
   // Guardar usuario
@@ -279,7 +312,7 @@ void handleSelfRegisterPost() {
   // Eliminar la sesión (si exista)
   removeSelfRegSessionByIndex(idx);
 
-  // Si por algún motivo el token coincidiera con currentSelfRegToken (caso anterior), limpiar flags.
+  // Si por algún motivo el token coincidiera con currentSelfRegToken (caso display) limpiar flags.
   if (token == currentSelfRegToken) {
     awaitingSelfRegister = false;
     currentSelfRegToken = String();
@@ -288,17 +321,16 @@ void handleSelfRegisterPost() {
     showWaitingMessage();
   }
 
-  // Página de confirmación MINIMALISTA (sin enlaces al sistema)
+  // Página de confirmación MINIMALISTA
   String html;
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<meta charset='utf-8'><title>Registro completado</title>";
   html += "<style>body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:12px;} .card{background:#07203a;padding:14px;border-radius:8px;} .small{font-size:13px;color:#cfe9ff;margin-top:6px;}</style></head><body>";
   html += "<div class='card'><h2>✅ Registro completado</h2>";
   html += "<div class='small'>Gracias — su tarjeta ha sido registrada correctamente.<br>Puede cerrar esta página.</div>";
-  // bloqueo "back": añadimos pushState y onpopstate para impedir volver al form
   html += "<script>"
           "try{ history.pushState(null,'',location.href); window.onpopstate = function(){ history.pushState(null,'',location.href); }; }catch(e){}"
-          "setTimeout(function(){ try{ window.close(); }catch(e){ /* si no se puede cerrar, nada */ } },5000);"
+          "setTimeout(function(){ try{ window.close(); }catch(e){} },5000);"
           "</script>";
   html += "</div></body></html>";
 
