@@ -96,11 +96,241 @@ String htmlHeader(const char* title) {
 
   section h2 { margin-top: 0; color: #0369a1; }
 
-  @media (max-width:800px) {
+  /* Hero Section */
+  .hero-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 40px 20px;
+    margin: 0;
+    border-radius: 0;
+  }
+  
+  .hero-content {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  
+  .hero-card h1 {
+    font-size: 2.5em;
+    margin-bottom: 20px;
+    text-align: center;
+    font-weight: 800;
+  }
+  
+  .hero-description {
+    font-size: 1.2em;
+    text-align: center;
+    margin-bottom: 40px;
+    opacity: 0.9;
+    line-height: 1.6;
+  }
+  
+  /* Grid de Modos */
+  .modes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 30px;
+    margin-top: 30px;
+  }
+  
+  .mode-card {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    padding: 30px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }
+  
+  .mode-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.2);
+  }
+  
+  .mode-icon {
+    font-size: 3em;
+    margin-bottom: 15px;
+    display: block;
+  }
+  
+  .mode-card h3 {
+    font-size: 1.5em;
+    margin-bottom: 15px;
+    color: white;
+  }
+  
+  .mode-card p {
+    margin-bottom: 20px;
+    line-height: 1.6;
+    opacity: 0.9;
+  }
+  
+  .mode-features {
+    list-style: none;
+    padding: 0;
+    margin-bottom: 25px;
+  }
+  
+  .mode-features li {
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  
+  /* Botón con efecto pulse */
+  .btn-pulse {
+    background: #ff6b6b;
+    animation: pulse 2s infinite;
+  }
+  
+  @keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+  }
+  
+  /* Sección de Módulos */
+  .modules-section {
+    padding: 60px 20px;
+    background: #f8fafc;
+  }
+  
+  .section-title {
+    text-align: center;
+    font-size: 2.2em;
+    margin-bottom: 15px;
+    color: #0f172a;
+  }
+  
+  .section-subtitle {
+    text-align: center;
+    font-size: 1.1em;
+    color: #64748b;
+    margin-bottom: 50px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  
+  .modules-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 25px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  
+  .module-card {
+    background: white;
+    padding: 25px;
+    border-radius: 16px;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08);
+    transition: all 0.3s ease;
+    border: 1px solid #e2e8f0;
+  }
+  
+  .module-card:hover {
+    transform: translateY(-8px);
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+  }
+  
+  .module-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 15px;
+  }
+  
+  .module-icon {
+    font-size: 2em;
+    margin-right: 15px;
+  }
+  
+  .module-card h3 {
+    color: #0f172a;
+    margin: 0;
+    font-size: 1.3em;
+  }
+  
+  .module-card p {
+    color: #64748b;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+  
+  .module-features {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  
+  .feature-tag {
+    background: #e2e8f0;
+    color: #475569;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+  
+  .btn-module {
+    display: inline-block;
+    width: 100%;
+    text-align: center;
+    padding: 12px;
+    background: linear-gradient(90deg, #0ea5e9, #0369a1);
+    color: white;
+    text-decoration: none;
+    border-radius: 10px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+  }
+  
+  .btn-module:hover {
+    background: linear-gradient(90deg, #0369a1, #0ea5e9);
+    transform: translateY(-2px);
+  }
+  
+  /* Responsive */
+  @media (max-width: 800px) {
     .nav { flex-wrap: wrap; }
     .grid { grid-template-columns: 1fr; }
     footer { height: 64px; }
     .page-content { padding-bottom: 96px; }
+    
+    .hero-card h1 {
+      font-size: 2em;
+    }
+    
+    .modes-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .modules-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .mode-card, .module-card {
+      padding: 20px;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .topbar {
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .nav {
+      justify-content: center;
+    }
+    
+    .hero-card h1 {
+      font-size: 1.8em;
+    }
+    
+    .modes-grid {
+      grid-template-columns: 1fr;
+    }
   }
   </style>
   )rawliteral";
@@ -141,45 +371,135 @@ String htmlFooter() {
   return f;
 }
 
-// ==================== PÁGINA PRINCIPAL (INICIO) ====================
-// Handler para la ruta raíz: muestra panel principal con accesos rápidos.
+// ==================== PÁGINA PRINCIPAL (INICIO) - MEJORADA ====================
 void handleRoot() {
   captureMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
-  String html = htmlHeader("Inicio");
+  String html = htmlHeader("Inicio - Sistema de Control de Acceso");
 
-  html += "<section class='card'>";
-  html += "<h2>🎛️ Control del Laboratorio</h2>";
-  html += "<p class='small'>Este sistema permite gestionar el acceso de los estudiantes al laboratorio mediante tarjetas RFID. "
-          "Cada usuario tiene una tarjeta registrada y los horarios definidos por materia, lo que garantiza un control preciso y automatizado.</p>";
-  html += "<div style='display:flex;gap:8px;justify-content:flex-end;margin-top:12px'>"
-          "<a class='btn btn-green' href='/capture'>🎴 Capturar Tarjeta</a>"
-          "<a class='btn btn-blue' href='/schedules'>📅 Ver Horarios</a></div>";
+  // Hero Section - Explicación principal del sistema
+  html += "<section class='hero-card'>";
+  html += "<div class='hero-content'>";
+  html += "<h1>🚀 Sistema de Control de Acceso Inteligente</h1>";
+  html += "<p class='hero-description'>Sistema automatizado para la gestión y control de acceso al laboratorio mediante tecnología RFID, diseñado para garantizar seguridad y eficiencia en el acceso de estudiantes y personal académico.</p>";
+  
+  // Tarjetas de modos del sistema
+  html += "<div class='modes-grid'>";
+  
+  // Modo Captura
+  html += "<div class='mode-card capture-mode'>";
+  html += "<div class='mode-icon'>🎴</div>";
+  html += "<h3>Modo Captura</h3>";
+  html += "<p>Registro y vinculación de nuevas tarjetas RFID con usuarios del sistema. Permite agregar estudiantes y maestros de forma rápida y segura.</p>";
+  html += "<ul class='mode-features'>";
+  html += "<li>🔍 Detección automática de tarjetas</li>";
+  html += "<li>👤 Vinculación con datos personales</li>";
+  html += "<li>📝 Asignación a materias</li>";
+  html += "</ul>";
+  html += "<a class='btn btn-pulse' href='/capture'>Iniciar Captura</a>";
+  html += "</div>";
+  
+  // Modo Verificación
+  html += "<div class='mode-card verify-mode'>";
+  html += "<div class='mode-icon'>✅</div>";
+  html += "<h3>Modo Verificación</h3>";
+  html += "<p>Sistema automático que valida el acceso según horarios establecidos, verificando permisos y registrando cada entrada al laboratorio.</p>";
+  html += "<ul class='mode-features'>";
+  html += "<li>⏰ Validación por horarios</li>";
+  html += "<li>📊 Control de asistencia</li>";
+  html += "<li>🚨 Notificaciones en tiempo real</li>";
+  html += "</ul>";
+  html += "<a class='btn btn-green' href='/schedules'>Configurar Horarios</a>";
+  html += "</div>";
+  
+  html += "</div>"; // cierre modes-grid
+  html += "</div>"; // cierre hero-content
   html += "</section>";
 
-  // Paneles con accesos a secciones principales
-  html += "<section class='grid'>";
-  html += "<div class='card'><span class='icon'>📚</span><h3>Gestión de Materias</h3>"
-          "<p class='small'>Administra las materias del laboratorio, asigna horarios y controla qué alumnos pertenecen a cada una.</p>"
-          "<a class='btn btn-green' href='/materias'>Ir a Materias</a></div>";
-
-  html += "<div class='card'><span class='icon'>🧑‍🎓</span><h3>Gestión de Alumnos</h3>"
-          "<p class='small'>Consulta la lista de alumnos registrados, asigna sus tarjetas RFID y vincúlalos con sus materias correspondientes.</p>"
-          "<a class='btn btn-green' href='/students_all'>Ver Alumnos</a></div>";
-
-  html += "<div class='card'><span class='icon'>👩‍🏫</span><h3>Gestión de Maestros</h3>"
-          "<p class='small'>Administra los maestros del laboratorio: revisa su lista, edítalos o elimínalos fácilmente.</p>"
-          "<a class='btn btn-green' href='/teachers_all'>Ver Maestros</a></div>";
-
-  html += "<div class='card'><span class='icon'>📜</span><h3>Historial de Accesos</h3>"
-          "<p class='small'>Consulta el historial completo de entradas al laboratorio, exporta registros en formato CSV y analiza la asistencia.</p>"
-          "<a class='btn btn-blue' href='/history'>Ver Historial</a></div>";
-
-  html += "<div class='card'><span class='icon'>🔧</span><h3>Estado del Sistema</h3>"
-          "<p class='small'>Visualiza el estado actual del ESP32, la memoria utilizada, la IP asignada y los usuarios registrados.</p>"
-          "<a class='btn btn-blue' href='/status'>Ver Estado</a></div>";
-
+  // Sección de Módulos del Sistema
+  html += "<section class='modules-section'>";
+  html += "<h2 class='section-title'>📦 Módulos del Sistema</h2>";
+  html += "<p class='section-subtitle'>Explora todas las funcionalidades disponibles para la gestión completa del laboratorio</p>";
+  
+  html += "<div class='modules-grid'>";
+  
+  // Módulo Materias
+  html += "<div class='module-card'>";
+  html += "<div class='module-header'>";
+  html += "<span class='module-icon'>📚</span>";
+  html += "<h3>Gestión de Materias</h3>";
+  html += "</div>";
+  html += "<p>Administra el catálogo completo de materias, asigna horarios específicos y controla la matrícula de estudiantes en cada una.</p>";
+  html += "<div class='module-features'>";
+  html += "<span class='feature-tag'>Horarios</span>";
+  html += "<span class='feature-tag'>Matrículas</span>";
+  html += "<span class='feature-tag'>Aulas</span>";
+  html += "</div>";
+  html += "<a class='btn-module' href='/materias'>Administrar Materias</a>";
+  html += "</div>";
+  
+  // Módulo Estudiantes
+  html += "<div class='module-card'>";
+  html += "<div class='module-header'>";
+  html += "<span class='module-icon'>🧑‍🎓</span>";
+  html += "<h3>Gestión de Estudiantes</h3>";
+  html += "</div>";
+  html += "<p>Gestiona el registro de estudiantes, asigna tarjetas RFID y vincula cada alumno con sus materias correspondientes.</p>";
+  html += "<div class='module-features'>";
+  html += "<span class='feature-tag'>RFID</span>";
+  html += "<span class='feature-tag'>Matrículas</span>";
+  html += "<span class='feature-tag'>Estadísticas</span>";
+  html += "</div>";
+  html += "<a class='btn-module' href='/students_all'>Ver Estudiantes</a>";
+  html += "</div>";
+  
+  // Módulo Maestros
+  html += "<div class='module-card'>";
+  html += "<div class='module-header'>";
+  html += "<span class='module-icon'>👩‍🏫</span>";
+  html += "<h3>Gestión de Maestros</h3>";
+  html += "</div>";
+  html += "<p>Administra el personal docente, gestiona permisos de acceso y asigna responsabilidades sobre las materias.</p>";
+  html += "<div class='module-features'>";
+  html += "<span class='feature-tag'>Permisos</span>";
+  html += "<span class='feature-tag'>Asignaciones</span>";
+  html += "<span class='feature-tag'>Accesos</span>";
+  html += "</div>";
+  html += "<a class='btn-module' href='/teachers_all'>Ver Maestros</a>";
+  html += "</div>";
+  
+  // Módulo Historial
+  html += "<div class='module-card'>";
+  html += "<div class='module-header'>";
+  html += "<span class='module-icon'>📜</span>";
+  html += "<h3>Historial de Accesos</h3>";
+  html += "</div>";
+  html += "<p>Consulta el registro completo de entradas al laboratorio, genera reportes y analiza patrones de asistencia.</p>";
+  html += "<div class='module-features'>";
+  html += "<span class='feature-tag'>Reportes</span>";
+  html += "<span class='feature-tag'>Estadísticas</span>";
+  html += "<span class='feature-tag'>Exportar</span>";
+  html += "</div>";
+  html += "<a class='btn-module' href='/history'>Ver Historial</a>";
+  html += "</div>";
+  
+  // Módulo Sistema
+  html += "<div class='module-card'>";
+  html += "<div class='module-header'>";
+  html += "<span class='module-icon'>🔧</span>";
+  html += "<h3>Estado del Sistema</h3>";
+  html += "</div>";
+  html += "<p>Monitorea el estado del dispositivo, recursos del sistema y configuración general del equipo.</p>";
+  html += "<div class='module-features'>";
+  html += "<span class='feature-tag'>Monitorización</span>";
+  html += "<span class='feature-tag'>Diagnóstico</span>";
+  html += "<span class='feature-tag'>Configuración</span>";
+  html += "</div>";
+  html += "<a class='btn-module' href='/status'>Ver Estado</a>";
+  html += "</div>";
+  
+  html += "</div>"; // cierre modules-grid
   html += "</section>";
 
   html += htmlFooter();

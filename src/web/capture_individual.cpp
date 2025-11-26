@@ -21,7 +21,7 @@ static String jsonEscapeLocal(const String &s) {
   return o;
 }
 
-// HTML escape
+// HTML escape (utilizada por esta unidad)
 static String escapeHTML(const String &s) {
   String o;
   o.reserve(s.length());
@@ -127,6 +127,34 @@ static std::pair<String,String> findByAccount(const String &account) {
 // reusa findAnyUserByUID de files_utils (devuelve línea completa o "")
 static String findAnyUserLineByUID(const String &uid) {
   return findAnyUserByUID(uid);
+}
+
+// Comprueba si uid existe en USERS_FILE
+static bool uidExistsInUsers(const String &uid) {
+  if (uid.length() == 0) return false;
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+  }
+  f.close();
+  return false;
+}
+
+// Comprueba si uid existe en TEACHERS_FILE
+static bool uidExistsInTeachers(const String &uid) {
+  if (uid.length() == 0) return false;
+  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+  }
+  f.close();
+  return false;
 }
 
 // --------------------------------------------------
@@ -386,16 +414,173 @@ void capture_individual_confirm() {
   // check account uniqueness (across users and teachers)
   auto accFound = findByAccount(account);
   if (accFound.first.length() && accFound.first != uid) {
-    // account exists for different UID -> deny
+    // account exists for different UID -> deny, show detailed info + edit button
+    String foundUID = accFound.first;
+    String foundSource = accFound.second;
+
+    // gather name & materias for foundUID
+    String foundName = "";
+    std::vector<String> materiasList;
+    if (foundSource == "users") {
+      File fu = SPIFFS.open(USERS_FILE, FILE_READ);
+      if (fu) {
+        while (fu.available()) {
+          String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto p = parseQuotedCSVLine(l);
+          if (p.size() >= 1 && p[0] == foundUID) {
+            if (p.size() > 1) foundName = p[1];
+            if (p.size() > 3 && p[3].length()) {
+              bool exists = false;
+              for (auto &m : materiasList) if (m == p[3]) { exists = true; break; }
+              if (!exists) materiasList.push_back(p[3]);
+            }
+          }
+        }
+        fu.close();
+      }
+    } else { // teachers
+      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+      if (ft) {
+        while (ft.available()) {
+          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto p = parseQuotedCSVLine(l);
+          if (p.size() >= 1 && p[0] == foundUID) {
+            if (p.size() > 1) foundName = p[1];
+            if (p.size() > 3 && p[3].length()) {
+              bool exists = false;
+              for (auto &m : materiasList) if (m == p[3]) { exists = true; break; }
+              if (!exists) materiasList.push_back(p[3]);
+            }
+          }
+        }
+        ft.close();
+      }
+    }
+
+    // build HTML informative page
     String html = htmlHeader("Error - Cuenta duplicada");
-    html += "<div class='card'><h3 style='color:red;'>Cuenta ya registrada</h3>";
-    html += "<p class='small'>La cuenta <b>" + escapeHTML(account) + "</b> ya está registrada con UID <b>" + escapeHTML(accFound.first) + "</b> en <b>" + escapeHTML(accFound.second) + "</b>. No se puede usar la misma cuenta para otro usuario.</p>";
-    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a> <a class='btn btn-green' href='/capture_individual'>Volver a Captura</a> ";
-    if (accFound.second == "users") html += "<a class='btn btn-orange' href='/capture_edit?uid=" + escapeHTML(accFound.first) + "&return_to=/students_all'>Ver usuario</a>";
-    else html += "<a class='btn btn-orange' href='/capture_edit?uid=" + escapeHTML(accFound.first) + "&return_to=/teachers_all'>Ver maestro</a>";
-    html += "</p></div>" + htmlFooter();
+    html += "<div class='card'>";
+    html += "<h3 style='color:#b00020;'>⚠️ Cuenta ya registrada</h3>";
+    html += "<p class='small'>La cuenta <b>" + escapeHTML(account) + "</b> ya está registrada con UID <b>" + escapeHTML(foundUID) + "</b> en <b>" + escapeHTML(foundSource) + "</b>. No se puede usar la misma cuenta para otro usuario.</p>";
+
+    if (foundName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(foundName) + "</p>";
+
+    if (materiasList.size() > 0) {
+      String mats = "";
+      for (size_t i=0;i<materiasList.size();++i) {
+        if (i) mats += "; ";
+        mats += materiasList[i];
+      }
+      html += "<p><b>Materias registradas:</b> " + escapeHTML(mats) + "</p>";
+    } else {
+      html += "<p><i>No tiene materias asociadas.</i></p>";
+    }
+
+    html += "<p class='small' style='margin-top:10px;color:#333;'>Si desea editar este usuario pulse el botón <span style='background:#f1c40f;padding:4px 8px;border-radius:6px;color:#000;'>Editar usuario</span>. También puede cancelar la captura con el botón rojo.</p>";
+
+    html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
+    html += "<a class='btn btn-blue' href='/'>Inicio</a>";
+    // Editar usuario (amarillo)
+    if (foundUID.length()) {
+      if (foundSource == "users") html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/students_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+      else html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+    } else {
+      html += "<a class='btn btn-yellow' href='/' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+    }
+    // Cancelar registro (rojo)
+    html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
+            "<input type='hidden' name='return_to' value='/' />"
+            "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+            "</form>";
+    html += "</div></div>" + htmlFooter();
+
     server.send(200, "text/html", html);
     return;
+  }
+
+  // PROHIBIR que una tarjeta registrada como alumno sea registrada como maestro y viceversa
+  if (target == "teachers") {
+    if (uidExistsInUsers(uid)) {
+      // tarjeta ya usada como alumno -> denegar
+      // obtener info del alumno
+      String foundName="", foundAccount="";
+      std::vector<String> materiasList;
+      File fu = SPIFFS.open(USERS_FILE, FILE_READ);
+      if (fu) {
+        while (fu.available()) {
+          String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto p = parseQuotedCSVLine(l);
+          if (p.size() >= 1 && p[0] == uid) {
+            if (p.size() > 1) foundName = p[1];
+            if (p.size() > 2) foundAccount = p[2];
+            if (p.size() > 3 && p[3].length()) {
+              bool exists = false;
+              for (auto &m : materiasList) if (m == p[3]) { exists = true; break; }
+              if (!exists) materiasList.push_back(p[3]);
+            }
+          }
+        }
+        fu.close();
+      }
+
+      String html = htmlHeader("No permitido - Tarjeta en uso");
+      html += "<div class='card'>";
+      html += "<h3 style='color:#b00020;'>Tarjeta ya registrada como alumno</h3>";
+      html += "<p class='small'>El UID <b>" + escapeHTML(uid) + "</b> ya está registrado como <b>alumno</b> en el sistema. No puede registrarse como maestro con la misma tarjeta.</p>";
+      if (foundName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(foundName) + "</p>";
+      if (foundAccount.length()) html += "<p><b>Cuenta:</b> " + escapeHTML(foundAccount) + "</p>";
+      if (materiasList.size()) {
+        String mats="";
+        for (size_t i=0;i<materiasList.size();++i){ if(i) mats += "; "; mats += materiasList[i]; }
+        html += "<p><b>Materias:</b> " + escapeHTML(mats) + "</p>";
+      }
+      html += "<p class='small' style='margin-top:10px;'>Si desea editar ese registro pulse el botón amarillo, o cancele la captura con el botón rojo.</p>";
+      html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
+      html += "<a class='btn btn-blue' href='/'>Inicio</a>";
+      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/students_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
+              "<input type='hidden' name='return_to' value='/' />"
+              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+              "</form>";
+      html += "</div></div>" + htmlFooter();
+      server.send(200, "text/html", html);
+      return;
+    }
+  } else if (target == "students") {
+    if (uidExistsInTeachers(uid)) {
+      // tarjeta ya usada como maestro -> denegar
+      String foundName="", foundAccount="";
+      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+      if (ft) {
+        while (ft.available()) {
+          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto p = parseQuotedCSVLine(l);
+          if (p.size() >= 1 && p[0] == uid) {
+            if (p.size() > 1) foundName = p[1];
+            if (p.size() > 2) foundAccount = p[2];
+          }
+        }
+        ft.close();
+      }
+
+      String html = htmlHeader("No permitido - Tarjeta en uso");
+      html += "<div class='card'>";
+      html += "<h3 style='color:#b00020;'>Tarjeta ya registrada como maestro</h3>";
+      html += "<p class='small'>El UID <b>" + escapeHTML(uid) + "</b> ya está registrado como <b>maestro</b> en el sistema. No puede registrarse como alumno con la misma tarjeta.</p>";
+      if (foundName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(foundName) + "</p>";
+      if (foundAccount.length()) html += "<p><b>Cuenta:</b> " + escapeHTML(foundAccount) + "</p>";
+      html += "<p class='small' style='margin-top:10px;'>Si desea editar ese registro pulse el botón amarillo, o cancele la captura con el botón rojo.</p>";
+      html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
+      html += "<a class='btn btn-blue' href='/'>Inicio</a>";
+      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar maestro</a>";
+      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
+              "<input type='hidden' name='return_to' value='/' />"
+              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+              "</form>";
+      html += "</div></div>" + htmlFooter();
+      server.send(200, "text/html", html);
+      return;
+    }
   }
 
   // FLOW: students
@@ -465,7 +650,7 @@ void capture_individual_confirm() {
 
   // FLOW: teachers
   if (target == "teachers") {
-    // account uniqueness checked above
+    // account uniqueness already checked above
     String created = nowISO();
     String teacherLine = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"\",\"" + created + "\"";
     if (!appendLineToFile(TEACHERS_FILE, teacherLine)) { server.send(500, "text/plain", "Error guardando maestro"); return; }
