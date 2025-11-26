@@ -38,7 +38,6 @@ String htmlHeader(const char* title) {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-    /* no spacing tricks here — footer is fixed so we ensure content has bottom padding */
   }
 
   .topbar {
@@ -57,6 +56,8 @@ String htmlHeader(const char* title) {
   .btn-green{ background:#10b981; color:#fff; }
   .btn-red{ background:#ef4444; color:#fff; }
   .btn-blue{ background:#06b6d4; color:#05345b; }
+  .btn-purple{ background:#8b5cf6; color:#fff; }
+  .btn-orange{ background:#f59e0b; color:#fff; }
 
   .card { background:#fff; padding:22px; border-radius:16px; box-shadow:0 8px 30px rgba(2,6,23,0.08); margin:16px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; padding:16px; }
@@ -68,8 +69,7 @@ String htmlHeader(const char* title) {
   .notif { position:relative; display:inline-block; padding:6px 8px; border-radius:8px; background:#fff; color:#05345b; font-weight:700; margin-right:12px; }
   .notif .count { position:absolute; top:-6px; right:-6px; background:#ef4444; color:#fff; border-radius:50%; padding:2px 6px; font-size:12px; }
 
-  /* FIXED footer: always visible at bottom of viewport.
-     To avoid overlapping content we add bottom padding to the content wrapper (.page-content). */
+  /* FIXED footer */
   footer {
     position: fixed;
     left: 0;
@@ -83,186 +83,294 @@ String htmlHeader(const char* title) {
     font-weight: 600;
     z-index: 999;
     box-shadow: 0 -4px 12px rgba(2,6,23,0.12);
-    height: 56px; /* fixed footer height for layout calculations */
+    height: 56px;
   }
 
-  /* content wrapper — add bottom padding equal (or slightly larger) than footer height
-     so that page content never hides beneath fixed footer. */
   .page-content {
     flex: 1 0 auto;
     padding: 12px;
-    padding-bottom: 84px; /* footer height (56px) + margin (28px) to be safe on small screens */
+    padding-bottom: 84px;
   }
 
   section h2 { margin-top: 0; color: #0369a1; }
 
-  /* Hero Section */
-  .hero-card {
+  /* Nuevos estilos para la página de inicio mejorada */
+  .hero-section {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
-    padding: 40px 20px;
-    margin: 0;
-    border-radius: 0;
-  }
-  
-  .hero-content {
-    max-width: 1200px;
-    margin: 0 auto;
-  }
-  
-  .hero-card h1 {
-    font-size: 2.5em;
-    margin-bottom: 20px;
-    text-align: center;
-    font-weight: 800;
-  }
-  
-  .hero-description {
-    font-size: 1.2em;
+    padding: 60px 20px;
     text-align: center;
     margin-bottom: 40px;
-    opacity: 0.9;
-    line-height: 1.6;
   }
-  
-  /* Grid de Modos */
-  .modes-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-    gap: 30px;
-    margin-top: 30px;
-  }
-  
-  .mode-card {
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    padding: 30px;
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-  }
-  
-  .mode-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.2);
-  }
-  
-  .mode-icon {
-    font-size: 3em;
-    margin-bottom: 15px;
-    display: block;
-  }
-  
-  .mode-card h3 {
-    font-size: 1.5em;
-    margin-bottom: 15px;
-    color: white;
-  }
-  
-  .mode-card p {
+
+  .hero-title {
+    font-size: 3.5em;
+    font-weight: 900;
     margin-bottom: 20px;
-    line-height: 1.6;
-    opacity: 0.9;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    color: #ffffff;
   }
-  
-  .mode-features {
-    list-style: none;
-    padding: 0;
+
+  .hero-subtitle {
+    font-size: 1.3em;
+    opacity: 0.95;
+    max-width: 900px;
+    margin: 0 auto;
+    line-height: 1.6;
+    font-weight: 500;
+  }
+
+  .section-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+
+  .section-title {
+    font-size: 2.5em;
+    margin-bottom: 15px;
+    color: #0f172a;
+    border-bottom: 3px solid #0ea5e9;
+    padding-bottom: 10px;
+    font-weight: 800;
+  }
+
+  .section-description {
+    font-size: 1.2em;
+    color: #64748b;
+    margin-bottom: 30px;
+    line-height: 1.6;
+  }
+
+  .system-modes {
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+    margin-bottom: 40px;
+  }
+
+  .system-modes h3 {
+    color: #0f172a;
+    font-size: 1.8em;
+    margin-bottom: 20px;
+  }
+
+  .mode-explanation {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 25px;
     margin-bottom: 25px;
   }
-  
-  .mode-features li {
-    padding: 8px 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+
+  .mode-item {
+    padding: 20px;
+    border-radius: 8px;
+    border-left: 4px solid #10b981;
   }
-  
-  /* Botón con efecto pulse */
-  .btn-pulse {
-    background: #ff6b6b;
-    animation: pulse 2s infinite;
+
+  .mode-item.capture {
+    background: white;
+    border-left-color: #0ea5e9;
   }
-  
-  @keyframes pulse {
-    0% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-    100% { transform: scale(1); }
+
+  .mode-item.verification {
+    background: white;
+    border-left-color: #10b981;
   }
-  
-  /* Sección de Módulos */
-  .modules-section {
-    padding: 60px 20px;
-    background: #f8fafc;
+
+  .mode-item h4 {
+    margin: 0 0 10px 0;
+    color: #0f172a;
+    font-size: 1.3em;
   }
-  
-  .section-title {
-    text-align: center;
-    font-size: 2.2em;
+
+  .mode-item p {
+    margin: 0;
+    color: #475569;
+    line-height: 1.6;
+  }
+
+  .capture-modes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 25px;
+    margin-bottom: 50px;
+  }
+
+  .mode-group {
+    background: white;
+    padding: 25px;
+    border-radius: 12px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+    border-left: 5px solid #0ea5e9;
+  }
+
+  .mode-group.teachers {
+    border-left-color: #f59e0b;
+  }
+
+  .mode-group-title {
+    font-size: 1.6em;
     margin-bottom: 15px;
     color: #0f172a;
   }
-  
-  .section-subtitle {
-    text-align: center;
-    font-size: 1.1em;
+
+  .mode-description {
     color: #64748b;
-    margin-bottom: 50px;
-    max-width: 600px;
-    margin-left: auto;
-    margin-right: auto;
+    margin-bottom: 20px;
+    line-height: 1.6;
   }
-  
+
+  .mode-options {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .mode-option {
+    background: #f8fafc;
+    padding: 15px;
+    border-radius: 8px;
+    border-left: 4px solid #10b981;
+  }
+
+  .mode-option h4 {
+    margin: 0 0 8px 0;
+    color: #0f172a;
+    font-size: 1.1em;
+  }
+
+  .mode-option p {
+    margin: 0 0 12px 0;
+    color: #64748b;
+    font-size: 0.95em;
+    line-height: 1.5;
+  }
+
+  .btn-group {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .btn-module {
+    display: inline-block;
+    padding: 10px 20px;
+    background: linear-gradient(90deg, #0ea5e9, #0369a1);
+    color: white;
+    text-decoration: none;
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    border: none;
+    cursor: pointer;
+    font-size: 0.95em;
+  }
+
+  .btn-module:hover {
+    background: linear-gradient(90deg, #0369a1, #0ea5e9);
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(14, 165, 233, 0.3);
+  }
+
+  .btn-module.green {
+    background: linear-gradient(90deg, #10b981, #059669);
+  }
+
+  .btn-module.orange {
+    background: linear-gradient(90deg, #f59e0b, #d97706);
+  }
+
+  .btn-module.purple {
+    background: linear-gradient(90deg, #8b5cf6, #7c3aed);
+  }
+
   .modules-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: 25px;
-    max-width: 1200px;
-    margin: 0 auto;
+    margin-top: 30px;
   }
-  
+
   .module-card {
     background: white;
     padding: 25px;
-    border-radius: 16px;
-    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08);
+    border-radius: 12px;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
     transition: all 0.3s ease;
-    border: 1px solid #e2e8f0;
+    border-top: 4px solid #0ea5e9;
   }
-  
+
+  .module-card.materias {
+    border-top-color: #8b5cf6;
+  }
+
+  .module-card.estudiantes {
+    border-top-color: #10b981;
+  }
+
+  .module-card.maestros {
+    border-top-color: #f59e0b;
+  }
+
+  .module-card.horarios {
+    border-top-color: #ef4444;
+  }
+
+  .module-card.historial {
+    border-top-color: #06b6d4;
+  }
+
+  .module-card.sistema {
+    border-top-color: #6366f1;
+  }
+
   .module-card:hover {
-    transform: translateY(-8px);
-    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
+    transform: translateY(-5px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12);
   }
-  
-  .module-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 15px;
-  }
-  
-  .module-icon {
-    font-size: 2em;
-    margin-right: 15px;
-  }
-  
+
   .module-card h3 {
+    margin: 0 0 15px 0;
     color: #0f172a;
-    margin: 0;
-    font-size: 1.3em;
+    font-size: 1.4em;
   }
-  
+
   .module-card p {
     color: #64748b;
     line-height: 1.6;
     margin-bottom: 20px;
   }
-  
-  .module-features {
+
+  .feature-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 20px 0;
+  }
+
+  .feature-list li {
+    padding: 5px 0;
+    color: #475569;
+    position: relative;
+    padding-left: 20px;
+  }
+
+  .feature-list li::before {
+    content: "✓";
+    position: absolute;
+    left: 0;
+    color: #10b981;
+    font-weight: bold;
+  }
+
+  .feature-tags {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin-bottom: 20px;
+    margin-bottom: 15px;
   }
-  
+
   .feature-tag {
     background: #e2e8f0;
     color: #475569;
@@ -271,25 +379,7 @@ String htmlHeader(const char* title) {
     font-size: 0.8em;
     font-weight: 600;
   }
-  
-  .btn-module {
-    display: inline-block;
-    width: 100%;
-    text-align: center;
-    padding: 12px;
-    background: linear-gradient(90deg, #0ea5e9, #0369a1);
-    color: white;
-    text-decoration: none;
-    border-radius: 10px;
-    font-weight: 600;
-    transition: all 0.3s ease;
-  }
-  
-  .btn-module:hover {
-    background: linear-gradient(90deg, #0369a1, #0ea5e9);
-    transform: translateY(-2px);
-  }
-  
+
   /* Responsive */
   @media (max-width: 800px) {
     .nav { flex-wrap: wrap; }
@@ -297,11 +387,15 @@ String htmlHeader(const char* title) {
     footer { height: 64px; }
     .page-content { padding-bottom: 96px; }
     
-    .hero-card h1 {
-      font-size: 2em;
+    .hero-title {
+      font-size: 2.5em;
     }
     
-    .modes-grid {
+    .hero-subtitle {
+      font-size: 1.1em;
+    }
+    
+    .capture-modes {
       grid-template-columns: 1fr;
     }
     
@@ -309,8 +403,16 @@ String htmlHeader(const char* title) {
       grid-template-columns: 1fr;
     }
     
-    .mode-card, .module-card {
-      padding: 20px;
+    .btn-group {
+      flex-direction: column;
+    }
+    
+    .section-title {
+      font-size: 2em;
+    }
+    
+    .mode-explanation {
+      grid-template-columns: 1fr;
     }
   }
 
@@ -324,12 +426,17 @@ String htmlHeader(const char* title) {
       justify-content: center;
     }
     
-    .hero-card h1 {
-      font-size: 1.8em;
+    .hero-title {
+      font-size: 2em;
     }
     
-    .modes-grid {
-      grid-template-columns: 1fr;
+    .mode-group,
+    .module-card {
+      padding: 20px;
+    }
+    
+    .system-modes {
+      padding: 20px;
     }
   }
   </style>
@@ -345,15 +452,15 @@ String htmlHeader(const char* title) {
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
-  // Menú de navegación principal (añadido botón Maestros)
+  // Menú de navegación principal
   h += "<div class='nav'>";
-  h += "<a class='btn btn-blue' href='/capture'>🎴 Capturar</a>";
-  h += "<a class='btn btn-blue' href='/schedules'>📅 Horarios</a>";
-  h += "<a class='btn btn-blue' href='/materias'>📚 Materias</a>";
-  h += "<a class='btn btn-blue' href='/students_all'>🧑‍🎓 Alumnos</a>";
-  h += "<a class='btn btn-blue' href='/teachers_all'>👩‍🏫 Maestros</a>"; // <-- NUEVO botón para Maestros
-  h += "<a class='btn btn-blue' href='/history'>📜 Historial</a>";
-  h += "<a class='btn btn-blue' href='/status'>🔧 Estado ESP</a>";
+  h += "<a class='btn btn-blue' href='/capture'>Capturar</a>";
+  h += "<a class='btn btn-blue' href='/schedules'>Horarios</a>";
+  h += "<a class='btn btn-blue' href='/materias'>Materias</a>";
+  h += "<a class='btn btn-blue' href='/students_all'>Alumnos</a>";
+  h += "<a class='btn btn-blue' href='/teachers_all'>Maestros</a>";
+  h += "<a class='btn btn-blue' href='/history'>Historial</a>";
+  h += "<a class='btn btn-blue' href='/status'>Estado ESP</a>";
   h += "</div></div>";
 
   // Contenedor principal (contenido de la página)
@@ -378,129 +485,198 @@ void handleRoot() {
 
   String html = htmlHeader("Inicio - Sistema de Control de Acceso");
 
-  // Hero Section - Explicación principal del sistema
-  html += "<section class='hero-card'>";
-  html += "<div class='hero-content'>";
-  html += "<h1>🚀 Sistema de Control de Acceso Inteligente</h1>";
-  html += "<p class='hero-description'>Sistema automatizado para la gestión y control de acceso al laboratorio mediante tecnología RFID, diseñado para garantizar seguridad y eficiencia en el acceso de estudiantes y personal académico.</p>";
+  // Hero Section
+  html += "<section class='hero-section'>";
+  html += "<h1 class='hero-title'>Sistema de Control de Acceso Inteligente</h1>";
+  html += "<p class='hero-subtitle'>Sistema automatizado de gestión y control de acceso para laboratorios mediante tecnología RFID. Garantiza seguridad, control de asistencia y gestión eficiente de estudiantes y personal académico mediante un control preciso basado en horarios y permisos específicos.</p>";
+  html += "</section>";
+
+  // Sección de Modos de Operación del Sistema
+  html += "<div class='section-container'>";
+  html += "<div class='system-modes'>";
+  html += "<h3>Modos de Operación del Sistema</h3>";
+  html += "<p>El sistema opera en dos modos principales que trabajan de forma integrada para garantizar la seguridad y eficiencia del laboratorio:</p>";
   
-  // Tarjetas de modos del sistema
-  html += "<div class='modes-grid'>";
+  html += "<div class='mode-explanation'>";
   
   // Modo Captura
-  html += "<div class='mode-card capture-mode'>";
-  html += "<div class='mode-icon'>🎴</div>";
-  html += "<h3>Modo Captura</h3>";
-  html += "<p>Registro y vinculación de nuevas tarjetas RFID con usuarios del sistema. Permite agregar estudiantes y maestros de forma rápida y segura.</p>";
-  html += "<ul class='mode-features'>";
-  html += "<li>🔍 Detección automática de tarjetas</li>";
-  html += "<li>👤 Vinculación con datos personales</li>";
-  html += "<li>📝 Asignación a materias</li>";
-  html += "</ul>";
-  html += "<a class='btn btn-pulse' href='/capture'>Iniciar Captura</a>";
+  html += "<div class='mode-item capture'>";
+  html += "<h4>Modo Captura</h4>";
+  html += "<p>Dedicado al registro y gestión de usuarios en el sistema. Permite la captura individual de estudiantes y maestros, así como la captura masiva por lotes mediante códigos QR. En este modo se configuran las tarjetas RFID, se asignan permisos y se vinculan los usuarios con sus materias correspondientes.</p>";
   html += "</div>";
   
   // Modo Verificación
-  html += "<div class='mode-card verify-mode'>";
-  html += "<div class='mode-icon'>✅</div>";
-  html += "<h3>Modo Verificación</h3>";
-  html += "<p>Sistema automático que valida el acceso según horarios establecidos, verificando permisos y registrando cada entrada al laboratorio.</p>";
-  html += "<ul class='mode-features'>";
-  html += "<li>⏰ Validación por horarios</li>";
-  html += "<li>📊 Control de asistencia</li>";
-  html += "<li>🚨 Notificaciones en tiempo real</li>";
-  html += "</ul>";
-  html += "<a class='btn btn-green' href='/schedules'>Configurar Horarios</a>";
+  html += "<div class='mode-item verification'>";
+  html += "<h4>Modo Verificación</h4>";
+  html += "<p>Gestiona el control de acceso en tiempo real según los horarios establecidos. Verifica automáticamente los permisos de cada usuario, valida si está dentro de su horario autorizado y registra cada acceso al laboratorio. Opera de forma continua para garantizar la seguridad del espacio.</p>";
   html += "</div>";
   
-  html += "</div>"; // cierre modes-grid
-  html += "</div>"; // cierre hero-content
-  html += "</section>";
+  html += "</div>"; // cierre mode-explanation
+  
+  html += "</div>"; // cierre system-modes
+
+  // Sección de Modos de Captura
+  html += "<h2 class='section-title'>Sistema de Captura de Usuarios</h2>";
+  html += "<p class='section-description'>El sistema cuenta con métodos de captura especializados para cada tipo de usuario, garantizando un registro seguro y eficiente de toda la comunidad académica.</p>";
+  
+  html += "<div class='capture-modes'>";
+  
+  // Captura para Estudiantes
+  html += "<div class='mode-group'>";
+  html += "<h3 class='mode-group-title'>Captura de Estudiantes</h3>";
+  html += "<p class='mode-description'>Sistema especializado para el registro de estudiantes con dos modalidades de captura adaptadas a diferentes necesidades.</p>";
+  
+  html += "<div class='mode-options'>";
+  
+  html += "<div class='mode-option'>";
+  html += "<h4>Captura Individual</h4>";
+  html += "<p>Registro personalizado de estudiantes uno por uno. Ideal para altas individuales, reemplazo de tarjetas o corrección de datos específicos.</p>";
+  html += "<div class='feature-tags'>";
+  html += "<span class='feature-tag'>Registro personalizado</span>";
+  html += "<span class='feature-tag'>Validación inmediata</span>";
+  html += "<span class='feature-tag'>Asignación específica</span>";
+  html += "</div>";
+  html += "<div class='btn-group'>";
+  html += "<a class='btn-module green' href='/capture_individual'>Iniciar Captura Individual</a>";
+  html += "</div>";
+  html += "</div>";
+  
+  html += "<div class='mode-option'>";
+  html += "<h4>Captura por Lote con QR</h4>";
+  html += "<p>Sistema masivo para registrar grupos completos de estudiantes. Genera códigos QR para auto-registro, perfecto para inicio de semestre o grupos grandes.</p>";
+  html += "<div class='feature-tags'>";
+  html += "<span class='feature-tag'>Registro masivo</span>";
+  html += "<span class='feature-tag'>Auto-registro QR</span>";
+  html += "<span class='feature-tag'>Gestión de grupos</span>";
+  html += "</div>";
+  html += "<div class='btn-group'>";
+  html += "<a class='btn-module purple' href='/capture_batch'>Iniciar Captura por Lote</a>";
+  html += "</div>";
+  html += "</div>";
+  
+  html += "</div>"; // cierre mode-options
+  
+  html += "</div>"; // cierre mode-group estudiantes
+  
+  // Captura para Maestros
+  html += "<div class='mode-group teachers'>";
+  html += "<h3 class='mode-group-title'>Captura de Maestros</h3>";
+  html += "<p class='mode-description'>Sistema especializado para el registro del personal docente con permisos extendidos y gestión de materias asignadas.</p>";
+  
+  html += "<div class='mode-options'>";
+  
+  html += "<div class='mode-option'>";
+  html += "<h4>Captura Individual de Maestros</h4>";
+  html += "<p>Registro personalizado de maestros con asignación de materias y permisos especiales. Control total sobre el acceso al laboratorio y gestión de horarios flexibles.</p>";
+  html += "<div class='feature-tags'>";
+  html += "<span class='feature-tag'>Permisos extendidos</span>";
+  html += "<span class='feature-tag'>Asignación de materias</span>";
+  html += "<span class='feature-tag'>Horarios flexibles</span>";
+  html += "</div>";
+  html += "<div class='btn-group'>";
+  html += "<a class='btn-module orange' href='/teachers_all'>Gestionar Maestros</a>";
+  html += "</div>";
+  html += "</div>";
+  
+  html += "</div>"; // cierre mode-options
+  
+  html += "</div>"; // cierre mode-group maestros
+  
+  html += "</div>"; // cierre capture-modes
 
   // Sección de Módulos del Sistema
-  html += "<section class='modules-section'>";
-  html += "<h2 class='section-title'>📦 Módulos del Sistema</h2>";
-  html += "<p class='section-subtitle'>Explora todas las funcionalidades disponibles para la gestión completa del laboratorio</p>";
+  html += "<h2 class='section-title'>Módulos del Sistema de Gestión</h2>";
+  html += "<p class='section-description'>Sistema integral que cubre todos los aspectos necesarios para la administración eficiente del acceso al laboratorio y la gestión académica.</p>";
   
   html += "<div class='modules-grid'>";
   
   // Módulo Materias
-  html += "<div class='module-card'>";
-  html += "<div class='module-header'>";
-  html += "<span class='module-icon'>📚</span>";
+  html += "<div class='module-card materias'>";
   html += "<h3>Gestión de Materias</h3>";
-  html += "</div>";
-  html += "<p>Administra el catálogo completo de materias, asigna horarios específicos y controla la matrícula de estudiantes en cada una.</p>";
-  html += "<div class='module-features'>";
-  html += "<span class='feature-tag'>Horarios</span>";
-  html += "<span class='feature-tag'>Matrículas</span>";
-  html += "<span class='feature-tag'>Aulas</span>";
-  html += "</div>";
+  html += "<p>Administra el catálogo completo de materias del laboratorio con control total sobre horarios, asignación de estudiantes y profesores.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Creación y edición de materias</li>";
+  html += "<li>Asignación de horarios específicos</li>";
+  html += "<li>Gestión de matrículas estudiantiles</li>";
+  html += "<li>Control de aforo y capacidad</li>";
+  html += "<li>Asignación de profesores responsables</li>";
+  html += "</ul>";
   html += "<a class='btn-module' href='/materias'>Administrar Materias</a>";
   html += "</div>";
   
   // Módulo Estudiantes
-  html += "<div class='module-card'>";
-  html += "<div class='module-header'>";
-  html += "<span class='module-icon'>🧑‍🎓</span>";
+  html += "<div class='module-card estudiantes'>";
   html += "<h3>Gestión de Estudiantes</h3>";
-  html += "</div>";
-  html += "<p>Gestiona el registro de estudiantes, asigna tarjetas RFID y vincula cada alumno con sus materias correspondientes.</p>";
-  html += "<div class='module-features'>";
-  html += "<span class='feature-tag'>RFID</span>";
-  html += "<span class='feature-tag'>Matrículas</span>";
-  html += "<span class='feature-tag'>Estadísticas</span>";
-  html += "</div>";
-  html += "<a class='btn-module' href='/students_all'>Ver Estudiantes</a>";
+  html += "<p>Control completo del registro estudiantil con vinculación de tarjetas RFID, asignación a materias y seguimiento de asistencia.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Registro y edición de estudiantes</li>";
+  html += "<li>Vincular tarjetas RFID</li>";
+  html += "<li>Asignación a múltiples materias</li>";
+  html += "<li>Control de permisos y acceso</li>";
+  html += "<li>Estadísticas de asistencia</li>";
+  html += "</ul>";
+  html += "<a class='btn-module' href='/students_all'>Gestionar Estudiantes</a>";
   html += "</div>";
   
   // Módulo Maestros
-  html += "<div class='module-card'>";
-  html += "<div class='module-header'>";
-  html += "<span class='module-icon'>👩‍🏫</span>";
+  html += "<div class='module-card maestros'>";
   html += "<h3>Gestión de Maestros</h3>";
+  html += "<p>Administración del personal docente con permisos especiales, asignación de materias y control de acceso privilegiado.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Registro de personal docente</li>";
+  html += "<li>Permisos de acceso extendidos</li>";
+  html += "<li>Asignación a materias específicas</li>";
+  html += "<li>Horarios flexibles</li>";
+  html += "<li>Gestión de supervisiones</li>";
+  html += "</ul>";
+  html += "<a class='btn-module' href='/teachers_all'>Gestionar Maestros</a>";
   html += "</div>";
-  html += "<p>Administra el personal docente, gestiona permisos de acceso y asigna responsabilidades sobre las materias.</p>";
-  html += "<div class='module-features'>";
-  html += "<span class='feature-tag'>Permisos</span>";
-  html += "<span class='feature-tag'>Asignaciones</span>";
-  html += "<span class='feature-tag'>Accesos</span>";
-  html += "</div>";
-  html += "<a class='btn-module' href='/teachers_all'>Ver Maestros</a>";
+  
+  // Módulo Horarios
+  html += "<div class='module-card horarios'>";
+  html += "<h3>Gestión de Horarios</h3>";
+  html += "<p>Configuración detallada de horarios de acceso al laboratorio por materia, con control de conflictos y optimización de espacios.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Definición de franjas horarias</li>";
+  html += "<li>Asignación por materia</li>";
+  html += "<li>Detección de conflictos</li>";
+  html += "<li>Calendario académico</li>";
+  html += "<li>Gestión de excepciones</li>";
+  html += "</ul>";
+  html += "<a class='btn-module' href='/schedules'>Gestionar Horarios</a>";
   html += "</div>";
   
   // Módulo Historial
-  html += "<div class='module-card'>";
-  html += "<div class='module-header'>";
-  html += "<span class='module-icon'>📜</span>";
+  html += "<div class='module-card historial'>";
   html += "<h3>Historial de Accesos</h3>";
-  html += "</div>";
-  html += "<p>Consulta el registro completo de entradas al laboratorio, genera reportes y analiza patrones de asistencia.</p>";
-  html += "<div class='module-features'>";
-  html += "<span class='feature-tag'>Reportes</span>";
-  html += "<span class='feature-tag'>Estadísticas</span>";
-  html += "<span class='feature-tag'>Exportar</span>";
-  html += "</div>";
-  html += "<a class='btn-module' href='/history'>Ver Historial</a>";
+  html += "<p>Registro completo y detallado de todos los accesos al laboratorio con herramientas de análisis y exportación de datos.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Registro temporal de accesos</li>";
+  html += "<li>Filtrado por usuario o materia</li>";
+  html += "<li>Exportación a formato CSV</li>";
+  html += "<li>Estadísticas de uso</li>";
+  html += "<li>Reportes de asistencia</li>";
+  html += "</ul>";
+  html += "<a class='btn-module' href='/history'>Consultar Historial</a>";
   html += "</div>";
   
   // Módulo Sistema
-  html += "<div class='module-card'>";
-  html += "<div class='module-header'>";
-  html += "<span class='module-icon'>🔧</span>";
+  html += "<div class='module-card sistema'>";
   html += "<h3>Estado del Sistema</h3>";
-  html += "</div>";
-  html += "<p>Monitorea el estado del dispositivo, recursos del sistema y configuración general del equipo.</p>";
-  html += "<div class='module-features'>";
-  html += "<span class='feature-tag'>Monitorización</span>";
-  html += "<span class='feature-tag'>Diagnóstico</span>";
-  html += "<span class='feature-tag'>Configuración</span>";
-  html += "</div>";
+  html += "<p>Monitoreo en tiempo real del estado del dispositivo, recursos del sistema y métricas de operación del laboratorio.</p>";
+  html += "<ul class='feature-list'>";
+  html += "<li>Estado del hardware</li>";
+  html += "<li>Métricas de memoria</li>";
+  html += "<li>Conteo de usuarios</li>";
+  html += "<li>Diagnóstico del sistema</li>";
+  html += "<li>Estadísticas de operación</li>";
+  html += "</ul>";
   html += "<a class='btn-module' href='/status'>Ver Estado</a>";
   html += "</div>";
   
   html += "</div>"; // cierre modules-grid
-  html += "</section>";
+  
+  html += "</div>"; // cierre section-container
 
   html += htmlFooter();
   server.send(200,"text/html",html);
@@ -514,7 +690,7 @@ void handleStatus() {
   float pct = (total>0) ? (used * 100.0f) / (float)total : 0;
 
   String html = htmlHeader("Estado ESP32");
-  html += "<div class='card'><h2>🔧 Estado del Dispositivo</h2>";
+  html += "<div class='card'><h2>Estado del Dispositivo</h2>";
   html += "<p><b>IP:</b> " + WiFi.localIP().toString() + "</p>";
   html += "<p><b>Tiempo activo:</b> " + String(millis()/1000) + " segundos</p>";
   html += "<p><b>Memoria RAM libre:</b> " + String(ESP.getFreeHeap()) + " bytes</p>";
@@ -528,7 +704,7 @@ void handleStatus() {
     fu.close();
   }
   html += "<p><b>Usuarios registrados:</b> " + String(usersCount) + "</p>";
-  html += "<div style='margin-top:10px'><a class='btn btn-blue' href='/users.csv'>📥 Descargar Usuarios</a> "
+  html += "<div style='margin-top:10px'><a class='btn btn-blue' href='/users.csv'>Descargar Usuarios</a> "
           "<a class='btn btn-blue' href='/'>Volver</a></div></div>";
   html += htmlFooter();
   server.send(200,"text/html",html);

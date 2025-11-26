@@ -157,6 +157,27 @@ static bool uidExistsInTeachers(const String &uid) {
   return false;
 }
 
+// Devuelve el nombre del usuario para uid+materia si existe, si no el primer nombre encontrado para uid, si no vacio
+static String getUserNameForUidMateria(const String &uid, const String &materia) {
+  String name = "";
+  if (uid.length() == 0) return name;
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) return name;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) {
+      if (c.size() > 1 && c[1].length()) {
+        // prefer exact materia match if provided
+        if (materia.length() > 0 && c.size() > 3 && c[3] == materia) { name = c[1]; break; }
+        if (name.length() == 0) name = c[1]; // keep first found as fallback
+      }
+    }
+  }
+  f.close();
+  return name;
+}
+
 // --------------------------------------------------
 // Página: captura individual (formulario)
 // --------------------------------------------------
@@ -188,7 +209,7 @@ void capture_individual_page() {
 
   String html = htmlHeader("Capturar - Individual");
   html += "<div class='card'><h2>Captura Individual</h2>";
-  html += "<p class='small'>Acerca la tarjeta. UID autocompletará los campos si existe.</p>";
+  html += "<p class='small'>Acerca la tarjeta. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
 
   html += "<form id='capForm' method='POST' action='/capture_confirm'>";
   html += "<input type='hidden' name='target' value='" + escapeHTML(target) + "'>";
@@ -206,6 +227,7 @@ void capture_individual_page() {
     html += "<option value=''>-- Ninguno --</option>";
     html += "</select><br>";
 
+    // advertencia/notice — mantuve estilo tipo 'small'
     html += "<div id='warn' class='small' style='color:#b00020;display:none;margin-top:6px;'></div>";
   } else {
     html += "<input type='hidden' name='materia' value=''>\n";
@@ -213,47 +235,75 @@ void capture_individual_page() {
     html += "<p class='small'>Registrando como <b>maestro</b>. Las materias se gestionan por separado.</p>";
   }
 
+  // estilos inline iguales para todos los botones (misma anchura visual)
+  String btnStyle = "padding:8px 12px;border-radius:6px;text-decoration:none;min-width:140px;display:inline-block;text-align:center;";
+
   html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-  html += "<button id='submitBtn' type='submit' class='btn btn-green'>Confirmar</button>";
-  html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;'>Cancelar</a>";
+  html += "<button id='submitBtn' type='submit' class='btn btn-green' style='" + btnStyle + "'>Confirmar</button>";
+  html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;' style='background:#d9534f;color:#fff;" + btnStyle + "'>Cancelar</a>";
   html += "</div>";
   html += "</form></div>" + htmlFooter();
 
-  // JS
+  // JS: poll incluye target para que el servidor bloquee desde poll si necesario y realizar redirección automática
   html += R"rawliteral(
 <script>
 function pollUID(){
-  fetch('/capture_poll')
+  var targetInput = document.querySelector("input[name='target']");
+  var target = targetInput ? targetInput.value : '';
+  fetch('/capture_poll?target=' + encodeURIComponent(target))
     .then(r=>r.json())
     .then(j=>{
-      if(j.status && j.status === 'found'){
-        if(j.uid) document.getElementById('uid').value = j.uid;
-        if(j.name) document.getElementById('name').value = j.name;
-        if(j.account) document.getElementById('account').value = j.account;
-        if(j.materia){
-          var selM = document.getElementById('materia');
-          if(selM){
-            for(var i=0;i<selM.options.length;i++){
-              if(selM.options[i].value === j.materia){
-                selM.selectedIndex = i;
-                selM.dispatchEvent(new Event('change'));
-                break;
-              }
-            }
-          }
+      var uidField = document.getElementById('uid');
+      var nameField = document.getElementById('name');
+      var accField = document.getElementById('account');
+      var warn = document.getElementById('warn');
+      var submitBtn = document.getElementById('submitBtn');
+      var matField = document.getElementById('materia');
+      var profField = document.getElementById('profesor');
+
+      if(!uidField || !nameField || !accField) return;
+
+      if(j.status === 'waiting'){
+        // nothing to do
+      } else if(j.status === 'blocked'){
+        // show UID only if provided
+        if(j.uid) uidField.value = j.uid;
+
+        // do NOT auto-fill name/account in blocked cases where server intentionally omits them
+        if(j.name && j.allow_autofill) { nameField.value = j.name; }
+        if(j.account && j.allow_autofill) { accField.value = j.account; }
+
+        if(warn){ warn.style.display='block'; warn.textContent = j.blocked_message || 'Acción no permitida'; }
+        if(submitBtn) submitBtn.disabled = true;
+
+        // if server requests restart after N ms -> redirect back to capture page (restart capture flow)
+        if(j.restart_after_ms){
+          // show message for the requested time and then redirect to same capture page to re-arm capture read
           setTimeout(function(){
-            var selP = document.getElementById('profesor');
-            if(selP && j.profesor){
-              for(var i=0;i<selP.options.length;i++){
-                if(selP.options[i].value === j.profesor){
-                  selP.selectedIndex = i;
-                  break;
-                }
-              }
-            }
-          }, 350);
+            try { navigator.sendBeacon('/capture_stop'); } catch(e){}
+            window.location.href = '/capture_individual?target=' + encodeURIComponent(target);
+          }, j.restart_after_ms);
+        }
+      } else if(j.status === 'found'){
+        // Always display UID
+        if(j.uid) uidField.value = j.uid;
+
+        // Fill name/account if present
+        if(j.name) nameField.value = j.name;
+        if(j.account) accField.value = j.account;
+
+        // Important: do NOT auto-fill materia/profesor when a student is re-captured.
+        // The server intentionally omits materia/profesor to allow assigning a different materia.
+        if(warn){ warn.style.display='none'; warn.textContent=''; }
+        if(submitBtn) submitBtn.disabled = false;
+
+        // If server indicates blocked_by_account (account used by other UID), show message but do not auto-redirect
+        if(j.blocked && j.blocked_message){
+          if(warn){ warn.style.display='block'; warn.textContent = j.blocked_message; }
+          if(submitBtn) submitBtn.disabled = true;
         }
       }
+
       setTimeout(pollUID, 700);
     })
     .catch(e => setTimeout(pollUID, 1200));
@@ -352,7 +402,9 @@ pollUID();
 
 // --------------------------------------------------
 // Poll endpoint JSON
-// --------------------------------------------------
+// Now accepts optional query param 'target' (students | teachers).
+// If the scanned UID is already registered in the opposite list, the poll returns status: "blocked"
+// and includes restart_after_ms so the client shows the message then reloads the capture page.
 void capture_individual_poll() {
   if (captureUID.length() == 0) {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
@@ -361,30 +413,139 @@ void capture_individual_poll() {
 
   String nameOut = captureName;
   String accountOut = captureAccount;
-  String materiaOut = "";
-  String profesorOut = "";
 
-  String rec = findAnyUserLineByUID(captureUID);
-  if (rec.length() > 0) {
-    auto parts = parseQuotedCSVLine(rec);
+  // Always include UID so UI shows it
+  String uidOut = captureUID;
+
+  // Try to get stored name/account (from either file)
+  String storedLine = findAnyUserLineByUID(captureUID);
+  if (storedLine.length() > 0) {
+    auto parts = parseQuotedCSVLine(storedLine);
     if (parts.size() > 1) nameOut = parts[1];
     if (parts.size() > 2) accountOut = parts[2];
-    if (parts.size() > 3) materiaOut = parts[3];
-    profesorOut = inferProfessorForMateria(materiaOut);
+    // intentionally do NOT set materia/profesor here to allow re-capture assignment
   }
 
-  String j = "{\"status\":\"found\",\"uid\":\"" + jsonEscapeLocal(captureUID) + "\"";
+  // get optional target param
+  String target = "";
+  if (server.hasArg("target")) {
+    target = server.arg("target");
+    target.trim();
+  }
+
+  // CASES:
+  // target == students:
+  //   - if uid exists in teachers -> BLOCK (show teacher info) + restart_after_ms (but DO NOT auto-fill name/account)
+  // target == teachers:
+  //   - if uid exists in users -> BLOCK (show student info) + restart_after_ms (but DO NOT auto-fill name/account)
+  //   - else if uid exists in teachers -> BLOCK (already registered as teacher) + restart_after_ms (do NOT auto-fill)
+
+  // If target==students but UID exists in teachers -> block & restart (do NOT provide name/account for autofill)
+  if (target == "students" && uidExistsInTeachers(captureUID)) {
+    // read teacher info to show name/account in the blocked page if needed, but DO NOT include for autofill
+    String tName = "";
+    String tAcc = "";
+    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+    if (ft) {
+      while (ft.available()) {
+        String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+        auto p = parseQuotedCSVLine(l);
+        if (p.size() >= 1 && p[0] == captureUID) {
+          if (p.size() > 1) tName = p[1];
+          if (p.size() > 2) tAcc = p[2];
+          break;
+        }
+      }
+      ft.close();
+    }
+
+    String msg = "Esta tarjeta ya está registrada como maestro. No puede registrarse como alumno.";
+    // NOTE: do NOT include 'name'/'account' fields for autofill. Include only uid and message and restart.
+    String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
+    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
+    // include optional display-only info via fields with different names if needed by UI later (we keep out for now)
+    j += ",\"restart_after_ms\":5000}";
+    server.send(200, "application/json", j);
+    return;
+  }
+
+  // If target==teachers and UID exists in users -> block & restart (do NOT include name/account for autofill)
+  if (target == "teachers" && uidExistsInUsers(captureUID)) {
+    // read user info for possible display (not autofill)
+    String sName = "";
+    String sAcc = "";
+    File fu = SPIFFS.open(USERS_FILE, FILE_READ);
+    if (fu) {
+      while (fu.available()) {
+        String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+        auto p = parseQuotedCSVLine(l);
+        if (p.size() >= 1 && p[0] == captureUID) {
+          if (p.size() > 1) sName = p[1];
+          if (p.size() > 2) sAcc = p[2];
+          break;
+        }
+      }
+      fu.close();
+    }
+
+    String msg = "Esta tarjeta ya está registrada como alumno. No puede registrarse como maestro.";
+    String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
+    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
+    j += ",\"restart_after_ms\":5000}";
+    server.send(200, "application/json", j);
+    return;
+  }
+
+  // If target==teachers and UID already exists in teachers -> block (duplicate teacher) & restart (do NOT include name/account for autofill)
+  if (target == "teachers" && uidExistsInTeachers(captureUID)) {
+    // read teacher info
+    String tName = "";
+    String tAcc = "";
+    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+    if (ft) {
+      while (ft.available()) {
+        String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+        auto p = parseQuotedCSVLine(l);
+        if (p.size() >= 1 && p[0] == captureUID) {
+          if (p.size() > 1) tName = p[1];
+          if (p.size() > 2) tAcc = p[2];
+          break;
+        }
+      }
+      ft.close();
+    }
+
+    String msg = "Esta tarjeta ya está registrada como maestro (registro previo). No se permite capturar de nuevo.";
+    String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
+    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
+    j += ",\"restart_after_ms\":5000}";
+    server.send(200, "application/json", j);
+    return;
+  }
+
+  // Otherwise normal found response (UID always included)
+  String j = "{\"status\":\"found\",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
   if (nameOut.length()) j += ",\"name\":\"" + jsonEscapeLocal(nameOut) + "\"";
   if (accountOut.length()) j += ",\"account\":\"" + jsonEscapeLocal(accountOut) + "\"";
-  if (materiaOut.length()) j += ",\"materia\":\"" + jsonEscapeLocal(materiaOut) + "\"";
-  if (profesorOut.length()) j += ",\"profesor\":\"" + jsonEscapeLocal(profesorOut) + "\"";
+
+  // also check if the account (number) is already used by other UID (across files)
+  if (accountOut.length()) {
+    auto accFound = findByAccount(accountOut);
+    if (accFound.first.length() && accFound.first != captureUID) {
+      String msg = "La cuenta " + accountOut + " ya está asociada a otra tarjeta (UID " + accFound.first + ").";
+      // Add as blocked indicator so UI will show message and disable submit
+      j += ",\"blocked\":true";
+      j += ",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
+    }
+  }
+
   j += "}";
   server.send(200, "application/json", j);
 }
 
 // --------------------------------------------------
 // Confirm (POST)
-// --------------------------------------------------
+// (server-side checks remain — duplicates son rechazados aunque JS sea saltado)
 void capture_individual_confirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("target")) {
@@ -411,10 +572,9 @@ void capture_individual_confirm() {
   }
   for (size_t i = 0; i < account.length(); i++) if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
 
-  // check account uniqueness (across users and teachers)
+  // server-side: check account uniqueness (across users and teachers)
   auto accFound = findByAccount(account);
   if (accFound.first.length() && accFound.first != uid) {
-    // account exists for different UID -> deny, show detailed info + edit button
     String foundUID = accFound.first;
     String foundSource = accFound.second;
 
@@ -457,10 +617,12 @@ void capture_individual_confirm() {
       }
     }
 
-    // build HTML informative page
+    // build HTML informative page (sin iconos)
+    String btnStyle = "padding:8px 12px;border-radius:6px;text-decoration:none;min-width:140px;display:inline-block;text-align:center;";
+
     String html = htmlHeader("Error - Cuenta duplicada");
     html += "<div class='card'>";
-    html += "<h3 style='color:#b00020;'>⚠️ Cuenta ya registrada</h3>";
+    html += "<h3 style='color:#b00020;'>Cuenta ya registrada</h3>";
     html += "<p class='small'>La cuenta <b>" + escapeHTML(account) + "</b> ya está registrada con UID <b>" + escapeHTML(foundUID) + "</b> en <b>" + escapeHTML(foundSource) + "</b>. No se puede usar la misma cuenta para otro usuario.</p>";
 
     if (foundName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(foundName) + "</p>";
@@ -476,21 +638,27 @@ void capture_individual_confirm() {
       html += "<p><i>No tiene materias asociadas.</i></p>";
     }
 
-    html += "<p class='small' style='margin-top:10px;color:#333;'>Si desea editar este usuario pulse el botón <span style='background:#f1c40f;padding:4px 8px;border-radius:6px;color:#000;'>Editar usuario</span>. También puede cancelar la captura con el botón rojo.</p>";
+    html += "<p class='small' style='margin-top:10px;color:#333;'>Si desea editar este usuario pulse el botón Editar usuario. También puede cancelar la captura con el botón rojo.</p>";
 
     html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
-    html += "<a class='btn btn-blue' href='/'>Inicio</a>";
+    // ORDER CHANGED: Volver a Captura (verde) in place of previous Inicio
+    html += "<a class='btn btn-green' href='/capture_individual?target=" + escapeHTML(target) + "' style='background:#27ae60;color:#fff;" + btnStyle + "'>Volver a Captura</a>";
+
     // Editar usuario (amarillo)
     if (foundUID.length()) {
-      if (foundSource == "users") html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/students_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
-      else html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+      if (foundSource == "users") html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/students_all' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
+      else html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
     } else {
-      html += "<a class='btn btn-yellow' href='/' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+      html += "<a class='btn btn-yellow' href='/' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
     }
-    // Cancelar registro (rojo)
+
+    // Now put Inicio where Volver used to be (blue)
+    html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;" + btnStyle + "'>Inicio</a>";
+
+    // Cancelar registro (rojo) - como formulario para POST
     html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
             "<input type='hidden' name='return_to' value='/' />"
-            "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+            "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;" + btnStyle + "border:none;cursor:pointer;'>Cancelar registro</button>"
             "</form>";
     html += "</div></div>" + htmlFooter();
 
@@ -498,11 +666,10 @@ void capture_individual_confirm() {
     return;
   }
 
-  // PROHIBIR que una tarjeta registrada como alumno sea registrada como maestro y viceversa
+  // PROHIBIR que una tarjeta registrada como alumno sea registrada como maestro y viceversa (POST side)
   if (target == "teachers") {
     if (uidExistsInUsers(uid)) {
-      // tarjeta ya usada como alumno -> denegar
-      // obtener info del alumno
+      // tarjeta ya usada como alumno -> denegar (this is a double-check, poll already blocks earlier)
       String foundName="", foundAccount="";
       std::vector<String> materiasList;
       File fu = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -536,11 +703,12 @@ void capture_individual_confirm() {
       }
       html += "<p class='small' style='margin-top:10px;'>Si desea editar ese registro pulse el botón amarillo, o cancele la captura con el botón rojo.</p>";
       html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
-      html += "<a class='btn btn-blue' href='/'>Inicio</a>";
-      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/students_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar usuario</a>";
+      html += "<a class='btn btn-green' href='/capture_individual?target=teachers' style='background:#27ae60;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Volver a Captura</a>";
+      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/students_all' style='background:#f1c40f;color:#000;min-width:140px;padding:8px 12px;border-radius:6px;'>Editar usuario</a>";
+      html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Inicio</a>";
       html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
               "<input type='hidden' name='return_to' value='/' />"
-              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
               "</form>";
       html += "</div></div>" + htmlFooter();
       server.send(200, "text/html", html);
@@ -548,7 +716,7 @@ void capture_individual_confirm() {
     }
   } else if (target == "students") {
     if (uidExistsInTeachers(uid)) {
-      // tarjeta ya usada como maestro -> denegar
+      // tarjeta ya usada como maestro -> denegar (double-check)
       String foundName="", foundAccount="";
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
@@ -571,11 +739,12 @@ void capture_individual_confirm() {
       if (foundAccount.length()) html += "<p><b>Cuenta:</b> " + escapeHTML(foundAccount) + "</p>";
       html += "<p class='small' style='margin-top:10px;'>Si desea editar ese registro pulse el botón amarillo, o cancele la captura con el botón rojo.</p>";
       html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
-      html += "<a class='btn btn-blue' href='/'>Inicio</a>";
-      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;padding:8px 12px;border-radius:6px;text-decoration:none;'>✏️ Editar maestro</a>";
+      html += "<a class='btn btn-green' href='/capture_individual?target=students' style='background:#27ae60;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Volver a Captura</a>";
+      html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;min-width:140px;padding:8px 12px;border-radius:6px;'>Editar maestro</a>";
+      html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Inicio</a>";
       html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
               "<input type='hidden' name='return_to' value='/' />"
-              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
+              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
               "</form>";
       html += "</div></div>" + htmlFooter();
       server.send(200, "text/html", html);
@@ -616,10 +785,13 @@ void capture_individual_confirm() {
 
     // if uid already registered in this materia -> dedicated page (do not accept)
     if (materia.length() > 0 && userExistsUidMateriaExact(uid, materia)) {
+      // get student name for uid+materia (prefer exact materia match)
+      String studentName = getUserNameForUidMateria(uid, materia);
       String html = htmlHeader("Duplicado - Ya registrado");
       html += "<div class='card'><h3 style='color:red;'>El alumno ya está registrado en esa materia</h3>";
       html += "<p class='small'>El UID <b>" + escapeHTML(uid) + "</b> ya figura registrado en la materia <b>" + escapeHTML(materia) + "</b>.</p>";
-      html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a> <a class='btn btn-green' href='/students?materia=" + escapeHTML(materia) + "'>Ver lista de alumnos</a> <a class='btn btn-red' href='/capture_individual'>Volver a captura</a></p>";
+      if (studentName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(studentName) + "</p>";
+      html += "<p style='margin-top:8px'><a class='btn btn-green' href='/students?materia=" + escapeHTML(materia) + "'>Ver lista de alumnos</a> <a class='btn btn-blue' href='/' style='margin-left:8px;'>Inicio</a> <a class='btn btn-red' href='/capture_individual' style='margin-left:8px;'>Volver a captura</a></p>";
       html += "</div>" + htmlFooter();
       server.send(200, "text/html", html);
       return;
@@ -639,7 +811,7 @@ void capture_individual_confirm() {
     captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
     String html = htmlHeader("Registrado correctamente");
-    html += "<div class='card'><h3>✅ Usuario registrado correctamente.</h3>";
+    html += "<div class='card'><h3>Usuario registrado correctamente.</h3>";
     html += "<p class='small'>Nombre: " + escapeHTML(name) + " — Cuenta: " + escapeHTML(account) + "</p>";
     html += "<p class='small'>Materia: " + (materia.length() ? escapeHTML(materia) : String("-")) + " — Profesor: " + (profesor.length() ? escapeHTML(profesor) : String("-")) + "</p>";
     html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/students_all'>Volver a Alumnos</a> <a class='btn btn-green' href='/capture_individual?target=students'>Capturar otro</a></p>";
@@ -659,7 +831,7 @@ void capture_individual_confirm() {
     captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
     String html = htmlHeader("Maestro registrado");
-    html += "<div class='card'><h3>✅ Maestro registrado correctamente.</h3>";
+    html += "<div class='card'><h3>Maestro registrado correctamente.</h3>";
     html += "<p class='small'>Nombre: " + escapeHTML(name) + " — Cuenta: " + escapeHTML(account) + "</p>";
     html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/teachers_all'>Volver a Maestros</a> <a class='btn btn-green' href='/capture_individual?target=teachers'>Capturar otro</a></p>";
     html += "</div>" + htmlFooter();
