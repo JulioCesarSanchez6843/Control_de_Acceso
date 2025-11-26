@@ -1,4 +1,3 @@
-// src/web/web_routes.cpp
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -124,7 +123,8 @@ void registerRoutes() {
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
   server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);
 
-  server.on("/status", handleStatus);
+  // NOTE: ruta /status removida intencionalmente porque handleStatus() fue eliminada.
+  // Si quieres volver a exponer métricas del ESP reintroduce handleStatus() o registra otra ruta aquí.
 
   server.on("/schedules", HTTP_GET, handleSchedulesGrid);
   server.on("/schedules/edit", HTTP_GET, handleSchedulesEditGrid);
