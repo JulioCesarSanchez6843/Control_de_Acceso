@@ -1,4 +1,3 @@
-// src/web/capture.cpp  (shim - delega en capture_individual / capture_lote)
 #include "capture.h"
 #include "capture_common.h"
 
@@ -25,16 +24,12 @@ void handleCaptureInit() {
   // placeholder para compatibilidad; no hace nada por ahora
 }
 
-// Landing (legacy) — lo dejamos por compatibilidad, pero ya no lo usamos en los menús
+// Landing (legacy) — redirigimos a /capture_individual para eliminar el menú,
+// pero mantenemos la ruta por compatibilidad con clientes que aún la usen.
 void handleCapturePage() {
-  String html = htmlHeader("Capturar Tarjeta");
-  html += "<div class='card'><h2>Capturar Tarjeta</h2>";
-  html += "<p class='small'>Acerca la tarjeta. Si ya existe en otra materia se autocompletan los campos. Seleccione un modo:</p>";
-  html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:18px;'>";
-  html += "<a class='btn btn-blue' href='/capture_individual'>Individual</a>";
-  html += "<a class='btn btn-blue' href='/capture_batch'>Batch (varias tarjetas)</a>";
-  html += "</div></div>" + htmlFooter();
-  server.send(200, "text/html", html);
+  // Redirigir al flujo individual. Cambia la URL si quieres otro comportamiento por defecto.
+  server.sendHeader("Location", "/capture_individual");
+  server.send(303, "text/plain", "redirect");
 }
 
 // Delegation handlers (mantienen los nombres originales usados por web_routes.cpp)

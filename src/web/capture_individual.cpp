@@ -209,7 +209,13 @@ void capture_individual_page() {
 
   String html = htmlHeader("Capturar - Individual");
   html += "<div class='card'><h2>Captura Individual</h2>";
-  html += "<p class='small'>Acerca la tarjeta. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
+  
+  // Mensaje específico según el target
+  if (target == "teachers") {
+    html += "<p class='small'>Acerca la tarjeta del maestro. El sistema verificará automáticamente si la tarjeta está disponible.</p>";
+  } else {
+    html += "<p class='small'>Acerca la tarjeta del alumno. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
+  }
 
   html += "<form id='capForm' method='POST' action='/capture_confirm'>";
   html += "<input type='hidden' name='target' value='" + escapeHTML(target) + "'>";
@@ -226,20 +232,20 @@ void capture_individual_page() {
     html += "Profesor:<br><select id='profesor' name='profesor' disabled>";
     html += "<option value=''>-- Ninguno --</option>";
     html += "</select><br>";
-
-    // advertencia/notice — mantuve estilo tipo 'small'
-    html += "<div id='warn' class='small' style='color:#b00020;display:none;margin-top:6px;'></div>";
   } else {
     html += "<input type='hidden' name='materia' value=''>\n";
     html += "<input type='hidden' name='profesor' value=''>\n";
     html += "<p class='small'>Registrando como <b>maestro</b>. Las materias se gestionan por separado.</p>";
   }
 
+  // Incluir el div 'warn' para ambos targets
+  html += "<div id='warn' class='small' style='color:#b00020;display:none;margin-top:6px;'></div>";
+
   // estilos inline iguales para todos los botones (misma anchura visual)
   String btnStyle = "padding:8px 12px;border-radius:6px;text-decoration:none;min-width:140px;display:inline-block;text-align:center;";
 
   html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-  html += "<button id='submitBtn' type='submit' class='btn btn-green' style='" + btnStyle + "'>Confirmar</button>";
+  html += "<button id='submitBtn' type='submit' class='btn btn-green' style='" + btnStyle + "' disabled>Confirmar</button>";
   html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;' style='background:#d9534f;color:#fff;" + btnStyle + "'>Cancelar</a>";
   html += "</div>";
   html += "</form></div>" + htmlFooter();
@@ -266,41 +272,59 @@ function pollUID(){
       if(j.status === 'waiting'){
         // nothing to do
       } else if(j.status === 'blocked'){
-        // show UID only if provided
-        if(j.uid) uidField.value = j.uid;
-
-        // do NOT auto-fill name/account in blocked cases where server intentionally omits them
-        if(j.name && j.allow_autofill) { nameField.value = j.name; }
-        if(j.account && j.allow_autofill) { accField.value = j.account; }
-
-        if(warn){ warn.style.display='block'; warn.textContent = j.blocked_message || 'Acción no permitida'; }
+        // IMPORTANT: in blocked cases we do NOT fill UID / name / account.
+        // Only show the blocked message to the user and disable submit.
+        if(warn){ 
+          warn.style.display='block'; 
+          warn.textContent = j.blocked_message || 'Acción no permitida'; 
+          warn.style.background = '#ffeaa7';
+          warn.style.padding = '10px';
+          warn.style.borderRadius = '5px';
+          warn.style.border = '1px solid #fdcb6e';
+        }
         if(submitBtn) submitBtn.disabled = true;
+
+        // Clear any previous UID data
+        uidField.value = '';
+        nameField.value = '';
+        accField.value = '';
 
         // if server requests restart after N ms -> redirect back to capture page (restart capture flow)
         if(j.restart_after_ms){
-          // show message for the requested time and then redirect to same capture page to re-arm capture read
           setTimeout(function(){
             try { navigator.sendBeacon('/capture_stop'); } catch(e){}
             window.location.href = '/capture_individual?target=' + encodeURIComponent(target);
           }, j.restart_after_ms);
         }
       } else if(j.status === 'found'){
-        // Always display UID
+        // Always display UID and autofill name/account when server provides them
         if(j.uid) uidField.value = j.uid;
-
-        // Fill name/account if present
         if(j.name) nameField.value = j.name;
         if(j.account) accField.value = j.account;
 
-        // Important: do NOT auto-fill materia/profesor when a student is re-captured.
-        // The server intentionally omits materia/profesor to allow assigning a different materia.
-        if(warn){ warn.style.display='none'; warn.textContent=''; }
-        if(submitBtn) submitBtn.disabled = false;
+        // Clear any warning messages
+        if(warn){ 
+          warn.style.display='none'; 
+          warn.textContent='';
+          warn.style.background = '';
+          warn.style.padding = '';
+          warn.style.border = '';
+        }
 
         // If server indicates blocked_by_account (account used by other UID), show message but do not auto-redirect
         if(j.blocked && j.blocked_message){
-          if(warn){ warn.style.display='block'; warn.textContent = j.blocked_message; }
+          if(warn){ 
+            warn.style.display='block'; 
+            warn.textContent = j.blocked_message;
+            warn.style.background = '#ffeaa7';
+            warn.style.padding = '10px';
+            warn.style.borderRadius = '5px';
+            warn.style.border = '1px solid #fdcb6e';
+          }
           if(submitBtn) submitBtn.disabled = true;
+        } else {
+          // Enable submit only when no blocking conditions
+          if(submitBtn) submitBtn.disabled = false;
         }
       }
 
@@ -317,7 +341,20 @@ document.addEventListener('DOMContentLoaded', function(){
 
   function setWarn(msg){
     if(!warn) return;
-    if(msg){ warn.style.display='block'; warn.textContent = msg; } else { warn.style.display='none'; warn.textContent=''; }
+    if(msg){ 
+      warn.style.display='block'; 
+      warn.textContent = msg; 
+      warn.style.background = '#ffeaa7';
+      warn.style.padding = '10px';
+      warn.style.borderRadius = '5px';
+      warn.style.border = '1px solid #fdcb6e';
+    } else { 
+      warn.style.display='none'; 
+      warn.textContent='';
+      warn.style.background = '';
+      warn.style.padding = '';
+      warn.style.border = '';
+    }
   }
 
   function clearProf(){
@@ -331,29 +368,29 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!mat.value){ // materia vacia -> profesor opcional
       clearProf();
       setWarn('');
-      submitBtn.disabled = false;
+      if(submitBtn) submitBtn.disabled = false;
       return;
     }
-    if(!prof){ submitBtn.disabled = true; setWarn('Seleccione un profesor para la materia.'); return; }
+    if(!prof){ if(submitBtn) submitBtn.disabled = true; setWarn('Seleccione un profesor para la materia.'); return; }
     if(prof.options.length <= 1){
       setWarn('La materia seleccionada no tiene profesores registrados. Regístrela primero en Materias.');
-      submitBtn.disabled = true;
+      if(submitBtn) submitBtn.disabled = true;
       return;
     }
     if(prof.options.length === 2){
-      prof.selectedIndex = 1; prof.disabled = true; setWarn(''); submitBtn.disabled = false; return;
+      prof.selectedIndex = 1; prof.disabled = true; setWarn(''); if(submitBtn) submitBtn.disabled = false; return;
     }
     prof.disabled = false;
-    if(prof.value){ setWarn(''); submitBtn.disabled = false; } else { setWarn('Seleccione un profesor para la materia.'); submitBtn.disabled = true; }
+    if(prof.value){ setWarn(''); if(submitBtn) submitBtn.disabled = false; } else { setWarn('Seleccione un profesor para la materia.'); if(submitBtn) submitBtn.disabled = true; }
   }
 
   if(mat){
     mat.addEventListener('change', function(){
       clearProf();
       setWarn('');
-      submitBtn.disabled = true;
+      if(submitBtn) submitBtn.disabled = true;
       var val = mat.value || '';
-      if(!val){ clearProf(); setWarn(''); submitBtn.disabled = false; return; }
+      if(!val){ clearProf(); setWarn(''); if(submitBtn) submitBtn.disabled = false; return; }
       fetch('/profesores_for?materia=' + encodeURIComponent(val))
         .then(r => {
           if(!r.ok) throw 0;
@@ -401,24 +438,21 @@ pollUID();
 }
 
 // --------------------------------------------------
-// Poll endpoint JSON
-// Now accepts optional query param 'target' (students | teachers).
-// If the scanned UID is already registered in the opposite list, the poll returns status: "blocked"
-// and includes restart_after_ms so the client shows the message then reloads the capture page.
+// Poll endpoint JSON - CORREGIDO EXACTAMENTE COMO ALUMNOS
+// --------------------------------------------------
 void capture_individual_poll() {
   if (captureUID.length() == 0) {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
     return;
   }
 
+  // copy local values (but note: for blocked cases we will NOT return UID/name/account)
   String nameOut = captureName;
   String accountOut = captureAccount;
-
-  // Always include UID so UI shows it
-  String uidOut = captureUID;
+  String uidSnapshot = captureUID; // snapshot if needed internally
 
   // Try to get stored name/account (from either file)
-  String storedLine = findAnyUserLineByUID(captureUID);
+  String storedLine = findAnyUserLineByUID(uidSnapshot);
   if (storedLine.length() > 0) {
     auto parts = parseQuotedCSVLine(storedLine);
     if (parts.size() > 1) nameOut = parts[1];
@@ -433,105 +467,58 @@ void capture_individual_poll() {
     target.trim();
   }
 
-  // CASES:
-  // target == students:
-  //   - if uid exists in teachers -> BLOCK (show teacher info) + restart_after_ms (but DO NOT auto-fill name/account)
-  // target == teachers:
-  //   - if uid exists in users -> BLOCK (show student info) + restart_after_ms (but DO NOT auto-fill name/account)
-  //   - else if uid exists in teachers -> BLOCK (already registered as teacher) + restart_after_ms (do NOT auto-fill)
+  // ----------------------
+  // BLOCK CASES (server will NOT include UID/name/account in response)
+  // ----------------------
 
-  // If target==students but UID exists in teachers -> block & restart (do NOT provide name/account for autofill)
-  if (target == "students" && uidExistsInTeachers(captureUID)) {
-    // read teacher info to show name/account in the blocked page if needed, but DO NOT include for autofill
-    String tName = "";
-    String tAcc = "";
-    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-    if (ft) {
-      while (ft.available()) {
-        String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-        auto p = parseQuotedCSVLine(l);
-        if (p.size() >= 1 && p[0] == captureUID) {
-          if (p.size() > 1) tName = p[1];
-          if (p.size() > 2) tAcc = p[2];
-          break;
-        }
-      }
-      ft.close();
-    }
+  // CASO 1: Si target==students pero UID existe en teachers -> block & restart
+  if (target == "students" && uidExistsInTeachers(uidSnapshot)) {
+    // Clear the capture so the system does not keep the UID / show it on any display
+    captureUID = "";
+    captureDetectedAt = 0;
 
     String msg = "Esta tarjeta ya está registrada como maestro. No puede registrarse como alumno.";
-    // NOTE: do NOT include 'name'/'account' fields for autofill. Include only uid and message and restart.
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
-    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
-    // include optional display-only info via fields with different names if needed by UI later (we keep out for now)
     j += ",\"restart_after_ms\":5000}";
     server.send(200, "application/json", j);
     return;
   }
 
-  // If target==teachers and UID exists in users -> block & restart (do NOT include name/account for autofill)
-  if (target == "teachers" && uidExistsInUsers(captureUID)) {
-    // read user info for possible display (not autofill)
-    String sName = "";
-    String sAcc = "";
-    File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-    if (fu) {
-      while (fu.available()) {
-        String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-        auto p = parseQuotedCSVLine(l);
-        if (p.size() >= 1 && p[0] == captureUID) {
-          if (p.size() > 1) sName = p[1];
-          if (p.size() > 2) sAcc = p[2];
-          break;
-        }
-      }
-      fu.close();
-    }
+  // CASO 2: Si target==teachers y UID existe en users -> block & restart
+  if (target == "teachers" && uidExistsInUsers(uidSnapshot)) {
+    captureUID = "";
+    captureDetectedAt = 0;
 
-    String msg = "Esta tarjeta ya está registrada como alumno. No puede registrarse como maestro.";
+    String msg = "Esta tarjeta pertenece a un alumno. No puede registrarse como maestro.";
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
-    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
     j += ",\"restart_after_ms\":5000}";
     server.send(200, "application/json", j);
     return;
   }
 
-  // If target==teachers and UID already exists in teachers -> block (duplicate teacher) & restart (do NOT include name/account for autofill)
-  if (target == "teachers" && uidExistsInTeachers(captureUID)) {
-    // read teacher info
-    String tName = "";
-    String tAcc = "";
-    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-    if (ft) {
-      while (ft.available()) {
-        String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-        auto p = parseQuotedCSVLine(l);
-        if (p.size() >= 1 && p[0] == captureUID) {
-          if (p.size() > 1) tName = p[1];
-          if (p.size() > 2) tAcc = p[2];
-          break;
-        }
-      }
-      ft.close();
-    }
+  // CASO 3: Si target==teachers y UID ya existe en teachers -> block & restart
+  if (target == "teachers" && uidExistsInTeachers(uidSnapshot)) {
+    captureUID = "";
+    captureDetectedAt = 0;
 
-    String msg = "Esta tarjeta ya está registrada como maestro (registro previo). No se permite capturar de nuevo.";
+    String msg = "Este maestro ya está registrado, no puede capturarse de nuevo.";
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
-    j += ",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
     j += ",\"restart_after_ms\":5000}";
     server.send(200, "application/json", j);
     return;
   }
 
-  // Otherwise normal found response (UID always included)
-  String j = "{\"status\":\"found\",\"uid\":\"" + jsonEscapeLocal(uidOut) + "\"";
+  // ----------------------
+  // NORMAL FOUND CASE - TARJETA LIBRE/NUEVA
+  // ----------------------
+  String j = "{\"status\":\"found\",\"uid\":\"" + jsonEscapeLocal(uidSnapshot) + "\"";
   if (nameOut.length()) j += ",\"name\":\"" + jsonEscapeLocal(nameOut) + "\"";
   if (accountOut.length()) j += ",\"account\":\"" + jsonEscapeLocal(accountOut) + "\"";
 
   // also check if the account (number) is already used by other UID (across files)
   if (accountOut.length()) {
     auto accFound = findByAccount(accountOut);
-    if (accFound.first.length() && accFound.first != captureUID) {
+    if (accFound.first.length() && accFound.first != uidSnapshot) {
       String msg = "La cuenta " + accountOut + " ya está asociada a otra tarjeta (UID " + accFound.first + ").";
       // Add as blocked indicator so UI will show message and disable submit
       j += ",\"blocked\":true";
@@ -544,8 +531,8 @@ void capture_individual_poll() {
 }
 
 // --------------------------------------------------
-// Confirm (POST)
-// (server-side checks remain — duplicates son rechazados aunque JS sea saltado)
+// Confirm (POST) - MANTENIDO SIN CAMBIOS
+// --------------------------------------------------
 void capture_individual_confirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("target")) {

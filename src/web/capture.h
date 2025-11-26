@@ -1,4 +1,3 @@
-// src/web/capture.h
 #pragma once
 #include <Arduino.h>
 
