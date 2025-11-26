@@ -224,7 +224,7 @@ void capture_individual_page() {
   html += "Cuenta (7 dígitos):<br><input id='account' name='account' required maxlength='7' minlength='7' pattern='[0-9]{7}'><br>";
 
   if (target == "students") {
-    html += "Materia (opcional):<br><select id='materia' name='materia'>";
+    html += "Materia:<br><select id='materia' name='materia'>";
     html += "<option value=''>-- Ninguna --</option>";
     for (auto &m : materias) html += "<option value='" + escapeHTML(m) + "'>" + escapeHTML(m) + "</option>";
     html += "</select><br>";
@@ -253,6 +253,8 @@ void capture_individual_page() {
   // JS: poll incluye target para que el servidor bloquee desde poll si necesario y realizar redirección automática
   html += R"rawliteral(
 <script>
+let isExistingStudent = false; // Variable para rastrear si el alumno ya existe
+
 function pollUID(){
   var targetInput = document.querySelector("input[name='target']");
   var target = targetInput ? targetInput.value : '';
@@ -271,6 +273,8 @@ function pollUID(){
 
       if(j.status === 'waiting'){
         // nothing to do
+        isExistingStudent = false; // Reset cuando no hay UID
+        updateMateriaRequirement(); // Actualizar requerimiento de materia
       } else if(j.status === 'blocked'){
         // IMPORTANT: in blocked cases we do NOT fill UID / name / account.
         // Only show the blocked message to the user and disable submit.
@@ -302,6 +306,12 @@ function pollUID(){
         if(j.name) nameField.value = j.name;
         if(j.account) accField.value = j.account;
 
+        // Determinar si es un alumno existente (solo para target students)
+        if(target === 'students') {
+          isExistingStudent = j.existing || false;
+          updateMateriaRequirement(); // Actualizar requerimiento de materia
+        }
+
         // Clear any warning messages
         if(warn){ 
           warn.style.display='none'; 
@@ -331,6 +341,37 @@ function pollUID(){
       setTimeout(pollUID, 700);
     })
     .catch(e => setTimeout(pollUID, 1200));
+}
+
+// Función para actualizar el requerimiento del campo materia
+function updateMateriaRequirement() {
+  var matField = document.getElementById('materia');
+  var warn = document.getElementById('warn');
+  
+  if (!matField) return;
+  
+  if (isExistingStudent) {
+    // Si el alumno ya existe, materia es obligatoria
+    matField.required = true;
+    if (warn) {
+      warn.style.display = 'block';
+      warn.textContent = 'Este alumno ya está registrado. Debe asignar una materia.';
+      warn.style.background = '#ffeaa7';
+      warn.style.padding = '10px';
+      warn.style.borderRadius = '5px';
+      warn.style.border = '1px solid #fdcb6e';
+    }
+  } else {
+    // Si es un alumno nuevo, materia es opcional
+    matField.required = false;
+    if (warn && warn.textContent === 'Este alumno ya está registrado. Debe asignar una materia.') {
+      warn.style.display = 'none';
+      warn.textContent = '';
+      warn.style.background = '';
+      warn.style.padding = '';
+      warn.style.border = '';
+    }
+  }
 }
 
 document.addEventListener('DOMContentLoaded', function(){
@@ -422,6 +463,14 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!/^[0-9]{7}$/.test(acc)){ ev.preventDefault(); setWarn('Cuenta inválida: debe tener 7 dígitos.'); return false; }
     var matSel = document.getElementById('materia');
     var profSel = document.getElementById('profesor');
+    
+    // Validación específica: si el alumno ya existe, materia es obligatoria
+    if (isExistingStudent && (!matSel || !matSel.value)) {
+      ev.preventDefault(); 
+      setWarn('Este alumno ya está registrado. Debe asignar una materia.'); 
+      return false;
+    }
+    
     if(matSel && matSel.value){
       if(profSel && !profSel.value){ ev.preventDefault(); setWarn('Seleccione un profesor para la materia.'); return false; }
     }
@@ -438,7 +487,7 @@ pollUID();
 }
 
 // --------------------------------------------------
-// Poll endpoint JSON - CORREGIDO EXACTAMENTE COMO ALUMNOS
+// Poll endpoint JSON - MODIFICADO para incluir información de alumno existente
 // --------------------------------------------------
 void capture_individual_poll() {
   if (captureUID.length() == 0) {
@@ -515,6 +564,12 @@ void capture_individual_poll() {
   if (nameOut.length()) j += ",\"name\":\"" + jsonEscapeLocal(nameOut) + "\"";
   if (accountOut.length()) j += ",\"account\":\"" + jsonEscapeLocal(accountOut) + "\"";
 
+  // AÑADIDO: Información sobre si el alumno ya existe (solo para target students)
+  if (target == "students") {
+    bool existing = uidExistsInUsers(uidSnapshot);
+    j += ",\"existing\":" + String(existing ? "true" : "false");
+  }
+
   // also check if the account (number) is already used by other UID (across files)
   if (accountOut.length()) {
     auto accFound = findByAccount(accountOut);
@@ -531,7 +586,7 @@ void capture_individual_poll() {
 }
 
 // --------------------------------------------------
-// Confirm (POST) - MANTENIDO SIN CAMBIOS
+// Confirm (POST) - MODIFICADO para validar materia obligatoria en alumnos existentes
 // --------------------------------------------------
 void capture_individual_confirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
@@ -558,6 +613,17 @@ void capture_individual_confirm() {
     server.send(400, "text/plain", "Cuenta inválida"); return;
   }
   for (size_t i = 0; i < account.length(); i++) if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
+
+  // AÑADIDO: Validación específica - Si el alumno ya existe, materia es obligatoria
+  if (target == "students" && uidExistsInUsers(uid) && materia.length() == 0) {
+    String html = htmlHeader("Error - Materia obligatoria");
+    html += "<div class='card'><h3 style='color:#b00020;'>Materia obligatoria para alumno existente</h3>";
+    html += "<p class='small'>Este alumno ya está registrado en el sistema. Debe asignar una materia cuando se vuelve a capturar.</p>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/capture_individual?target=students'>Volver a captura</a> <a class='btn btn-green' href='/students_all'>Ver alumnos</a></p>";
+    html += "</div>" + htmlFooter();
+    server.send(200, "text/html", html);
+    return;
+  }
 
   // server-side: check account uniqueness (across users and teachers)
   auto accFound = findByAccount(account);
