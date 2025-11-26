@@ -28,7 +28,7 @@ extern std::vector<SelfRegSession> selfRegSessions;
 void registerRoutes() {
   server.on("/", handleRoot);
 
-  // Materias / Cursos
+  // Materias / Cursos (mantengo tus rutas explícitas)
   server.on("/materias", handleMaterias);
   server.on("/materias/new", handleMateriasNew);
   server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
@@ -169,8 +169,31 @@ void registerRoutes() {
     File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
   });
 
+  // History & materia history
   server.on("/history", handleHistoryPage);
   server.on("/history.csv", handleHistoryCSV);
   server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);
   server.on("/materia_history", handleMateriaHistoryGET);
+
+  // --- pequeño endpoint JSON adicional (por si el frontend lo usa) ---
+  // GET /profesores_for?materia=...
+  server.on("/profesores_for", HTTP_GET, []() {
+    if (!server.hasArg("materia")) {
+      server.send(400, "application/json", "{\"error\":\"materia required\"}");
+      return;
+    }
+    String mat = server.arg("materia"); mat.trim();
+    std::vector<String> profs = getProfessorsForMateria(mat);
+    String j = "{\"profesores\":[";
+    for (size_t i = 0; i < profs.size(); ++i) {
+      if (i) j += ",";
+      // escape minimal
+      String p = profs[i];
+      p.replace("\\","\\\\");
+      p.replace("\"","\\\"");
+      j += "\"" + p + "\"";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+  });
 }

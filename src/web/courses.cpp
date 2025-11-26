@@ -98,7 +98,7 @@ static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &d
 }
 
 // Devuelve lista única de nombres de materia (sin repetir por profesor)
-static std::vector<String> getUniqueMateriaNames() {
+static std::vector<String> getUniqueMateriaNamesLocal() {
   std::vector<String> out;
   auto courses = loadCourses();
   for (auto &c : courses) {
@@ -110,7 +110,8 @@ static std::vector<String> getUniqueMateriaNames() {
 }
 
 // Devuelve lista de profesores para una materia (puede haber varios)
-static std::vector<String> getProfessorsForMateria(const String &materia) {
+// Función interna (local)
+static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
   std::vector<String> out;
   auto courses = loadCourses();
   for (auto &c : courses) {
@@ -123,8 +124,13 @@ static std::vector<String> getProfessorsForMateria(const String &materia) {
   return out;
 }
 
+// Export: wrapper visible desde otros .cpp (corrige errores de enlace/IntelliSense)
+std::vector<String> getProfessorsForMateria(const String &materia) {
+  return getProfessorsForMateriaLocal(materia);
+}
+
 // Lee los maestros registrados (TEACHERS_FILE) y devuelve lista de nombres únicos
-static std::vector<String> loadRegisteredTeachersNames() {
+static std::vector<String> loadRegisteredTeachersNamesLocal() {
   std::vector<String> out;
   if (!SPIFFS.exists(TEACHERS_FILE)) return out;
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
@@ -147,6 +153,11 @@ static std::vector<String> loadRegisteredTeachersNames() {
   }
   f.close();
   return out;
+}
+
+// Export wrapper for the teacher names list (if other modules expect it)
+std::vector<String> loadRegisteredTeachersNames() {
+  return loadRegisteredTeachersNamesLocal();
 }
 
 // ---------- Handlers: materias ----------
@@ -223,7 +234,7 @@ void handleMaterias() {
 }
 
 void handleMateriasNew() {
-  auto teachers = loadRegisteredTeachersNames();
+  auto teachers = loadRegisteredTeachersNamesLocal();
 
   String html = htmlHeader("Agregar Materia");
   html += "<div class='card'><h2>Agregar nueva materia</h2>";
@@ -349,7 +360,7 @@ void handleMateriasNewScheduleGET() {
         html += "<input type='hidden' name='day' value='" + day + "'>";
         html += "<input type='hidden' name='start' value='" + start + "'>";
         html += "<input type='hidden' name='end' value='" + end + "'>";
-        html += "<input class='btn btn-green' type='submit' value='Agregar'>";
+        html += "<input class='btn btn-green' type='submit' value='Agregar'>"; 
         html += "</form>";
       }
       html += "</td>";
@@ -649,4 +660,3 @@ void registerCoursesHandlers() {
   // nuevo endpoint JSON
   server.on("/profesores_for", HTTP_GET, handleProfesoresForMateriaGET);
 }
-//Correcion
