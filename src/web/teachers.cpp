@@ -1,3 +1,4 @@
+// src/web/teachers.cpp
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -241,7 +242,7 @@ void handleTeachersAll() {
       html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
       if (r.uid.length()) {
         html += "<a class='btn btn-green' href='/capture_edit?uid=" + r.uid + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
-        html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro?\");'>";
+        html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
         html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
         html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
         html += "</form>";
@@ -288,17 +289,133 @@ void handleTeacherRemoveCourse() {
 void handleTeacherDelete() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid");
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) { server.send(500,"text/plain","no file"); return; }
-  std::vector<String> lines; String header = f.readStringUntil('\n'); lines.push_back(header);
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size()>=1 && c[0]==uid) continue;
-    lines.push_back(l);
+
+  // 1) Find teacher name (if any) and collect materias taught by that teacher (from courses)
+  String teacherName = "";
+  File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  if (ft) {
+    String header = ft.readStringUntil('\n'); (void)header;
+    while (ft.available()) {
+      String l = ft.readStringUntil('\n'); l.trim();
+      if (!l.length()) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 2 && c[0] == uid) {
+        teacherName = c[1];
+        break;
+      }
+    }
+    ft.close();
   }
-  f.close();
-  writeAllLines(TEACHERS_FILE, lines);
+
+  // Build list of materias that will be removed because professor==teacherName
+  std::vector<Course> courses = loadCourses();
+  std::vector<String> materiasToRemove;
+  for (auto &c : courses) {
+    if (teacherName.length() && c.profesor == teacherName) {
+      // only add unique materia once
+      bool fnd = false;
+      for (auto &m : materiasToRemove) if (m == c.materia) { fnd = true; break; }
+      if (!fnd) materiasToRemove.push_back(c.materia);
+    }
+  }
+
+  // 2) Remove TEACHERS_FILE rows with that uid
+  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  std::vector<String> newTeacherLines;
+  if (f) {
+    String header = f.readStringUntil('\n'); newTeacherLines.push_back(header);
+    while (f.available()) {
+      String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 1) {
+        String rowUid = c[0];
+        if (rowUid == uid) continue; // skip this teacher
+      }
+      newTeacherLines.push_back(l);
+    }
+    f.close();
+    writeAllLines(TEACHERS_FILE, newTeacherLines);
+  }
+
+  // 3) Remove courses where profesor == teacherName
+  if (teacherName.length()) {
+    std::vector<Course> newCourses;
+    for (auto &c : courses) {
+      if (c.profesor == teacherName) continue;
+      newCourses.push_back(c);
+    }
+    writeCourses(newCourses);
+  }
+
+  // 4) Clean SCHEDULES_FILE: remove schedules that belong to removed course keys or materias that no longer exist
+  // We'll follow similar logic as handleMateriasDeletePOST:
+  File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
+  std::vector<String> slines;
+  if (fs) {
+    String header = fs.readStringUntil('\n'); slines.push_back(header);
+    while (fs.available()) {
+      String l = fs.readStringUntil('\n'); l.trim();
+      if (!l.length()) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 4) {
+        String owner = c[0];
+        bool skip = false;
+        // If owner is "materia||prof" style and matches removed (materia + teacherName) skip
+        for (auto &m : materiasToRemove) {
+          String key = m + String("||") + teacherName;
+          if (owner == key) { skip = true; break; }
+        }
+        if (skip) continue;
+        // If owner == materia and after course removal the materia has no remaining course, remove row
+        for (auto &m : materiasToRemove) {
+          // check if any remaining course still references this materia
+          bool still = false;
+          auto remCourses = loadCourses();
+          for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
+          if (!still && owner == m) { skip = true; break; }
+        }
+        if (skip) continue;
+      }
+      slines.push_back(l);
+    }
+    fs.close();
+    writeAllLines(SCHEDULES_FILE, slines);
+  }
+
+  // 5) Clean USERS_FILE: if a materia got fully removed (no courses remain for it), remove users with that materia
+  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
+  std::vector<String> ulines;
+  if (fu) {
+    String uheader = fu.readStringUntil('\n'); ulines.push_back(uheader);
+    while (fu.available()) {
+      String l = fu.readStringUntil('\n'); l.trim();
+      if (!l.length()) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 4) {
+        String uid_u = c[0], name = c[1], acc = c[2], mm = c[3];
+        bool removeUser = false;
+        for (auto &m : materiasToRemove) {
+          if (mm == m) {
+            // check if any remaining course keeps this materia
+            bool still = false;
+            auto remCourses = loadCourses();
+            for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
+            if (!still) removeUser = true;
+            break;
+          }
+        }
+        if (removeUser) {
+          // optionally log a notification
+          addNotification(uid_u, name, acc, String("Cuenta eliminada: materia removida al borrar maestro ") + teacherName);
+          continue; // skip this user row
+        }
+        ulines.push_back("\"" + uid_u + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + (c.size()>4?c[4]:"") + "\"");
+      } else ulines.push_back(l);
+    }
+    fu.close();
+    writeAllLines(USERS_FILE, ulines);
+  }
+
   server.sendHeader("Location","/teachers_all");
   server.send(303,"text/plain","Deleted");
 }

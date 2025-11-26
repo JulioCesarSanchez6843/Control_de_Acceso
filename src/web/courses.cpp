@@ -8,7 +8,6 @@
 #include <vector>
 
 // ---------- Helpers locales ----------
-
 static const char *COURSE_KEY_SEP = "||";
 
 static String makeCourseKey(const String &materia, const String &profesor) {
@@ -41,7 +40,7 @@ static String urlEncode(const String &str) {
   return encoded;
 }
 
-// ---------- Helper JSON-escape local (asegura que esté disponible aquí) ----------
+// ---------- Helper JSON-escape local ----------
 static String jsonEscape(const String &s) {
   String o = s;
   o.replace("\\", "\\\\");
@@ -51,8 +50,13 @@ static String jsonEscape(const String &s) {
   return o;
 }
 
-// ---------- Manipulación cursos / schedules helpers ----------
+// ---------- Nota importante ----------
+/*
+  loadCourses() y writeCourses() NO se definen aquí para evitar duplicados.
+  Deben existir en files_utils.cpp y estar declaradas en globals.h (ya lo tienes).
+*/
 
+// ---------- Helper: contar cursos con nombre dado ----------
 static int countCoursesWithName(const String &materia) {
   auto courses = loadCourses();
   int cnt = 0;
@@ -135,7 +139,7 @@ static std::vector<String> loadRegisteredTeachersNames() {
     if (l.length() == 0) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 2) {
-      String name = c[1]; // asumimos formato: uid,name,account,materia,created
+      String name = c[1];
       bool found = false;
       for (auto &x : out) if (x == name) { found = true; break; }
       if (!found) out.push_back(name);
@@ -146,7 +150,6 @@ static std::vector<String> loadRegisteredTeachersNames() {
 }
 
 // ---------- Handlers: materias ----------
-
 void handleMaterias() {
   String html = htmlHeader("Materias");
   html += "<div class='card'><h2>Materias disponibles</h2>";
@@ -220,7 +223,6 @@ void handleMaterias() {
 }
 
 void handleMateriasNew() {
-  // Intentar cargar profesores registrados para mostrar en desplegable (si existen)
   auto teachers = loadRegisteredTeachersNames();
 
   String html = htmlHeader("Agregar Materia");
@@ -230,12 +232,10 @@ void handleMateriasNew() {
   html += "Nombre materia:<br><input name='materia' required><br>";
 
   if (teachers.size() == 0) {
-    // No hay profesores registrados -> permitir ingresar texto y avisar
     html += "Profesor (no hay profesores registrados — ingrese nombre):<br>";
     html += "<input name='profesor' required placeholder='Nombre del profesor'><br>";
     html += "<p class='small' style='color:#b00020;'>No se encontraron profesores registrados. Puede registrar profesores en el menú de Maestros o escribir el nombre aquí.</p>";
   } else {
-    // Hay profesores -> desplegable con lista; si quieres permitir texto libre también, se puede añadir.
     html += "Profesor (seleccione):<br>";
     html += "<select name='profesor' required>";
     for (auto &t : teachers) {
@@ -272,7 +272,11 @@ void handleMateriasAddPOST() {
     return;
   }
 
-  addCourse(mat, prof);
+  // Añadir course
+  auto courses = loadCourses();
+  Course nc; nc.materia = mat; nc.profesor = prof; nc.created_at = nowISO();
+  courses.push_back(nc);
+  writeCourses(courses);
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
