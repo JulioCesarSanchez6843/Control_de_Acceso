@@ -91,43 +91,6 @@ static bool studentExistsInMateria(const String &uid, const String &materia) {
   return false;
 }
 
-// Función para obtener el nombre de un usuario por UID
-static String getUserNameByUID(const String &uid) {
-  if (uid.length() == 0) return "";
-  
-  // Buscar en usuarios
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (f) {
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim(); 
-      if (l.length() == 0) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 2 && c[0] == uid) {
-        f.close();
-        return c[1];
-      }
-    }
-    f.close();
-  }
-  
-  // Buscar en maestros
-  File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (ft) {
-    while (ft.available()) {
-      String l = ft.readStringUntil('\n'); l.trim(); 
-      if (l.length() == 0) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 2 && c[0] == uid) {
-        ft.close();
-        return c[1];
-      }
-    }
-    ft.close();
-  }
-  
-  return "";
-}
-
 // Función IDÉNTICA A CAPTURE_INDIVIDUAL: verificar si UID pertenece a un maestro
 static bool uidExistsInTeachers(const String &uid) {
   if (uid.length() == 0) return false;
@@ -295,13 +258,6 @@ void capture_lote_page() {
             teacherMsg.style.color='#111'; teacherMsg.style.fontWeight='700'; teacherMsg.style.textAlign='center';
             teacherMsg.textContent = j.teacher_blocked_message || 'Tarjeta de maestro rechazada';
             bc.appendChild(teacherMsg);
-            
-            // Auto-redirección después de 5 segundos como en capture_individual
-            if (j.restart_after_ms) {
-              setTimeout(function(){
-                window.location.href = '/capture_batch';
-              }, j.restart_after_ms);
-            }
           }
 
           var list = document.getElementById('queue_list');
@@ -360,7 +316,7 @@ void capture_lote_page() {
   server.send(200, "text/html", html);
 }
 
-// Batch poll - COMPLETAMENTE REESCRITO con COMPORTAMIENTO IDÉNTICO A CAPTURE_INDIVIDUAL
+// Batch poll - BLOQUEO TOTAL INMEDIATO: NO PROCESA NADA DE MAESTROS
 void capture_lote_batchPollGET() {
   auto u = readCaptureQueue();
   if (u.size() == 1 && u[0].length() == 0) u.clear();
@@ -378,48 +334,63 @@ void capture_lote_batchPollGET() {
   static unsigned long wrongCardStartTime = 0;
   static unsigned long lastShowWrongRedMs = 0;
   static unsigned long teacherBlockedTime = 0;
-  static String lastBlockedUID = "";
   
   bool wrongCard = false;
   bool teacherBlocked = false;
   String teacherBlockedMessage = "";
 
-  // COMPORTAMIENTO IDÉNTICO A CAPTURE_INDIVIDUAL: BLOQUEO INMEDIATO SIN CAPTURAR DATOS
-  if (captureUID.length() > 0 && captureUID != lastBlockedUID) {
-    // VERIFICACIÓN INMEDIATA: ¿Es maestro? - BLOQUEAR EXACTAMENTE COMO EN CAPTURE_INDIVIDUAL
+  // BLOQUEO TOTAL INMEDIATO - VERIFICACIÓN ANTES DE CUALQUIER PROCESAMIENTO
+  if (captureUID.length() > 0) {
+    // VERIFICACIÓN MÁS TEMPRANA POSIBLE: ¿Es maestro? - BLOQUEO TOTAL
     if (uidExistsInTeachers(captureUID)) {
       teacherBlocked = true;
       teacherBlockedTime = millis();
-      lastBlockedUID = captureUID;
       
       teacherBlockedMessage = "Esta tarjeta ya está registrada como maestro. No puede registrarse en captura por lote.";
       
-      // Log denied IDÉNTICO
-      String recDenied = "\"" + nowISO() + "\"," + "\"" + captureUID + "\"," + "\"MAESTRO_NO_BATCH_BLOCKED\"";
+      // Log denied
+      String recDenied = "\"" + nowISO() + "\"," + "\"" + captureUID + "\"," + "\"MAESTRO_BLOQUEADO_LOTE\"";
       appendLineToFile(DENIED_FILE, recDenied);
       
       // Notificación
-      String teacherName = getUserNameByUID(captureUID);
+      String teacherName = "";
+      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+      if (ft) {
+        while (ft.available()) {
+          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto c = parseQuotedCSVLine(l);
+          if (c.size() >= 2 && c[0] == captureUID) {
+            teacherName = c[1];
+            break;
+          }
+        }
+        ft.close();
+      }
+      
       String notificationMsg = "Tarjeta de maestro BLOQUEADA en captura por lote: " + 
                               (teacherName.length() ? teacherName : "Sin nombre") + 
                               " (UID: " + captureUID + ")";
       addNotification(captureUID, String(""), String(""), notificationMsg);
       
       #ifdef USE_DISPLAY
-      showTemporaryRedMessage("MAESTRO - BLOQUEADO", 4000);
+      showTemporaryRedMessage("MAESTRO - BLOQUEADO", 3000);
       #endif
       
-      // LIMPIAR INMEDIATAMENTE - NO CAPTURAR NINGÚN DATO
+      // LIMPIEZA INMEDIATA Y TOTAL - NO DEJAR RASTRO
       captureUID = "";
       captureName = "";
       captureAccount = "";
       captureDetectedAt = 0;
       
+      // SALIR INMEDIATAMENTE - NO PROCESAR NADA MÁS
       goto send_response;
     }
-    
-    // Si no es maestro, continuar con verificaciones normales
-    else if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
+  }
+
+  // SOLO SI NO ES MAESTRO, CONTINUAR CON EL PROCESAMIENTO NORMAL
+  if (captureUID.length() > 0 && !uidExistsInTeachers(captureUID)) {
+    // Verificar si estamos en modo self-register
+    if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
       if (captureUID != currentSelfRegUID) {
         wrongCard = true;
         if (wrongCardStartTime == 0) wrongCardStartTime = millis();
@@ -434,8 +405,8 @@ void capture_lote_batchPollGET() {
         captureAccount = "";
         captureDetectedAt = 0;
       } else {
-        // VERIFICACIÓN DOBLE: Asegurar que no es maestro
-        if (!uidExistsInTeachers(captureUID) && appendUidToCaptureQueue(captureUID)) {
+        // Tarjeta correcta para self-register
+        if (appendUidToCaptureQueue(captureUID)) {
           captureUID = "";
           captureName = "";
           captureAccount = "";
@@ -445,8 +416,8 @@ void capture_lote_batchPollGET() {
     }
     // Procesamiento normal (sin self-register activo)
     else if (!awaitingSelfRegister) {
-      // VERIFICACIÓN DOBLE: Asegurar que no es maestro antes de agregar
-      if (!uidExistsInTeachers(captureUID) && appendUidToCaptureQueue(captureUID)) {
+      // Agregar a la cola
+      if (appendUidToCaptureQueue(captureUID)) {
         captureUID = "";
         captureName = "";
         captureAccount = "";
@@ -462,11 +433,10 @@ void capture_lote_batchPollGET() {
     wrongCardStartTime = 0;
   }
 
-  if (teacherBlockedTime > 0 && (millis() - teacherBlockedTime) < 5000) {
+  if (teacherBlockedTime > 0 && (millis() - teacherBlockedTime) < 3000) {
     teacherBlocked = true;
   } else {
     teacherBlockedTime = 0;
-    lastBlockedUID = "";
   }
 
   if (lastShowWrongRedMs != 0 && (millis() - lastShowWrongRedMs) > 2500) {
@@ -477,11 +447,17 @@ send_response:
   // Leer la cola actualizada
   u = readCaptureQueue();
 
-  // Construir respuesta JSON - INCLUYENDO CAMPOS IDÉNTICOS A CAPTURE_INDIVIDUAL
+  // Construir respuesta JSON
   String j = "{\"uids\":[";
   for (size_t i = 0; i < u.size(); ++i) {
     if (i) j += ",";
     String uid = u[i];
+    
+    // VERIFICACIÓN EXTRA: No incluir maestros en la respuesta JSON
+    if (uidExistsInTeachers(uid)) {
+      continue; // Saltar maestros
+    }
+    
     String rec = findAnyUserByUID(uid);
     bool reg = rec.length() > 0;
     String name="", account="", materia="";
@@ -505,14 +481,14 @@ send_response:
   j += "\"card_triggered\":" + String(cardTriggered ? "true" : "false") + ",";
   j += "\"wrong_card\":" + String(wrongCard ? "true" : "false") + ",";
   
-  // CAMBIO CRÍTICO: Usar "teacher_blocked" en lugar de "teacher_rejected" para coincidir con capture_individual
+  // BLOQUEO DE MAESTROS
   j += "\"teacher_blocked\":" + String(teacherBlocked ? "true" : "false") + ",";
   if (teacherBlocked) {
-    j += "\"teacher_blocked_message\":\"" + jsonEscape(teacherBlockedMessage) + "\",";
-    j += "\"restart_after_ms\":5000,"; // Auto-redirección después de 5 segundos
+    j += "\"teacher_blocked_message\":\"" + jsonEscape(teacherBlockedMessage) + "\"";
+  } else {
+    j += "\"teacher_blocked_message\":\"\"";
   }
   
-  j += "\"awaiting_uid\":\"" + jsonEscape(currentSelfRegUID) + "\"";
   j += "}";
 
   server.send(200, "application/json", j);
@@ -575,9 +551,10 @@ void capture_lote_generateLinksPOST() {
     String uid = ln; uid.trim();
     if (uid.length() == 0) continue;
     
-    // VERIFICACIÓN: No generar links para maestros
+    // BLOQUEO TOTAL: No generar links para maestros
     if (uidExistsInTeachers(uid)) {
-      continue;
+      Serial.println("BLOQUEO EN GENERATE LINKS: UID maestro detectado y omitido - " + uid);
+      continue; // NO generar QR para maestros
     }
     
     uint32_t r = (uint32_t)esp_random();
@@ -594,7 +571,18 @@ void capture_lote_generateLinksPOST() {
     urls.push_back(String("/self_register?token=") + s.token);
   }
 
+  // Limpiar la cola después de generar links
   clearCaptureQueueFile();
+
+  // Si no se generaron URLs porque todos eran maestros, mostrar mensaje y redirigir
+  if (urls.size() == 0) {
+    String html = htmlHeader("Error - No se generaron links");
+    html += "<div class='card'><h2>No se generaron links</h2>";
+    html += "<p class='small'>No se pudieron generar links porque todas las tarjetas en la cola son de maestros (no permitidos en captura por lote).</p>";
+    html += "<p style='margin-top:10px'><a class='btn btn-blue' href='/capture_batch'>Volver a Captura por Lote</a></p></div>" + htmlFooter();
+    server.send(200, "text/html", html);
+    return;
+  }
 
   String html = htmlHeader("Links de Auto-registro");
   html += "<div class='card'><h2>Links generados</h2>";
@@ -606,7 +594,7 @@ void capture_lote_generateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
-// Finish batch: MODIFICADO con BLOQUEO EXTRA para maestros
+// Finish batch: BLOQUEO TOTAL DE MAESTROS
 void capture_lote_finishPOST() {
   auto q = readCaptureQueue();
   if (q.size() == 0) {
@@ -620,7 +608,6 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  // NO BLOQUEAR por self-register - se puede terminar incluso durante registro
   // Determine chosen materia: if supplied use it; else try schedule
   String chosenMateria;
   if (server.hasArg("materia")) {
@@ -648,20 +635,44 @@ void capture_lote_finishPOST() {
     uid.trim();
     if (uid.length() == 0) continue;
 
-    // VERIFICACIÓN EXTRA AGGRESIVA: Si UID pertenece a un maestro, skip y mark denied
+    // BLOQUEO TOTAL: Si UID pertenece a un maestro, NO PROCESAR
     if (uidExistsInTeachers(uid)) {
-      String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_NO_BATCH_FINISH\"";
+      String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_BLOQUEADO_FINISH\"";
       appendLineToFile(DENIED_FILE, recDenied);
       
-      String teacherName = getUserNameByUID(uid);
+      String teacherName = "";
+      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+      if (ft) {
+        while (ft.available()) {
+          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto c = parseQuotedCSVLine(l);
+          if (c.size() >= 2 && c[0] == uid) {
+            teacherName = c[1];
+            break;
+          }
+        }
+        ft.close();
+      }
+      
       teacherList.push_back(uid + " - " + (teacherName.length() ? teacherName : "Sin nombre"));
       continue;
     }
 
     // VERIFICAR SI EL ALUMNO YA ESTÁ REGISTRADO EN ESTA MATERIA
     if (studentExistsInMateria(uid, chosenMateria)) {
-      // El alumno ya está registrado en esta materia - NO registrar de nuevo
-      String studentName = getUserNameByUID(uid);
+      String studentName = "";
+      File fu = SPIFFS.open(USERS_FILE, FILE_READ);
+      if (fu) {
+        while (fu.available()) {
+          String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          auto c = parseQuotedCSVLine(l);
+          if (c.size() >= 2 && c[0] == uid) {
+            studentName = c[1];
+            break;
+          }
+        }
+        fu.close();
+      }
       duplicateList.push_back(uid + " - " + (studentName.length() ? studentName : "Sin nombre"));
       continue;
     }
@@ -670,7 +681,6 @@ void capture_lote_finishPOST() {
     String rec = findAnyUserByUID(uid);
     
     if (rec.length() > 0) {
-      // parse to get name/account
       auto c = parseQuotedCSVLine(rec);
       String name = (c.size() > 1 ? c[1] : "");
       String account = (c.size() > 2 ? c[2] : "");
@@ -679,7 +689,6 @@ void capture_lote_finishPOST() {
       String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
       appendLineToFile(USERS_FILE, userRow);
       
-      // Registrar en lista de éxito
       successList.push_back(uid + " - " + (name.length() ? name : "Sin nombre"));
       
       // append attendance
@@ -690,13 +699,11 @@ void capture_lote_finishPOST() {
       String userRow = "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
       appendLineToFile(USERS_FILE, userRow);
       
-      // Registrar en lista de nuevos usuarios
       newUserList.push_back(uid);
       
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, att);
       
-      // Optionally notify admin that a new user was auto-created with blank data
       addNotification(uid, String(""), String(""), String("Batch capture: usuario no registrado. Se creó fila nueva (sin nombre/cuenta)."));
     }
   }
@@ -708,7 +715,7 @@ void capture_lote_finishPOST() {
   showCaptureMode(false,false);
   #endif
 
-  // Mostrar informe final en lugar de redirigir inmediatamente
+  // Mostrar informe final
   String html = htmlHeader("Informe de Captura por Lote");
   html += "<div class='card'><h2>Informe de Captura por Lote</h2>";
   html += "<p class='small'>Materia: <strong>" + htmlEscape(chosenMateria) + "</strong></p>";

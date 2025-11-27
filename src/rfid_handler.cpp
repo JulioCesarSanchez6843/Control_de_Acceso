@@ -243,7 +243,7 @@ void rfidLoopHandler() {
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 
-  // Lógica para ALUMNOS (igual que antes)
+  // Lógica para ALUMNOS
   if (userRows.size() > 0) {
     String name = (userRows.size() > 0 && userRows[0].size() > 1 ? userRows[0][1] : "");
     String account = (userRows.size() > 0 && userRows[0].size() > 2 ? userRows[0][2] : "");
@@ -264,6 +264,7 @@ void rfidLoopHandler() {
     }
 
     if (scheduleBaseMat.length() > 0) {
+      // Hay clase en curso; verificar pertenencia
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
       bool hasCurrent = false;
@@ -291,21 +292,20 @@ void rfidLoopHandler() {
         return;
       }
     } else {
+      // NO hay clase en el horario actual -> permitimos entrada pero GENERAMOS notificación
       if (!userMats.empty()) {
         String chosenMat = userMats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMat + "\"," + "\"entrada\"";
         appendLineToFile(ATT_FILE, rec);
-
-        // --- NUEVA NOTIFICACIÓN: alumno entra cuando NO hay clase (se generaba como acceso normal antes) ---
-        String adminNote = "Acceso fuera de horario (no hay clase). Usuario: " + name + " (" + account + ")";
-        addNotification(uid, name, account, adminNote);
-        // ------------------------------------------------------------------------------------------
-
+        // NOTIFICACIÓN: entrada fuera de horario (alumno)
+        String note = "Entrada fuera de horario: Usuario: " + name + " (" + account + "). Materia registrada: " + chosenMat;
+        addNotification(uid, name, account, note);
         puerta.write(90);
         showAccessGranted(name, chosenMat, uid);
         puerta.write(0);
         ledOff();
       } else {
+        // Sin materia asignada -> denegar y notificar
         String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size()>1?userRows[0][1]:"") : "");
         addNotification(uid, String(""), String(""), note);
         appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA\""));
@@ -322,7 +322,7 @@ void rfidLoopHandler() {
     return;
   }
 
-  // Lógica para TEACHERS (misma que la de alumnos, usando teacherMatsForUID)
+  // Lógica para TEACHERS
   if (isTeacher) {
     auto cols = parseQuotedCSVLine(teacherRow);
     String tname = (cols.size() > 1 ? cols[1] : "");
@@ -331,6 +331,7 @@ void rfidLoopHandler() {
     std::vector<String> tmats = teacherMatsForUID(uid);
 
     if (scheduleBaseMat.length() > 0) {
+      // Hay una materia en curso en schedule -> verificar si el teacher corresponde
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
       bool hasCurrent = false;
@@ -356,16 +357,14 @@ void rfidLoopHandler() {
         return;
       }
     } else {
+      // NO hay clase en horario: permitir entrada PERO notificar (maestro entró fuera de horario)
       if (!tmats.empty()) {
         String chosenMat = tmats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + chosenMat + "\"," + "\"entrada-teacher\"";
         appendLineToFile(ATT_FILE, rec);
-
-        // --- NUEVA NOTIFICACIÓN: maestro entra cuando NO hay clase (se generaba como acceso normal antes) ---
-        String adminNote = "Acceso (maestro) fuera de horario (no hay clase). Maestro: " + tname + " (" + tacc + ")";
-        addNotification(uid, tname, tacc, adminNote);
-        // -----------------------------------------------------------------------------------------
-
+        // Notificación: maestro entrando fuera de horario
+        String note = "Entrada fuera de horario (maestro): " + tname + " (" + tacc + "). Materia asociada: " + chosenMat;
+        addNotification(uid, tname, tacc, note);
         puerta.write(90);
         showAccessGranted(tname, chosenMat, uid);
         puerta.write(0);

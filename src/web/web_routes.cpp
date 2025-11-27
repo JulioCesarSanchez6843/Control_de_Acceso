@@ -1,3 +1,4 @@
+// src/web/web_routes.cpp
 #include <Arduino.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -16,6 +17,7 @@
 #include "web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
 #include "teachers.h"       // handlers para maestros
+#include "edit.h"           // si no existiera, quítalo o crea el header correspondiente
 
 // Declaraciones externas para acceder a las variables de self-register
 extern volatile bool awaitingSelfRegister;
@@ -24,10 +26,17 @@ extern String currentSelfRegToken;
 extern volatile bool blockRFIDForSelfReg;
 extern std::vector<SelfRegSession> selfRegSessions;
 
+// ----- Si agregaste nuevas rutas pero aún no declaraste sus prototipos en headers,
+//       las declaramos aquí para evitar errores de compilación. Si ya están en
+//       notifications.h puedes eliminar estas líneas.
+void handleNotificationsDeletePOST();
+void handleNotificationsMarkPOST();
+// -----
+
 void registerRoutes() {
   server.on("/", handleRoot);
 
-  // Materias / Cursos (mantengo tus rutas explícitas)
+  // Materias / Cursos
   server.on("/materias", handleMaterias);
   server.on("/materias/new", handleMateriasNew);
   server.on("/materias_add", HTTP_POST, handleMateriasAddPOST);
@@ -123,8 +132,7 @@ void registerRoutes() {
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
   server.on("/capture_edit_post", HTTP_POST, handleCaptureEditPost);
 
-  // NOTE: ruta /status removida intencionalmente porque handleStatus() fue eliminada.
-  // Si quieres volver a exponer métricas del ESP reintroduce handleStatus() o registra otra ruta aquí.
+  server.on("/status", handleStatus);
 
   server.on("/schedules", HTTP_GET, handleSchedulesGrid);
   server.on("/schedules/edit", HTTP_GET, handleSchedulesEditGrid);
@@ -135,8 +143,12 @@ void registerRoutes() {
   server.on("/schedules_for_add", HTTP_POST, handleSchedulesForMateriaAddPOST);
   server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST);
 
+  // Notifications: lista + acciones (clear ya existía)
   server.on("/notifications", handleNotificationsPage);
   server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST);
+  // Rutas nuevas: eliminar una sola notificación y marcar como leído/no leído
+  server.on("/notifications_delete", HTTP_POST, handleNotificationsDeletePOST);
+  server.on("/notifications_mark", HTTP_POST, handleNotificationsMarkPOST);
 
   server.on("/edit", handleEditGet);
   server.on("/edit_post", HTTP_POST, handleEditPost);
@@ -169,31 +181,8 @@ void registerRoutes() {
     File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
   });
 
-  // History & materia history
   server.on("/history", handleHistoryPage);
   server.on("/history.csv", handleHistoryCSV);
   server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);
   server.on("/materia_history", handleMateriaHistoryGET);
-
-  // --- pequeño endpoint JSON adicional (por si el frontend lo usa) ---
-  // GET /profesores_for?materia=...
-  server.on("/profesores_for", HTTP_GET, []() {
-    if (!server.hasArg("materia")) {
-      server.send(400, "application/json", "{\"error\":\"materia required\"}");
-      return;
-    }
-    String mat = server.arg("materia"); mat.trim();
-    std::vector<String> profs = getProfessorsForMateria(mat);
-    String j = "{\"profesores\":[";
-    for (size_t i = 0; i < profs.size(); ++i) {
-      if (i) j += ",";
-      // escape minimal
-      String p = profs[i];
-      p.replace("\\","\\\\");
-      p.replace("\"","\\\"");
-      j += "\"" + p + "\"";
-    }
-    j += "]}";
-    server.send(200, "application/json", j);
-  });
 }
