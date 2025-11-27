@@ -65,22 +65,95 @@ static String computeScheduleBaseMat() {
   return scheduleBaseMat;
 }
 
-// New helper: try append uid to capture queue but refuse if it's a teacher.
-static bool appendUidToCaptureQueueIfStudent(const String &uid) {
-  if (uid.length() == 0) return false;
-  // If it's a teacher, do not allow adding to batch
-  String tr = findTeacherByUID(uid);
-  if (tr.length() > 0) {
-    // Log denied and notify
-    String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_NO_BATCH\"";
-    appendLineToFile(DENIED_FILE, recDenied);
-    addNotification(uid, String(""), String(""), String("Intento de captura por lote de tarjeta registrada como maestro (no permitido)."));
-    #ifdef USE_DISPLAY
-    showTemporaryRedMessage("Maestro - no permitido en Lote", 2000);
-    #endif
-    return false;
+// Función para verificar si un alumno ya está registrado en una materia específica
+static bool studentExistsInMateria(const String &uid, const String &materia) {
+  if (uid.length() == 0 || materia.length() == 0) return false;
+  
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) return false;
+  
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); 
+    l.trim();
+    if (l.length() == 0) continue;
+    
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 4) {
+      String uidc = c[0];
+      String matc = c[3];
+      if (uidc == uid && matc == materia) { 
+        f.close(); 
+        return true; 
+      }
+    }
   }
-  return appendUidToCaptureQueue(uid);
+  f.close();
+  return false;
+}
+
+// Función para obtener el nombre de un usuario por UID
+static String getUserNameByUID(const String &uid) {
+  if (uid.length() == 0) return "";
+  
+  // Buscar en usuarios
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (f) {
+    while (f.available()) {
+      String l = f.readStringUntil('\n'); l.trim(); 
+      if (l.length() == 0) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 2 && c[0] == uid) {
+        f.close();
+        return c[1];
+      }
+    }
+    f.close();
+  }
+  
+  // Buscar en maestros
+  File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  if (ft) {
+    while (ft.available()) {
+      String l = ft.readStringUntil('\n'); l.trim(); 
+      if (l.length() == 0) continue;
+      auto c = parseQuotedCSVLine(l);
+      if (c.size() >= 2 && c[0] == uid) {
+        ft.close();
+        return c[1];
+      }
+    }
+    ft.close();
+  }
+  
+  return "";
+}
+
+// Función IDÉNTICA A CAPTURE_INDIVIDUAL: verificar si UID pertenece a un maestro
+static bool uidExistsInTeachers(const String &uid) {
+  if (uid.length() == 0) return false;
+  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+  }
+  f.close();
+  return false;
+}
+
+// Función IDÉNTICA A CAPTURE_INDIVIDUAL: verificar si UID pertenece a un usuario/alumno
+static bool uidExistsInUsers(const String &uid) {
+  if (uid.length() == 0) return false;
+  File f = SPIFFS.open(USERS_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+  }
+  f.close();
+  return false;
 }
 
 // -------------------- Page --------------------
@@ -122,6 +195,7 @@ void capture_lote_page() {
   String html = htmlHeader("Capturar - Batch");
   html += "<div class='card'><h2>Batch capture</h2>";
   html += "<p class='small'>Acerque varias tarjetas; las UIDs quedarán en una cola. Revise los datos a la derecha y luego 'Terminar y Guardar'.</p>";
+  html += "<p class='small' style='color:#b00020;'><strong>Nota:</strong> Las tarjetas de maestros serán rechazadas automáticamente.</p>";
 
   html += "<div style='display:flex;gap:12px;align-items:flex-start;'>";
   html += "<div style='width:260px;display:flex;flex-direction:column;gap:8px;'>";
@@ -191,39 +265,42 @@ void capture_lote_page() {
           var cntEl = document.getElementById('queue_count');
           if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
           
-          // NO BLOQUEAR POR SELF-REGISTER - solo mostrar info
           var bc = document.getElementById('banners_container');
           
+          // Limpiar todos los mensajes previos
+          bc.innerHTML = '';
+
           // Mensaje informativo amarillo durante self-register
           if (j.awaiting) {
-            if (bc && !document.getElementById('batch_yellow_msg')) {
-              var y = document.createElement('div'); 
-              y.id='batch_yellow_msg';
-              y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
-              y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
-              y.innerHTML='Atención: Registrando nuevo usuario. No pasar tarjeta hasta terminar el registro.';
-              bc.appendChild(y);
-            }
-            var ex = document.getElementById('batch_yellow_msg');
-            if (ex) ex.innerHTML = 'Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
-          } else {
-            var e = document.getElementById('batch_yellow_msg'); 
-            if (e) e.remove();
+            var y = document.createElement('div'); 
+            y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
+            y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
+            y.innerHTML='Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
+            bc.appendChild(y);
           }
 
           // Mensaje rojo sincronizado con display cuando hay tarjeta incorrecta
           if (j.wrong_card) {
-            if (bc && !document.getElementById('batch_red_msg')) {
-              var red = document.createElement('div'); 
-              red.id='batch_red_msg';
-              red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
-              red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
-              red.textContent = 'Espere su turno: registro en curso';
-              bc.insertBefore(red, bc.firstChild);
-              setTimeout(function(){ 
-                var rr = document.getElementById('batch_red_msg'); 
-                if (rr) rr.remove(); 
-              }, 2000);
+            var red = document.createElement('div'); 
+            red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
+            red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
+            red.textContent = 'Espere su turno: registro en curso';
+            bc.appendChild(red);
+          }
+
+          // Mensaje para tarjetas de maestro rechazadas - COMPORTAMIENTO IDÉNTICO A CAPTURE_INDIVIDUAL
+          if (j.teacher_blocked) {
+            var teacherMsg = document.createElement('div'); 
+            teacherMsg.style.marginBottom='8px'; teacherMsg.style.padding='8px'; teacherMsg.style.borderRadius='6px'; teacherMsg.style.background='#ffeaa7';
+            teacherMsg.style.color='#111'; teacherMsg.style.fontWeight='700'; teacherMsg.style.textAlign='center';
+            teacherMsg.textContent = j.teacher_blocked_message || 'Tarjeta de maestro rechazada';
+            bc.appendChild(teacherMsg);
+            
+            // Auto-redirección después de 5 segundos como en capture_individual
+            if (j.restart_after_ms) {
+              setTimeout(function(){
+                window.location.href = '/capture_batch';
+              }, j.restart_after_ms);
             }
           }
 
@@ -258,7 +335,6 @@ void capture_lote_page() {
           var finishBtn = document.getElementById('finishBtn');
           if (finishBtn) {
             var disable = false;
-            // NO deshabilitar por self-register
             if (!scheduleHasMateria) {
               if (!selectedMateria || selectedMateria.trim()=='') disable = true;
             }
@@ -284,7 +360,7 @@ void capture_lote_page() {
   server.send(200, "text/html", html);
 }
 
-// Batch poll - CON LOGICA DE MENSAJE ROJO SINCRONIZADO DEL SEGUNDO CÓDIGO
+// Batch poll - COMPLETAMENTE REESCRITO con COMPORTAMIENTO IDÉNTICO A CAPTURE_INDIVIDUAL
 void capture_lote_batchPollGET() {
   auto u = readCaptureQueue();
   if (u.size() == 1 && u[0].length() == 0) u.clear();
@@ -298,13 +374,52 @@ void capture_lote_batchPollGET() {
     }
   }
 
-  // LÓGICA DEL MENSAJE ROJO DEL SEGUNDO CÓDIGO (FUNCIONAL)
+  // Variables de estado
   static unsigned long wrongCardStartTime = 0;
   static unsigned long lastShowWrongRedMs = 0;
+  static unsigned long teacherBlockedTime = 0;
+  static String lastBlockedUID = "";
+  
   bool wrongCard = false;
+  bool teacherBlocked = false;
+  String teacherBlockedMessage = "";
 
-  if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
-    if (captureUID.length() > 0) {
+  // COMPORTAMIENTO IDÉNTICO A CAPTURE_INDIVIDUAL: BLOQUEO INMEDIATO SIN CAPTURAR DATOS
+  if (captureUID.length() > 0 && captureUID != lastBlockedUID) {
+    // VERIFICACIÓN INMEDIATA: ¿Es maestro? - BLOQUEAR EXACTAMENTE COMO EN CAPTURE_INDIVIDUAL
+    if (uidExistsInTeachers(captureUID)) {
+      teacherBlocked = true;
+      teacherBlockedTime = millis();
+      lastBlockedUID = captureUID;
+      
+      teacherBlockedMessage = "Esta tarjeta ya está registrada como maestro. No puede registrarse en captura por lote.";
+      
+      // Log denied IDÉNTICO
+      String recDenied = "\"" + nowISO() + "\"," + "\"" + captureUID + "\"," + "\"MAESTRO_NO_BATCH_BLOCKED\"";
+      appendLineToFile(DENIED_FILE, recDenied);
+      
+      // Notificación
+      String teacherName = getUserNameByUID(captureUID);
+      String notificationMsg = "Tarjeta de maestro BLOQUEADA en captura por lote: " + 
+                              (teacherName.length() ? teacherName : "Sin nombre") + 
+                              " (UID: " + captureUID + ")";
+      addNotification(captureUID, String(""), String(""), notificationMsg);
+      
+      #ifdef USE_DISPLAY
+      showTemporaryRedMessage("MAESTRO - BLOQUEADO", 4000);
+      #endif
+      
+      // LIMPIAR INMEDIATAMENTE - NO CAPTURAR NINGÚN DATO
+      captureUID = "";
+      captureName = "";
+      captureAccount = "";
+      captureDetectedAt = 0;
+      
+      goto send_response;
+    }
+    
+    // Si no es maestro, continuar con verificaciones normales
+    else if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
       if (captureUID != currentSelfRegUID) {
         wrongCard = true;
         if (wrongCardStartTime == 0) wrongCardStartTime = millis();
@@ -314,14 +429,13 @@ void capture_lote_batchPollGET() {
           lastShowWrongRedMs = millis();
         }
         #endif
-        // discard the card to avoid blocking future batches
         captureUID = "";
         captureName = "";
         captureAccount = "";
         captureDetectedAt = 0;
       } else {
-        // correct card for self-register -> try append but forbid teacher
-        if (appendUidToCaptureQueueIfStudent(captureUID)) {
+        // VERIFICACIÓN DOBLE: Asegurar que no es maestro
+        if (!uidExistsInTeachers(captureUID) && appendUidToCaptureQueue(captureUID)) {
           captureUID = "";
           captureName = "";
           captureAccount = "";
@@ -329,30 +443,41 @@ void capture_lote_batchPollGET() {
         }
       }
     }
+    // Procesamiento normal (sin self-register activo)
+    else if (!awaitingSelfRegister) {
+      // VERIFICACIÓN DOBLE: Asegurar que no es maestro antes de agregar
+      if (!uidExistsInTeachers(captureUID) && appendUidToCaptureQueue(captureUID)) {
+        captureUID = "";
+        captureName = "";
+        captureAccount = "";
+        captureDetectedAt = 0;
+      }
+    }
   }
 
+  // Control de tiempos para mensajes
   if (wrongCardStartTime > 0 && (millis() - wrongCardStartTime) < 2500) {
     wrongCard = true;
   } else {
     wrongCardStartTime = 0;
-    if (lastShowWrongRedMs != 0 && (millis() - lastShowWrongRedMs) > 2500) lastShowWrongRedMs = 0;
   }
 
-  // Procesar tarjetas normales (cuando no hay self-register activo)
-  if (!awaitingSelfRegister && captureUID.length() > 0) {
-    if (appendUidToCaptureQueueIfStudent(captureUID)) {
-      captureUID = "";
-      captureName = "";
-      captureAccount = "";
-      captureDetectedAt = 0;
-    } else {
-      // if not appended because teacher, already logged/denied by helper
-      captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
-    }
+  if (teacherBlockedTime > 0 && (millis() - teacherBlockedTime) < 5000) {
+    teacherBlocked = true;
+  } else {
+    teacherBlockedTime = 0;
+    lastBlockedUID = "";
   }
 
+  if (lastShowWrongRedMs != 0 && (millis() - lastShowWrongRedMs) > 2500) {
+    lastShowWrongRedMs = 0;
+  }
+
+send_response:
+  // Leer la cola actualizada
   u = readCaptureQueue();
 
+  // Construir respuesta JSON - INCLUYENDO CAMPOS IDÉNTICOS A CAPTURE_INDIVIDUAL
   String j = "{\"uids\":[";
   for (size_t i = 0; i < u.size(); ++i) {
     if (i) j += ",";
@@ -379,6 +504,14 @@ void capture_lote_batchPollGET() {
   j += "\"awaiting\":" + String(awaitingSelfRegister ? "true" : "false") + ",";
   j += "\"card_triggered\":" + String(cardTriggered ? "true" : "false") + ",";
   j += "\"wrong_card\":" + String(wrongCard ? "true" : "false") + ",";
+  
+  // CAMBIO CRÍTICO: Usar "teacher_blocked" en lugar de "teacher_rejected" para coincidir con capture_individual
+  j += "\"teacher_blocked\":" + String(teacherBlocked ? "true" : "false") + ",";
+  if (teacherBlocked) {
+    j += "\"teacher_blocked_message\":\"" + jsonEscape(teacherBlockedMessage) + "\",";
+    j += "\"restart_after_ms\":5000,"; // Auto-redirección después de 5 segundos
+  }
+  
   j += "\"awaiting_uid\":\"" + jsonEscape(currentSelfRegUID) + "\"";
   j += "}";
 
@@ -441,6 +574,12 @@ void capture_lote_generateLinksPOST() {
   for (auto &ln : lines) {
     String uid = ln; uid.trim();
     if (uid.length() == 0) continue;
+    
+    // VERIFICACIÓN: No generar links para maestros
+    if (uidExistsInTeachers(uid)) {
+      continue;
+    }
+    
     uint32_t r = (uint32_t)esp_random();
     uint32_t m = (uint32_t)millis();
     char buf[32];
@@ -467,7 +606,7 @@ void capture_lote_generateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
-// Finish batch: now also upserts USERS_FILE rows to add materia to users (or creates user rows)
+// Finish batch: MODIFICADO con BLOQUEO EXTRA para maestros
 void capture_lote_finishPOST() {
   auto q = readCaptureQueue();
   if (q.size() == 0) {
@@ -498,42 +637,65 @@ void capture_lote_finishPOST() {
     return;
   }
 
+  // Vectores para el informe final
+  std::vector<String> successList;    // Registros exitosos
+  std::vector<String> duplicateList;  // Ya estaban registrados en la materia
+  std::vector<String> teacherList;    // Son maestros (no permitidos)
+  std::vector<String> newUserList;    // Nuevos usuarios creados
+
   // Process queue: for each UID, append ATT and ensure USERS_FILE has a row for chosenMateria
   for (auto &uid : q) {
     uid.trim();
     if (uid.length() == 0) continue;
 
-    // If UID belongs to a teacher, skip and mark denied
-    String trec = findTeacherByUID(uid);
-    if (trec.length() > 0) {
+    // VERIFICACIÓN EXTRA AGGRESIVA: Si UID pertenece a un maestro, skip y mark denied
+    if (uidExistsInTeachers(uid)) {
       String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_NO_BATCH_FINISH\"";
       appendLineToFile(DENIED_FILE, recDenied);
-      addNotification(uid, String(""), String(""), String("Intento de finalizar lote con tarjeta de maestro (no permitido)."));
+      
+      String teacherName = getUserNameByUID(uid);
+      teacherList.push_back(uid + " - " + (teacherName.length() ? teacherName : "Sin nombre"));
+      continue;
+    }
+
+    // VERIFICAR SI EL ALUMNO YA ESTÁ REGISTRADO EN ESTA MATERIA
+    if (studentExistsInMateria(uid, chosenMateria)) {
+      // El alumno ya está registrado en esta materia - NO registrar de nuevo
+      String studentName = getUserNameByUID(uid);
+      duplicateList.push_back(uid + " - " + (studentName.length() ? studentName : "Sin nombre"));
       continue;
     }
 
     // find first user row (if any)
     String rec = findAnyUserByUID(uid);
+    
     if (rec.length() > 0) {
       // parse to get name/account
       auto c = parseQuotedCSVLine(rec);
       String name = (c.size() > 1 ? c[1] : "");
       String account = (c.size() > 2 ? c[2] : "");
-      // If user doesn't yet have this materia recorded, append a new USERS_FILE row with same name/account/materia
-      if (!existsUserUidMateria(uid, chosenMateria)) {
-        String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
-        appendLineToFile(USERS_FILE, userRow);
-      }
+      
+      // Añadir fila en USERS_FILE para esta materia
+      String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
+      appendLineToFile(USERS_FILE, userRow);
+      
+      // Registrar en lista de éxito
+      successList.push_back(uid + " - " + (name.length() ? name : "Sin nombre"));
+      
       // append attendance
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, att);
     } else {
-      // user not registered: create user row with empty name/account and chosenMateria, plus attendance or denied?
-      // We'll create user row and then write attendance
+      // user not registered: create user row with empty name/account and chosenMateria
       String userRow = "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
       appendLineToFile(USERS_FILE, userRow);
+      
+      // Registrar en lista de nuevos usuarios
+      newUserList.push_back(uid);
+      
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, att);
+      
       // Optionally notify admin that a new user was auto-created with blank data
       addNotification(uid, String(""), String(""), String("Batch capture: usuario no registrado. Se creó fila nueva (sin nombre/cuenta)."));
     }
@@ -546,9 +708,67 @@ void capture_lote_finishPOST() {
   showCaptureMode(false,false);
   #endif
 
+  // Mostrar informe final en lugar de redirigir inmediatamente
+  String html = htmlHeader("Informe de Captura por Lote");
+  html += "<div class='card'><h2>Informe de Captura por Lote</h2>";
+  html += "<p class='small'>Materia: <strong>" + htmlEscape(chosenMateria) + "</strong></p>";
+  html += "<p>Total de UIDs procesados: <strong>" + String(q.size()) + "</strong></p>";
+  
+  // Mostrar resumen por categorías
+  html += "<div style='margin:15px 0; padding:10px; background:#f8f9fa; border-radius:5px;'>";
+  html += "<h3 style='margin-top:0;'>Resumen:</h3>";
+  html += "<p>✅ Registros exitosos: <strong>" + String(successList.size()) + "</strong></p>";
+  html += "<p>🆕 Nuevos usuarios creados: <strong>" + String(newUserList.size()) + "</strong></p>";
+  html += "<p>⚠️  Duplicados (ya registrados): <strong>" + String(duplicateList.size()) + "</strong></p>";
+  html += "<p>🚫 Maestros (no permitidos): <strong>" + String(teacherList.size()) + "</strong></p>";
+  html += "</div>";
+  
+  // Mostrar detalles de duplicados si los hay
+  if (duplicateList.size() > 0) {
+    html += "<div style='margin:15px 0; padding:10px; background:#fff3cd; border:1px solid #ffeaa7; border-radius:5px;'>";
+    html += "<h4 style='color:#856404; margin-top:0;'>Alumnos ya registrados en esta materia:</h4>";
+    html += "<ul style='margin-bottom:0;'>";
+    for (auto &dup : duplicateList) {
+      html += "<li>" + htmlEscape(dup) + "</li>";
+    }
+    html += "</ul>";
+    html += "<p class='small' style='margin:8px 0 0 0; color:#856404;'>Estos alumnos no fueron registrados nuevamente.</p>";
+    html += "</div>";
+  }
+  
+  // Mostrar detalles de maestros si los hay
+  if (teacherList.size() > 0) {
+    html += "<div style='margin:15px 0; padding:10px; background:#f8d7da; border:1px solid #f5c6cb; border-radius:5px;'>";
+    html += "<h4 style='color:#721c24; margin-top:0;'>Maestros detectados (no permitidos en lote):</h4>";
+    html += "<ul style='margin-bottom:0;'>";
+    for (auto &teacher : teacherList) {
+      html += "<li>" + htmlEscape(teacher) + "</li>";
+    }
+    html += "</ul>";
+    html += "</div>";
+  }
+  
+  // Mostrar detalles de nuevos usuarios si los hay
+  if (newUserList.size() > 0) {
+    html += "<div style='margin:15px 0; padding:10px; background:#d1ecf1; border:1px solid #bee5eb; border-radius:5px;'>";
+    html += "<h4 style='color:#0c5460; margin-top:0;'>Nuevos usuarios creados (sin nombre/cuenta):</h4>";
+    html += "<ul style='margin-bottom:0;'>";
+    for (auto &newUser : newUserList) {
+      html += "<li>" + htmlEscape(newUser) + "</li>";
+    }
+    html += "</ul>";
+    html += "<p class='small' style='margin:8px 0 0 0; color:#0c5460;'>Estos usuarios necesitan completar sus datos posteriormente.</p>";
+    html += "</div>";
+  }
+  
   String rt = server.hasArg("return_to") ? server.arg("return_to") : String("/capture");
-  server.sendHeader("Location", rt);
-  server.send(303, "text/plain", "finished");
+  html += "<div style='margin-top:20px;'>";
+  html += "<a class='btn btn-blue' href='" + htmlEscape(rt) + "'>Volver al Inicio</a>";
+  html += "<a class='btn btn-green' href='/capture_batch' style='margin-left:10px;'>Nueva Captura por Lote</a>";
+  html += "</div>";
+  html += "</div>" + htmlFooter();
+
+  server.send(200, "text/html", html);
 }
 
 // CANCEL handler: limpiar cola y limpiar estado de captura y self-register para evitar tarjeta "pegada"

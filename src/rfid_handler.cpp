@@ -295,6 +295,12 @@ void rfidLoopHandler() {
         String chosenMat = userMats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMat + "\"," + "\"entrada\"";
         appendLineToFile(ATT_FILE, rec);
+
+        // --- NUEVA NOTIFICACIÓN: alumno entra cuando NO hay clase (se generaba como acceso normal antes) ---
+        String adminNote = "Acceso fuera de horario (no hay clase). Usuario: " + name + " (" + account + ")";
+        addNotification(uid, name, account, adminNote);
+        // ------------------------------------------------------------------------------------------
+
         puerta.write(90);
         showAccessGranted(name, chosenMat, uid);
         puerta.write(0);
@@ -354,6 +360,12 @@ void rfidLoopHandler() {
         String chosenMat = tmats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + chosenMat + "\"," + "\"entrada-teacher\"";
         appendLineToFile(ATT_FILE, rec);
+
+        // --- NUEVA NOTIFICACIÓN: maestro entra cuando NO hay clase (se generaba como acceso normal antes) ---
+        String adminNote = "Acceso (maestro) fuera de horario (no hay clase). Maestro: " + tname + " (" + tacc + ")";
+        addNotification(uid, tname, tacc, adminNote);
+        // -----------------------------------------------------------------------------------------
+
         puerta.write(90);
         showAccessGranted(tname, chosenMat, uid);
         puerta.write(0);

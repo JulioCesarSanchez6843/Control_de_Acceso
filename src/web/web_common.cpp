@@ -452,15 +452,13 @@ String htmlHeader(const char* title) {
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
-  // Menú de navegación principal
+  // Menú de navegación principal (se eliminó botón Capturar del nav)
   h += "<div class='nav'>";
-  h += "<a class='btn btn-blue' href='/capture'>Capturar</a>";
   h += "<a class='btn btn-blue' href='/schedules'>Horarios</a>";
   h += "<a class='btn btn-blue' href='/materias'>Materias</a>";
   h += "<a class='btn btn-blue' href='/students_all'>Alumnos</a>";
   h += "<a class='btn btn-blue' href='/teachers_all'>Maestros</a>";
   h += "<a class='btn btn-blue' href='/history'>Historial</a>";
-  h += "<a class='btn btn-blue' href='/status'>Estado ESP</a>";
   h += "</div></div>";
 
   // Contenedor principal (contenido de la página)
@@ -483,11 +481,12 @@ void handleRoot() {
   captureMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
-  String html = htmlHeader("Inicio - Sistema de Control de Acceso");
+  // Cambié el título de la página para que coincida con encabezado
+  String html = htmlHeader("Inicio - Control de Acceso - Laboratorio");
 
-  // Hero Section
+  // Hero Section (título alineado a encabezado)
   html += "<section class='hero-section'>";
-  html += "<h1 class='hero-title'>Sistema de Control de Acceso Inteligente</h1>";
+  html += "<h1 class='hero-title'>Control de Acceso - Laboratorio</h1>";
   html += "<p class='hero-subtitle'>Sistema automatizado de gestión y control de acceso para laboratorios mediante tecnología RFID. Garantiza seguridad, control de asistencia y gestión eficiente de estudiantes y personal académico mediante un control preciso basado en horarios y permisos específicos.</p>";
   html += "</section>";
 
@@ -660,18 +659,19 @@ void handleRoot() {
   html += "<a class='btn-module' href='/history'>Consultar Historial</a>";
   html += "</div>";
   
-  // Módulo Sistema
+  // Módulo Notificaciones (ahora con misma estructura que los demás)
   html += "<div class='module-card sistema'>";
-  html += "<h3>Estado del Sistema</h3>";
-  html += "<p>Monitoreo en tiempo real del estado del dispositivo, recursos del sistema y métricas de operación del laboratorio.</p>";
+  html += "<h3>Notificaciones</h3>";
+  html += "<p>Revise y gestione las notificaciones generadas por el sistema (alertas de acceso, tarjetas desconocidas, entradas fuera de horario, etc.).</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Estado del hardware</li>";
-  html += "<li>Métricas de memoria</li>";
-  html += "<li>Conteo de usuarios</li>";
-  html += "<li>Diagnóstico del sistema</li>";
-  html += "<li>Estadísticas de operación</li>";
+  html += "<li>Notificaciones por intentos denegados (fuera de materia / fuera de horario)</li>";
+  html += "<li>Alertas de tarjetas desconocidas</li>";
+  html += "<li>Informes de entradas fuera de horario</li>";
+  html += "<li>Historial y exportación</li>";
+  html += "<li>Gestión y borrado de notificaciones</li>";
   html += "</ul>";
-  html += "<a class='btn-module' href='/status'>Ver Estado</a>";
+  html += "<p class='small'>Notificaciones pendientes: " + String(notifCount()) + "</p>";
+  html += "<a class='btn-module' href='/notifications'>Ver Notificaciones</a>";
   html += "</div>";
   
   html += "</div>"; // cierre modules-grid
