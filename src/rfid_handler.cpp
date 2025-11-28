@@ -146,11 +146,50 @@ void rfidLoopHandler() {
   // MODO CAPTURA
   if (captureMode) {
     if (captureBatchMode) {
+      // Añadir a la cola (evita duplicados)
       appendUidToQueueAvoidDup(uid);
       captureDetectedAt = now;
       Serial.printf("Batch capture: UID %s añadida a la cola.\n", uid.c_str());
 
+      // ------ Cambiado: evitar crear QR/session si la UID es de maestro ------
       if (!awaitingSelfRegister) {
+        // Si UID pertenece a un maestro: bloquear visiblemente y NOTIFICAR al dashboard
+        if (findTeacherByUID(uid).length() > 0) {
+          Serial.printf("UID %s detectada como MAESTRO durante batch -> bloquear y notificar al dashboard\n", uid.c_str());
+
+          // Registrar en DENIED_FILE (para trazabilidad)
+          String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_BLOQUEADO_LOTE\"";
+          appendLineToFile(DENIED_FILE, recDenied);
+
+          // Notificación global
+          String teacherRow = findTeacherByUID(uid);
+          String teacherName = "";
+          if (teacherRow.length()) {
+            auto tc = parseQuotedCSVLine(teacherRow);
+            if (tc.size() > 1) teacherName = tc[1];
+          }
+          String notificationMsg = "Tarjeta de maestro detectada en captura por lote y bloqueada: " + (teacherName.length() ? teacherName : String("Sin nombre")) + " (UID: " + uid + ")";
+          addNotification(uid, String(""), String(""), notificationMsg);
+
+          // IMPORTANTE: dejar captureUID = uid para que el poll del dashboard (/capture_batch poll)
+          // detecte la UID de maestro y muestre el banner en la web. No creamos session ni QR.
+          captureUID = uid;
+          captureName = "";
+          captureAccount = "";
+          captureDetectedAt = now;
+
+          // Mostrar mensaje rojo local por 4 segundos (o hasta que otra lectura lo cambie)
+          #ifdef USE_DISPLAY
+          showTemporaryRedMessage("MAESTRO - NO PERMITIDO EN LOTE", 4000UL);
+          #endif
+
+          // No crear SelfRegSession, no append a la cola (ya evitamos duplicado antes).
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
+          return;
+        }
+
+        // Si NO es maestro y no existe en usuarios, crear sesión de self-register (comportamiento previo)
         if (findAnyUserByUID(uid).length() == 0) {
           SelfRegSession s;
           {
@@ -177,6 +216,7 @@ void rfidLoopHandler() {
           showSelfRegisterBanner(String());
         }
       }
+
       mfrc522.PICC_HaltA();
       mfrc522.PCD_StopCrypto1();
       return;
@@ -342,7 +382,7 @@ void rfidLoopHandler() {
     return;
   }
 
-  // Lógica para TEACHERS
+  // Lógica para TEACHERS (acceso normal fuera de modo captura)
   if (isTeacher) {
     auto cols = parseQuotedCSVLine(teacherRow);
     String tname = (cols.size() > 1 ? cols[1] : "");

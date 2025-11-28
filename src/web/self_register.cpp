@@ -68,6 +68,14 @@ void handleSelfRegisterStartPOST() {
     return;
   }
 
+  // NEW: Reject if uid belongs to a teacher (defensive)
+  String trow = findTeacherByUID(uid);
+  if (trow.length() > 0) {
+    // don't create session or URL for teachers
+    server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid is teacher\"}");
+    return;
+  }
+
   if (findAnyUserByUID(uid).length() > 0) {
     server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid already registered\"}");
     return;
@@ -121,7 +129,7 @@ void handleSelfRegisterGET() {
   html += "<input name='name' required placeholder='Nombre completo'>";
   html += "<label>Cuenta (7 dígitos)</label>";
   html += "<input name='account' inputmode='numeric' pattern='[0-9]{7}' maxlength='7' minlength='7' placeholder='Ej: 2123456'>";
-  
+
   // Campo materia oculto - será asignado después por el administrador
   html += "<input type='hidden' name='materia' value=''>";
 
