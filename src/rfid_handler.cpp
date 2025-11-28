@@ -78,7 +78,7 @@ static void appendUidToQueueAvoidDup(const String &uid) {
 // Helper: obtiene lista única de materias asociadas a un teacher (por uid y por courses)
 static std::vector<String> teacherMatsForUID(const String &uid) {
   std::vector<String> out;
-  // Desde TEACHERS_FILE por uid
+  // Desde TEACHERS_FILE por uid (si el registro contiene columna de materia)
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (f) {
     String header = f.readStringUntil('\n'); (void)header;
@@ -252,6 +252,16 @@ void rfidLoopHandler() {
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 
+  // Detectar si owner incluye profesor (clave compuesta)
+  String scheduleOwnerProf = "";
+  bool scheduleOwnerHasProf = false;
+  int soidx = scheduleOwner.indexOf("||");
+  if (soidx >= 0) {
+    scheduleOwnerProf = scheduleOwner.substring(soidx + 2);
+    scheduleOwnerProf.trim();
+    scheduleOwnerHasProf = true;
+  }
+
   // Lógica para ALUMNOS
   if (userRows.size() > 0) {
     String name = (userRows.size() > 0 && userRows[0].size() > 1 ? userRows[0][1] : "");
@@ -338,32 +348,61 @@ void rfidLoopHandler() {
     String tname = (cols.size() > 1 ? cols[1] : "");
     String tacc = (cols.size() > 2 ? cols[2] : "");
 
+    // Obtener las materias registradas para este maestro (por UID y por courses)
     std::vector<String> tmats = teacherMatsForUID(uid);
 
     if (scheduleBaseMat.length() > 0) {
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
-      bool hasCurrent = false;
-      for (auto &m : tmats) {
-        if (lowerCopy(m) == wantMatLower) { hasCurrent = true; break; }
-      }
-      if (hasCurrent) {
-        String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + wantMat + "\"," + "\"entrada-teacher\"";
-        appendLineToFile(ATT_FILE, rec);
-        puerta.write(90);
-        showAccessGranted(tname, wantMat, uid);
-        puerta.write(0);
-        ledOff();
+
+      // Si el horario especifica profesor (clave compuesta "Materia||Profesor"),
+      // sólo permitir el acceso al profesor exacto que aparece en la clave.
+      if (scheduleOwnerHasProf) {
+        // Comparación case-insensitive del nombre del profesor asignado en el horario
+        if (lowerCopy(tname) == lowerCopy(scheduleOwnerProf)) {
+          // Profesor es exactamente el asignado en el horario -> permitir acceso
+          String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + wantMat + "\"," + "\"entrada-teacher\"";
+          appendLineToFile(ATT_FILE, rec);
+          puerta.write(90);
+          showAccessGranted(tname, wantMat, uid);
+          puerta.write(0);
+          ledOff();
+        } else {
+          // Profesor distinto al asignado -> denegar y notificar
+          String mmstr = joinMats(tmats);
+          String note = "Intento fuera de materia en curso (teacher). Maestro: " + tname + " (" + tacc + "). Materias del maestro: " + mmstr + ". Materia en curso: " + scheduleOwner;
+          addNotification(uid, tname, tacc, note);
+          appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA TEACHER\""));
+          showAccessDenied(String("No asignado a: ") + wantMat, uid);
+          ledOff();
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
+          return;
+        }
       } else {
-        String mmstr = joinMats(tmats);
-        String note = "Intento fuera de materia en curso (teacher). Maestro: " + tname + " (" + tacc + "). Materias del maestro: " + mmstr + ". Materia en curso: " + wantMat;
-        addNotification(uid, tname, tacc, note);
-        appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA TEACHER\""));
-        showAccessDenied(String("No asignado a: ") + wantMat, uid);
-        ledOff();
-        mfrc522.PICC_HaltA();
-        mfrc522.PCD_StopCrypto1();
-        return;
+        // Horario no especifica profesor (sólo materia) -> permitir si el maestro tiene esa materia
+        bool hasCurrent = false;
+        for (auto &m : tmats) {
+          if (lowerCopy(m) == wantMatLower) { hasCurrent = true; break; }
+        }
+        if (hasCurrent) {
+          String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + wantMat + "\"," + "\"entrada-teacher\"";
+          appendLineToFile(ATT_FILE, rec);
+          puerta.write(90);
+          showAccessGranted(tname, wantMat, uid);
+          puerta.write(0);
+          ledOff();
+        } else {
+          String mmstr = joinMats(tmats);
+          String note = "Intento fuera de materia en curso (teacher). Maestro: " + tname + " (" + tacc + "). Materias del maestro: " + mmstr + ". Materia en curso: " + wantMat;
+          addNotification(uid, tname, tacc, note);
+          appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA TEACHER\""));
+          showAccessDenied(String("No asignado a: ") + wantMat, uid);
+          ledOff();
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
+          return;
+        }
       }
     } else {
       // NO HAY CLASE: si maestro tiene materias, permitir y notificar (entrada fuera de horario maestro)
