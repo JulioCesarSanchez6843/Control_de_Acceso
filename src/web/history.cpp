@@ -17,26 +17,49 @@ static String htmlEscape(const String &s) {
   return out;
 }
 
-// Muestra página con historial de accesos y filtros; permite descarga y borrado.
-// Ahora acepta filtros GET opcionales: materia, profesor, uid, ts (timestamp prefix)
+// URL-encode simple (para construir links con parámetros seguros)
+static String urlEncodeLocal(const String &str) {
+  String ret;
+  ret.reserve(str.length() * 3);
+  for (size_t i = 0; i < (size_t)str.length(); ++i) {
+    char c = str[i];
+    if ((c >= '0' && c <= '9') ||
+        (c >= 'a' && c <= 'z') ||
+        (c >= 'A' && c <= 'Z') ||
+        c == '-' || c == '_' || c == '.' || c == '~') {
+      ret += c;
+    } else if (c == ' ') {
+      ret += "%20";
+    } else {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%%%02X", (uint8_t)c);
+      ret += buf;
+    }
+  }
+  return ret;
+}
+
+// Muestra página con historial de accesos y filtros; ahora solo: materia, profesor, alumno, fecha (date picker)
+// Acepta adicionalmente 'uid' en query string para filtrar por UID directamente.
 void handleHistoryPage() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
   String profFilter   = server.hasArg("profesor") ? server.arg("profesor") : String();
-  String uidFilter    = server.hasArg("uid") ? server.arg("uid") : String();
-  String tsFilter     = server.hasArg("ts") ? server.arg("ts") : String(); // puede ser YYYY-MM-DD o prefijo parcial
+  String nameFilter   = server.hasArg("nombre") ? server.arg("nombre") : String();
+  String dateFilter   = server.hasArg("date") ? server.arg("date") : String(); // YYYY-MM-DD exacto
+  String uidFilter    = server.hasArg("uid") ? server.arg("uid") : String(); // nuevo: filtrar por uid
 
   String html = htmlHeader("Historial de Accesos");
   html += "<div class='card'><h2>Historial de Accesos</h2>";
 
-  html += "<p class='small'>Esta pestaña muestra el historial completo de accesos y capturas de tarjetas. Use filtros para localizar rápidamente eventos (materia, profesor, UID o timestamp).</p>";
+  html += "<p class='small'>Esta pestaña muestra el historial completo de accesos y capturas de tarjetas. Use filtros para localizar rápidamente eventos (materia, profesor, alumno o fecha).</p>";
 
   // Filtros (cliente) - rellenamos inputs con valores recibidos (escape)
   html += "<div class='filters'>";
   html += "<input id='hf_materia' placeholder='Filtrar por materia' value='" + htmlEscape(materiaFilter) + "'>";
-  html += "<input id='hf_prof' placeholder='Filtrar por profesor' value='" + htmlEscape(profFilter) + "'>";
-  html += "<input id='hf_uid' placeholder='Filtrar por UID' value='" + htmlEscape(uidFilter) + "'>";
-  html += "<input id='hf_ts' placeholder='Filtrar por timestamp (prefijo)' value='" + htmlEscape(tsFilter) + "'>";
-  html += "<input id='hf_name' placeholder='Filtrar por nombre'>";
+  html += "<input id='hf_prof' placeholder='Filtrar por nombre de profesor' value='" + htmlEscape(profFilter) + "'>";
+  html += "<input id='hf_name' placeholder='Filtrar por nombre de alumno' value='" + htmlEscape(nameFilter) + "'>";
+  // date picker (cliente)
+  html += "<input id='hf_date' type='date' value='" + htmlEscape(dateFilter) + "'>";
   html += "<button class='search-btn btn btn-blue' onclick='applyHistoryFilters()'>Buscar</button>";
   html += "<button class='search-btn btn btn-green' onclick='clearHistoryFilters()'>Limpiar</button>";
   html += "</div>";
@@ -45,12 +68,12 @@ void handleHistoryPage() {
   html += "<p style='margin-top:8px'>";
   String csvLink = "/history.csv";
   bool hasParam = false;
-  if (materiaFilter.length()) { csvLink += (hasParam ? "&" : "?") + String("materia=") + materiaFilter; hasParam = true; }
-  if (uidFilter.length())     { csvLink += (hasParam ? "&" : "?") + String("uid=") + uidFilter; hasParam = true; }
-  if (tsFilter.length())      { csvLink += (hasParam ? "&" : "?") + String("ts=") + tsFilter; hasParam = true; }
+  if (materiaFilter.length()) { csvLink += (hasParam ? "&" : "?") + String("materia=") + urlEncodeLocal(materiaFilter); hasParam = true; }
+  if (dateFilter.length())    { csvLink += (hasParam ? "&" : "?") + String("ts=") + urlEncodeLocal(dateFilter); hasParam = true; }
+  if (uidFilter.length())     { csvLink += (hasParam ? "&" : "?") + String("uid=") + urlEncodeLocal(uidFilter); hasParam = true; }
   html += "<a class='btn btn-green' href='" + csvLink + "'>📥 Descargar (filtrado)</a> ";
-  html += "<form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'>";
-  html += "<input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> ";
+  html += "<form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'>"
+          "<input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> ";
   html += "<a class='btn btn-blue' href='/'>Inicio</a></p>";
 
   // Abrir archivo de attendance
@@ -84,20 +107,35 @@ void handleHistoryPage() {
     String mode = (c.size()>5?c[5]:"");
 
     // Aplicar filtros del servidor (si vienen por query string)
-    if (materiaFilter.length() && mat != materiaFilter) continue;
-    if (uidFilter.length() && uid != uidFilter) continue;
-    if (tsFilter.length()) {
-      if (ts.indexOf(tsFilter) != 0) continue;
+    if (uidFilter.length()) {
+      String utrim = uid; utrim.trim();
+      if (utrim != uidFilter) continue;
+    }
+    if (materiaFilter.length()) {
+      String matTrim = mat; matTrim.trim();
+      String mfTrim = materiaFilter; mfTrim.trim();
+      if (matTrim != mfTrim) continue;
+    }
+    if (dateFilter.length()) {
+      if (ts.indexOf(dateFilter) != 0) continue;
     }
     if (profFilter.length()) {
       bool okProf=false;
       auto courses = loadCourses();
+      String profFilterLc = profFilter; profFilterLc.toLowerCase(); profFilterLc.trim();
       for (auto &co : courses) {
-        if (co.materia == mat) {
-          if (co.profesor.indexOf(profFilter) != -1) { okProf=true; break; }
+        String cm = co.materia; cm.trim();
+        if (cm == mat) {
+          String profLc = co.profesor; profLc.toLowerCase(); profLc.trim();
+          if (profLc.indexOf(profFilterLc) != -1) { okProf=true; break; }
         }
       }
       if (!okProf) continue;
+    }
+    if (nameFilter.length()) {
+      String nameLc = name; nameLc.toLowerCase();
+      String nf = nameFilter; nf.toLowerCase();
+      if (nameLc.indexOf(nf) == -1) continue;
     }
 
     html += "<tr><td>" + ts + "</td><td>" + name + "</td><td>" + acc + "</td><td>" + mat + "</td><td>" + mode + "</td></tr>";
@@ -105,46 +143,50 @@ void handleHistoryPage() {
   f.close();
   html += "</table>";
 
-  // Scripts cliente para filtrar la tabla sin recargar
-  html += "<script>"
-          "function applyHistoryFilters(){ "
-          "const table=document.getElementById('history_table'); if(!table) return; "
-          "const fm=document.getElementById('hf_materia').value.trim().toLowerCase(); "
-          "const fp=document.getElementById('hf_prof').value.trim().toLowerCase(); "
-          "const fu=document.getElementById('hf_uid').value.trim().toLowerCase(); "
-          "const fts=document.getElementById('hf_ts').value.trim().toLowerCase(); "
-          "const fn=document.getElementById('hf_name').value.trim().toLowerCase(); "
-          "for(let r=1;r<table.rows.length;r++){ "
-          "const row=table.rows[r]; if(row.cells.length<5) continue; "
-          "const mat=row.cells[3].textContent.toLowerCase(); "
-          "const name=row.cells[1].textContent.toLowerCase(); "
-          "const uid=row.cells[2].textContent.toLowerCase(); "
-          "const ts=row.cells[0].textContent.toLowerCase(); "
-          "var ok=true; "
-          "if(fm.length && mat.indexOf(fm)===-1) ok=false; "
-          "if(fu.length && uid.indexOf(fu)===-1) ok=false; "
-          "if(fts.length && ts.indexOf(fts)===-1) ok=false; "
-          "if(fn.length && name.indexOf(fn)===-1) ok=false; "
-          "row.style.display = ok ? '' : 'none'; "
-          "} }"
-          "function clearHistoryFilters(){ "
-          "document.getElementById('hf_materia').value=''; "
-          "document.getElementById('hf_prof').value=''; "
-          "document.getElementById('hf_uid').value=''; "
-          "document.getElementById('hf_ts').value=''; "
-          "document.getElementById('hf_name').value=''; "
-          "applyHistoryFilters(); }"
-          "</script>";
+  // Scripts cliente para filtrar la tabla sin recargar (incluye filtro por profesor usando courses)
+  html += R"rawliteral(
+    <script>
+      function applyHistoryFilters(){
+        const table=document.getElementById('history_table'); if(!table) return;
+        const fm=document.getElementById('hf_materia').value.trim().toLowerCase();
+        const fp=document.getElementById('hf_prof').value.trim().toLowerCase();
+        const fn=document.getElementById('hf_name').value.trim().toLowerCase();
+        const fdate=document.getElementById('hf_date').value.trim();
+        for(let r=1;r<table.rows.length;r++){
+          const row=table.rows[r]; if(row.cells.length<5) continue;
+          const mat=row.cells[3].textContent.toLowerCase();
+          const name=row.cells[1].textContent.toLowerCase();
+          const ts=row.cells[0].textContent.toLowerCase();
+          var ok=true;
+          if(fm.length && mat.indexOf(fm)===-1) ok=false;
+          if(fn.length && name.indexOf(fn)===-1) ok=false;
+          if(fdate.length && ts.indexOf(fdate)===-1) ok=false;
+          if(fp.length){
+            // approximate client-side: check if materia or name contains professor filter text
+            if (mat.indexOf(fp)===-1 && name.indexOf(fp)===-1) ok=false;
+          }
+          row.style.display = ok ? '' : 'none';
+        }
+      }
+      function clearHistoryFilters(){
+        document.getElementById('hf_materia').value='';
+        document.getElementById('hf_prof').value='';
+        document.getElementById('hf_name').value='';
+        document.getElementById('hf_date').value='';
+        applyHistoryFilters();
+      }
+    </script>
+  )rawliteral";
 
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
 
-// /history.csv (GET) - Genera y envía CSV filtrado opcionalmente por materia, uid y/o ts (prefix)
+// /history.csv (GET) - Genera y envía CSV filtrado opcionalmente por materia y/o ts (fecha prefix) y/o uid
 void handleHistoryCSV() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
-  String uidFilter     = server.hasArg("uid") ? server.arg("uid") : String();
   String tsFilter      = server.hasArg("ts") ? server.arg("ts") : String();
+  String uidFilter     = server.hasArg("uid") ? server.arg("uid") : String();
 
   if (!SPIFFS.exists(ATT_FILE)) { server.send(404,"text/plain","no history"); return; }
   File f = SPIFFS.open(ATT_FILE, FILE_READ);
@@ -157,8 +199,15 @@ void handleHistoryCSV() {
     String uid = (c.size()>1?c[1]:"");
     String mat = (c.size()>4?c[4]:"");
 
-    if (materiaFilter.length() && mat != materiaFilter) continue;
-    if (uidFilter.length() && uid != uidFilter) continue;
+    if (uidFilter.length()) {
+      String utrim = uid; utrim.trim();
+      if (utrim != uidFilter) continue;
+    }
+    if (materiaFilter.length()) {
+      String matTrim = mat; matTrim.trim();
+      String mfTrim = materiaFilter; mfTrim.trim();
+      if (matTrim != mfTrim) continue;
+    }
     if (tsFilter.length()) {
       if (ts.indexOf(tsFilter) != 0) continue;
     }
@@ -209,7 +258,7 @@ void handleMateriaHistoryGET() {
   else {
     html += "<ul>";
     for (auto &d : dates) {
-      html += "<li>" + d + " <a class='btn btn-blue' href='/history.csv?materia=" + materia + "&ts=" + d + "'>⬇️ Descargar CSV</a></li>";
+      html += "<li>" + d + " <a class='btn btn-blue' href='/history.csv?materia=" + urlEncodeLocal(materia) + "&ts=" + urlEncodeLocal(d) + "'>⬇️ Descargar CSV</a></li>";
     }
     html += "</ul>";
   }

@@ -6,11 +6,77 @@
 #include "web_common.h"
 #include "globals.h"
 #include "config.h"
+#include "files_utils.h"   // necesario para parseQuotedCSVLine()
+#include <vector>
+
+// Helper local: construye la misma key que notifications.cpp (ts|uid|nota-truncada)
+static String _makeNotifKeyLocal(const String &ts, const String &uid, const String &note) {
+  String k = ts + "|" + uid;
+  String frag = note;
+  if (frag.length() > 80) frag = frag.substring(0, 80);
+  frag.replace("\n", " ");
+  frag.replace("\r", " ");
+  k += "|" + frag;
+  return k;
+}
+
+// Cuenta solo las notificaciones NO LEÍDAS (buscando coincidencias con /.notif_read)
+int unreadNotifCount() {
+  const char *readFile = "/.notif_read";
+  if (!SPIFFS.exists(NOTIF_FILE)) return 0;
+
+  // 1) leer notificaciones y construir keys
+  std::vector<String> notifKeys;
+  File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
+  if (!f) return 0;
+  bool firstLine = true;
+  while (f.available()) {
+    String l = f.readStringUntil('\n');
+    if (firstLine) { firstLine = false; continue; } // saltar header
+    l.trim();
+    if (!l.length()) continue;
+    auto cols = parseQuotedCSVLine(l);
+    String ts = (cols.size()>0?cols[0]:"");
+    String uid = (cols.size()>1?cols[1]:"");
+    String note = (cols.size()>4?cols[4]:"");
+    String key = _makeNotifKeyLocal(ts, uid, note);
+    notifKeys.push_back(key);
+  }
+  f.close();
+
+  int total = (int)notifKeys.size();
+  if (total == 0) return 0;
+
+  // 2) si no existe archivo de leídos, todo es no-leído
+  if (!SPIFFS.exists(readFile)) return total;
+
+  // 3) leer claves leídas
+  File rf = SPIFFS.open(readFile, FILE_READ);
+  if (!rf) return total;
+  std::vector<String> readKeys;
+  while (rf.available()) {
+    String l = rf.readStringUntil('\n'); l.trim();
+    if (l.length()) readKeys.push_back(l);
+  }
+  rf.close();
+
+  // 4) contar coincidencias (leídas)
+  int matched = 0;
+  for (auto &k : notifKeys) {
+    for (auto &rk : readKeys) {
+      if (k == rk) { matched++; break; }
+    }
+  }
+
+  int unread = total - matched;
+  if (unread < 0) unread = 0;
+  return unread;
+}
 
 // ==================== CABECERA HTML GLOBAL ====================
 // Construye la cabecera HTML común.
 String htmlHeader(const char* title) {
-  int nCount = notifCount();
+  int nCount = unreadNotifCount(); // <-- muestra SOLO no leídas
   String h = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
   h += "<title>"; h += title; h += "</title>";
 
@@ -592,13 +658,11 @@ void handleRoot() {
   // Módulo Materias
   html += "<div class='module-card materias'>";
   html += "<h3>Gestión de Materias</h3>";
-  html += "<p>Administra el catálogo completo de materias del laboratorio con control total sobre horarios, asignación de estudiantes y profesores.</p>";
+  html += "<p>Administra materias, horarios y asignaciones de profesores/estudiantes.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Creación y edición de materias</li>";
-  html += "<li>Asignación de horarios específicos</li>";
-  html += "<li>Gestión de matrículas estudiantiles</li>";
-  html += "<li>Control de aforo y capacidad</li>";
-  html += "<li>Asignación de profesores responsables</li>";
+  html += "<li>Creación y edición</li>";
+  html += "<li>Asignación de horarios</li>";
+  html += "<li>Gestión de matrículas</li>";
   html += "</ul>";
   html += "<a class='btn-module' href='/materias'>Administrar Materias</a>";
   html += "</div>";
@@ -606,13 +670,11 @@ void handleRoot() {
   // Módulo Estudiantes
   html += "<div class='module-card estudiantes'>";
   html += "<h3>Gestión de Estudiantes</h3>";
-  html += "<p>Control completo del registro estudiantil con vinculación de tarjetas RFID, asignación a materias y seguimiento de asistencia.</p>";
+  html += "<p>Registro y vinculación de tarjetas RFID, asignación a materias y seguimiento.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Registro y edición de estudiantes</li>";
-  html += "<li>Vincular tarjetas RFID</li>";
-  html += "<li>Asignación a múltiples materias</li>";
-  html += "<li>Control de permisos y acceso</li>";
-  html += "<li>Estadísticas de asistencia</li>";
+  html += "<li>Registro/edición</li>";
+  html += "<li>Vincular tarjetas</li>";
+  html += "<li>Asignación a materias</li>";
   html += "</ul>";
   html += "<a class='btn-module' href='/students_all'>Gestionar Estudiantes</a>";
   html += "</div>";
@@ -620,13 +682,11 @@ void handleRoot() {
   // Módulo Maestros
   html += "<div class='module-card maestros'>";
   html += "<h3>Gestión de Maestros</h3>";
-  html += "<p>Administración del personal docente con permisos especiales, asignación de materias y control de acceso privilegiado.</p>";
+  html += "<p>Administración del personal docente y permisos especiales.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Registro de personal docente</li>";
-  html += "<li>Permisos de acceso extendidos</li>";
-  html += "<li>Asignación a materias específicas</li>";
-  html += "<li>Horarios flexibles</li>";
-  html += "<li>Gestión de supervisiones</li>";
+  html += "<li>Registro de docentes</li>";
+  html += "<li>Asignación de materias</li>";
+  html += "<li>Permisos y horarios</li>";
   html += "</ul>";
   html += "<a class='btn-module' href='/teachers_all'>Gestionar Maestros</a>";
   html += "</div>";
@@ -634,13 +694,11 @@ void handleRoot() {
   // Módulo Horarios
   html += "<div class='module-card horarios'>";
   html += "<h3>Gestión de Horarios</h3>";
-  html += "<p>Configuración detallada de horarios de acceso al laboratorio por materia, con control de conflictos y optimización de espacios.</p>";
+  html += "<p>Configura franjas horarias y administra conflictos.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Definición de franjas horarias</li>";
-  html += "<li>Asignación por materia</li>";
+  html += "<li>Definir franjas</li>";
+  html += "<li>Asignar por materia</li>";
   html += "<li>Detección de conflictos</li>";
-  html += "<li>Calendario académico</li>";
-  html += "<li>Gestión de excepciones</li>";
   html += "</ul>";
   html += "<a class='btn-module' href='/schedules'>Gestionar Horarios</a>";
   html += "</div>";
@@ -648,29 +706,25 @@ void handleRoot() {
   // Módulo Historial
   html += "<div class='module-card historial'>";
   html += "<h3>Historial de Accesos</h3>";
-  html += "<p>Registro completo y detallado de todos los accesos al laboratorio con herramientas de análisis y exportación de datos.</p>";
+  html += "<p>Consulta y exporta registros de acceso.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Registro temporal de accesos</li>";
-  html += "<li>Filtrado por usuario o materia</li>";
-  html += "<li>Exportación a formato CSV</li>";
-  html += "<li>Estadísticas de uso</li>";
-  html += "<li>Reportes de asistencia</li>";
+  html += "<li>Filtrado por usuario/materia</li>";
+  html += "<li>Exportar a CSV</li>";
+  html += "<li>Estadísticas</li>";
   html += "</ul>";
   html += "<a class='btn-module' href='/history'>Consultar Historial</a>";
   html += "</div>";
   
-  // Módulo Notificaciones (ahora con misma estructura que los demás)
+  // Módulo Notificaciones (resumido para encajar con los demás)
   html += "<div class='module-card sistema'>";
   html += "<h3>Notificaciones</h3>";
-  html += "<p>Revise y gestione las notificaciones generadas por el sistema (alertas de acceso, tarjetas desconocidas, entradas fuera de horario, etc.).</p>";
+  html += "<p>Revisa alertas y eventos generados por el sistema durante la verificación RFID.</p>";
   html += "<ul class='feature-list'>";
-  html += "<li>Notificaciones por intentos denegados (fuera de materia / fuera de horario)</li>";
-  html += "<li>Alertas de tarjetas desconocidas</li>";
-  html += "<li>Informes de entradas fuera de horario</li>";
-  html += "<li>Historial y exportación</li>";
-  html += "<li>Gestión y borrado de notificaciones</li>";
+  html += "<li>Diferentes tipos de notificaciones: tarjetas desconocidas, intentos denegados, entradas fuera de horario.</li>";
+  html += "<li>Acciones: marcar leído/no leído, ver perfiles.</li>";
+  html += "<li>Informacion completa de las notificaciones.</li>";
   html += "</ul>";
-  html += "<p class='small'>Notificaciones pendientes: " + String(notifCount()) + "</p>";
+  html += "<p class='small'>No leídas: " + String(unreadNotifCount()) + "</p>";
   html += "<a class='btn-module' href='/notifications'>Ver Notificaciones</a>";
   html += "</div>";
   

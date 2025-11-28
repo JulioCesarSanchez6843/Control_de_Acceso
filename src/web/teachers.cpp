@@ -10,6 +10,17 @@
 #include "web_common.h"
 #include "files_utils.h"
 
+// Pequeña función de escape HTML
+static String htmlEscape(const String &s) {
+  String out = s;
+  out.replace("&", "&amp;");
+  out.replace("<", "&lt;");
+  out.replace(">", "&gt;");
+  out.replace("\"", "&quot;");
+  out.replace("'", "&#39;");
+  return out;
+}
+
 // simple url encode (reutilizable)
 static String urlEncodeLocal(const String &str) {
   String ret;
@@ -164,6 +175,8 @@ void handleTeachersForMateria() {
 }
 
 void handleTeachersAll() {
+  String searchUid = server.hasArg("search_uid") ? server.arg("search_uid") : String();
+
   String html = htmlHeader("Maestros - Todos");
   html += "<div class='card'><h2>Todos los maestros</h2>";
 
@@ -194,69 +207,124 @@ void handleTeachersAll() {
   if (recs.size() == 0) {
     html += "<p>No hay maestros registrados.</p>";
   } else {
-    html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+    if (searchUid.length()) {
+      bool foundAny = false;
+      for (auto &r : recs) {
+        if (r.uid == searchUid) {
+          foundAny = true;
+          // compute materias for this teacher
+          std::vector<String> mats;
+          File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+          if (f) {
+            String header = f.readStringUntil('\n'); (void)header;
+            while (f.available()) {
+              String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+              auto c = parseQuotedCSVLine(l);
+              if (c.size() >= 4) {
+                String rowUid = c[0];
+                String name = (c.size() > 1 ? c[1] : "");
+                String mat  = (c.size() > 3 ? c[3] : "");
+                if (rowUid == r.uid || name == r.name) {
+                  if (mat.length()) {
+                    bool fnd = false;
+                    for (auto &m : mats) if (m == mat) { fnd = true; break; }
+                    if (!fnd) mats.push_back(mat);
+                  }
+                }
+              }
+            }
+            f.close();
+          }
+          for (auto &c : courses) if (c.profesor == r.name) {
+            bool fnd = false;
+            for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
+            if (!fnd) mats.push_back(c.materia);
+          }
 
-    // For each rec, compute materias: from TEACHERS_FILE and from courses where name==profesor
-    for (auto &r : recs) {
-      // collect materias
-      std::vector<String> mats;
-      // from TEACHERS_FILE rows
-      File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-      if (f) {
-        String header = f.readStringUntil('\n'); (void)header;
-        while (f.available()) {
-          String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-          auto c = parseQuotedCSVLine(l);
-          if (c.size() >= 4) {
-            String uid = c[0];
-            String name = (c.size() > 1 ? c[1] : "");
-            String mat  = (c.size() > 3 ? c[3] : "");
-            // match by uid if available, otherwise by name
-            if ((r.uid.length() && uid == r.uid) || (r.uid.length()==0 && name == r.name)) {
-              if (mat.length()) {
-                bool fnd = false;
-                for (auto &m : mats) if (m == mat) { fnd = true; break; }
-                if (!fnd) mats.push_back(mat);
+          String matsStr = "-";
+          if (mats.size()) { matsStr = ""; for (size_t i=0;i<mats.size();++i){ if (i) matsStr += "; "; matsStr += mats[i]; } }
+
+          html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+          html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
+          if (r.uid.length()) {
+            html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(r.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
+            html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
+            html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
+            html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
+            html += "</form>";
+          } else {
+            html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
+          }
+          html += "</td></tr></table>";
+          break;
+        }
+      }
+      if (!foundAny) html += "<p>No se encontró maestro con UID " + htmlEscape(searchUid) + ".</p>";
+    } else {
+      html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+
+      // For each rec, compute materias: from TEACHERS_FILE and from courses where name==profesor
+      for (auto &r : recs) {
+        // collect materias
+        std::vector<String> mats;
+        // from TEACHERS_FILE rows
+        File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
+        if (f) {
+          String header = f.readStringUntil('\n'); (void)header;
+          while (f.available()) {
+            String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+            auto c = parseQuotedCSVLine(l);
+            if (c.size() >= 4) {
+              String uid = c[0];
+              String name = (c.size() > 1 ? c[1] : "");
+              String mat  = (c.size() > 3 ? c[3] : "");
+              // match by uid if available, otherwise by name
+              if ((r.uid.length() && uid == r.uid) || (r.uid.length()==0 && name == r.name)) {
+                if (mat.length()) {
+                  bool fnd = false;
+                  for (auto &m : mats) if (m == mat) { fnd = true; break; }
+                  if (!fnd) mats.push_back(mat);
+                }
               }
             }
           }
+          f.close();
         }
-        f.close();
-      }
-      // also add materias from courses where profesor == name
-      for (auto &c : courses) if (c.profesor == r.name) {
-        bool fnd = false;
-        for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
-        if (!fnd) mats.push_back(c.materia);
-      }
-
-      String matsStr = "-";
-      if (mats.size()) {
-        matsStr = "";
-        for (size_t i=0;i<mats.size();++i) {
-          if (i) matsStr += "; ";
-          matsStr += mats[i];
+        // also add materias from courses where profesor == name
+        for (auto &c : courses) if (c.profesor == r.name) {
+          bool fnd = false;
+          for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
+          if (!fnd) mats.push_back(c.materia);
         }
-      }
 
-      html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
-      if (r.uid.length()) {
-        html += "<a class='btn btn-green' href='/capture_edit?uid=" + r.uid + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
-        html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
-        html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
-        html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
-        html += "</form>";
-      } else {
-        html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
+        String matsStr = "-";
+        if (mats.size()) {
+          matsStr = "";
+          for (size_t i=0;i<mats.size();++i) {
+            if (i) matsStr += "; ";
+            matsStr += mats[i];
+          }
+        }
+
+        html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
+        if (r.uid.length()) {
+          html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(r.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
+          html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
+          html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
+          html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
+          html += "</form>";
+        } else {
+          html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
+        }
+        html += "</td></tr>";
       }
-      html += "</td></tr>";
+      html += "</table>";
+
+      html += "<script>"
+              "function applyAllTeacherFilters(){ const table=document.getElementById('teachers_all_table'); if(!table) return; const f1=document.getElementById('ta_name').value.trim().toLowerCase(); const f2=document.getElementById('ta_acc').value.trim().toLowerCase(); const f3=document.getElementById('ta_mat').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<4) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const mats=row.cells[2].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1); row.style.display = ok ? '' : 'none'; } }"
+              "function clearAllTeacherFilters(){ document.getElementById('ta_name').value=''; document.getElementById('ta_acc').value=''; document.getElementById('ta_mat').value=''; applyAllTeacherFilters(); }"
+              "</script>";
     }
-    html += "</table>";
-
-    html += "<script>"
-            "function applyAllTeacherFilters(){ const table=document.getElementById('teachers_all_table'); if(!table) return; const f1=document.getElementById('ta_name').value.trim().toLowerCase(); const f2=document.getElementById('ta_acc').value.trim().toLowerCase(); const f3=document.getElementById('ta_mat').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<4) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const mats=row.cells[2].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1); row.style.display = ok ? '' : 'none'; } }"
-            "function clearAllTeacherFilters(){ document.getElementById('ta_name').value=''; document.getElementById('ta_acc').value=''; document.getElementById('ta_mat').value=''; applyAllTeacherFilters(); }"
-            "</script>";
   }
 
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
@@ -312,7 +380,6 @@ void handleTeacherDelete() {
   std::vector<String> materiasToRemove;
   for (auto &c : courses) {
     if (teacherName.length() && c.profesor == teacherName) {
-      // only add unique materia once
       bool fnd = false;
       for (auto &m : materiasToRemove) if (m == c.materia) { fnd = true; break; }
       if (!fnd) materiasToRemove.push_back(c.materia);
@@ -348,7 +415,6 @@ void handleTeacherDelete() {
   }
 
   // 4) Clean SCHEDULES_FILE: remove schedules that belong to removed course keys or materias that no longer exist
-  // We'll follow similar logic as handleMateriasDeletePOST:
   File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   std::vector<String> slines;
   if (fs) {
@@ -360,15 +426,12 @@ void handleTeacherDelete() {
       if (c.size() >= 4) {
         String owner = c[0];
         bool skip = false;
-        // If owner is "materia||prof" style and matches removed (materia + teacherName) skip
         for (auto &m : materiasToRemove) {
           String key = m + String("||") + teacherName;
           if (owner == key) { skip = true; break; }
         }
         if (skip) continue;
-        // If owner == materia and after course removal the materia has no remaining course, remove row
         for (auto &m : materiasToRemove) {
-          // check if any remaining course still references this materia
           bool still = false;
           auto remCourses = loadCourses();
           for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
@@ -396,7 +459,6 @@ void handleTeacherDelete() {
         bool removeUser = false;
         for (auto &m : materiasToRemove) {
           if (mm == m) {
-            // check if any remaining course keeps this materia
             bool still = false;
             auto remCourses = loadCourses();
             for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
@@ -405,7 +467,6 @@ void handleTeacherDelete() {
           }
         }
         if (removeUser) {
-          // optionally log a notification
           addNotification(uid_u, name, acc, String("Cuenta eliminada: materia removida al borrar maestro ") + teacherName);
           continue; // skip this user row
         }

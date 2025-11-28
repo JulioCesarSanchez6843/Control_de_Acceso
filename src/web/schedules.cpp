@@ -82,7 +82,7 @@ void handleSchedulesGrid() {
   auto schedules = loadSchedules();
   String html = htmlHeader("Horarios - Grilla");
   html += "<div class='card'><h2>Horarios del Laboratorio (LUN - SAB)</h2>";
-  html += "<p class='small'>Vista de la grilla de horarios. Para editar/agregar/quitar horarios pulsa <b>Editar Horarios</b> arriba.</p>";
+  html += "<p class='small'>Vista de los horarios registrados. Para editar/agregar/quitar horarios pulsa <b>Editar Horarios</b> arriba.</p>";
   html += "<table><tr><th>Hora</th>";
   for (int d = 0; d < 6; d++) html += "<th>" + String(DAYS[d]) + "</th>";
   html += "</tr>";

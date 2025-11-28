@@ -13,11 +13,12 @@
 
 // JSON escape
 static String jsonEscapeLocal(const String &s) {
+  // Evita problemas de sobrecarga en algunos toolchains pasando String(...) a replace
   String o = s;
-  o.replace("\\","\\\\");
-  o.replace("\"","\\\"");
-  o.replace("\n","\\n");
-  o.replace("\r","\\r");
+  o.replace(String("\\"), String("\\\\"));
+  o.replace(String("\""), String("\\\""));
+  o.replace(String("\n"), String("\\n"));
+  o.replace(String("\r"), String("\\r"));
   return o;
 }
 
@@ -207,54 +208,125 @@ void capture_individual_page() {
     }
   }
 
+  // Usar el header global de web_common
   String html = htmlHeader("Capturar - Individual");
-  html += "<div class='card'><h2>Captura Individual</h2>";
-  
+
+  // --- Estilos LOCALES y discretos para mejorar organización del formulario ---
+  // No sobreescriben el header global; solo afectan a esta página.
+  html += R"rawliteral(
+<style>
+/* Scoped small form improvements */
+.capture-card { max-width: 900px; margin: 6px auto 20px auto; padding: 18px; }
+.form-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; align-items:start; }
+.form-row{ display:flex; flex-direction:column; }
+.form-row.full{ grid-column: 1 / -1; }
+.form-row label{ font-size:0.95rem; color:#1f2937; margin-bottom:6px; font-weight:600; }
+input[type="text"], input[type="tel"], select, input[readonly] { padding:10px 12px; border-radius:8px; border:1px solid #e6eef6; background:#fff; font-size:0.95rem; }
+input[readonly]{ background:#f8fafc; color:#274151; }
+.lead.small { margin-top:4px; color:#475569; font-size:0.95rem; }
+.warn { display:none; border-radius:8px; padding:10px; margin-top:10px; font-weight:600; max-width:100%; box-sizing:border-box; }
+.form-actions { display:flex; gap:12px; justify-content:center; margin-top:14px; flex-wrap:wrap; }
+@media (max-width:720px) { .form-grid { grid-template-columns:1fr; } .capture-card{ margin:10px; } }
+</style>
+)rawliteral";
+
+  // Contenido (hereda el .card global)
+  html += "<div class='card capture-card'>";
+  html += "<h2>Captura Individual</h2>";
+
   // Mensaje específico según el target
   if (target == "teachers") {
-    html += "<p class='small'>Acerca la tarjeta del maestro. El sistema verificará automáticamente si la tarjeta está disponible.</p>";
+    html += "<p class='lead small'>Acerca la tarjeta del maestro. El sistema verificará automáticamente si la tarjeta está disponible.</p>";
   } else {
-    html += "<p class='small'>Acerca la tarjeta del alumno. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
+    html += "<p class='lead small'>Acerca la tarjeta del alumno. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
   }
 
-  html += "<form id='capForm' method='POST' action='/capture_confirm'>";
+  // Modo info
+  html += "<div style='background:#f1f5f9;border:1px solid #e2e8f0;padding:10px;border-radius:8px;margin-bottom:12px;color:#0f172a;font-weight:600;'>";
+  if (target == "teachers") html += "Modo: Maestro — Las materias se gestionan por separado.";
+  else html += "Modo: Alumno — Puede asignar materia y profesor al guardarlo.";
+  html += "</div>";
+
+  // Formulario: mantener ids y nombres exactamente iguales
+  html += "<form id='capForm' method='POST' action='/capture_confirm' novalidate>";
   html += "<input type='hidden' name='target' value='" + escapeHTML(target) + "'>";
-  html += "UID (autocompleta):<br><input id='uid' name='uid' readonly style='background:#eee'><br>";
-  html += "Nombre:<br><input id='name' name='name' required><br>";
-  html += "Cuenta (7 dígitos):<br><input id='account' name='account' required maxlength='7' minlength='7' pattern='[0-9]{7}'><br>";
+
+  html += "<div class='form-grid'>";
+
+  html += "<div class='form-row full'><label for='uid'>UID (autocompleta):</label>";
+  html += "<input id='uid' name='uid' readonly></div>";
+
+  html += "<div class='form-row'><label for='name'>Nombre:</label>";
+  html += "<input id='name' name='name' required></div>";
+
+  html += "<div class='form-row'><label for='account'>Cuenta (7 dígitos):</label>";
+  html += "<input id='account' name='account' required maxlength='7' minlength='7' pattern='[0-9]{7}'></div>";
 
   if (target == "students") {
-    html += "Materia:<br><select id='materia' name='materia'>";
+    html += "<div class='form-row'><label for='materia'>Materia:</label>";
+    html += "<select id='materia' name='materia'>";
     html += "<option value=''>-- Ninguna --</option>";
     for (auto &m : materias) html += "<option value='" + escapeHTML(m) + "'>" + escapeHTML(m) + "</option>";
-    html += "</select><br>";
+    html += "</select></div>";
 
-    html += "Profesor:<br><select id='profesor' name='profesor' disabled>";
+    html += "<div class='form-row'><label for='profesor'>Profesor:</label>";
+    html += "<select id='profesor' name='profesor' disabled>";
     html += "<option value=''>-- Ninguno --</option>";
-    html += "</select><br>";
+    html += "</select></div>";
   } else {
+    // ocultos para maestros (la lógica requiere esos campos)
     html += "<input type='hidden' name='materia' value=''>\n";
     html += "<input type='hidden' name='profesor' value=''>\n";
-    html += "<p class='small'>Registrando como <b>maestro</b>. Las materias se gestionan por separado.</p>";
   }
 
-  // Incluir el div 'warn' para ambos targets
-  html += "<div id='warn' class='small' style='color:#b00020;display:none;margin-top:6px;'></div>";
+  html += "</div>"; // cierre form-grid
 
-  // estilos inline iguales para todos los botones (misma anchura visual)
-  String btnStyle = "padding:8px 12px;border-radius:6px;text-decoration:none;min-width:140px;display:inline-block;text-align:center;";
+  // Div de advertencias (usar id warn para control centralizado)
+  html += "<div id='warn' class='warn'></div>";
 
-  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-  html += "<button id='submitBtn' type='submit' class='btn btn-green' style='" + btnStyle + "' disabled>Confirmar</button>";
-  html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;' style='background:#d9534f;color:#fff;" + btnStyle + "'>Cancelar</a>";
+  // Botones
+  html += "<div class='form-actions'>";
+  html += "<button id='submitBtn' type='submit' class='btn btn-green' disabled>Confirmar</button>";
+  html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;'>Cancelar</a>";
   html += "</div>";
-  html += "</form></div>" + htmlFooter();
 
-  // JS: poll incluye target para que el servidor bloquee desde poll si necesario y realizar redirección automática
+  html += "</form></div>"; // cierre card + form
+
+  // JS: mantener lógica original, pero centralizar setWarn() with auto-hide 5s
+  // Also: avoid overwriting inputs the user has already typed into.
   html += R"rawliteral(
 <script>
-let isExistingStudent = false; // Variable para rastrear si el alumno ya existe
+/* Central warning helper: muestra mensaje y lo oculta automáticamente tras 5s */
+var __warnTimer = null;
+function setWarn(msg){
+  var warn = document.getElementById('warn');
+  if(!warn) return;
+  if(msg){
+    warn.textContent = msg;
+    warn.style.display = 'block';
+    warn.style.background = '#fff7ed';
+    warn.style.border = '1px solid #ffd8a8';
+    warn.style.color = '#7b2e00';
+    warn.style.padding = '10px';
+    warn.style.borderRadius = '6px';
+    if(__warnTimer) { clearTimeout(__warnTimer); __warnTimer = null; }
+    __warnTimer = setTimeout(function(){
+      try{
+        warn.style.transition = 'opacity 0.25s';
+        warn.style.opacity = '0';
+        setTimeout(function(){ warn.style.display='none'; warn.style.opacity='1'; warn.textContent=''; }, 260);
+      }catch(e){}
+    }, 5000); // 5000 ms = 5s
+  } else {
+    if(__warnTimer){ clearTimeout(__warnTimer); __warnTimer = null; }
+    warn.style.display='none';
+    warn.textContent='';
+  }
+}
 
+/* pollUID mantiene la lógica: pide al servidor y actualiza campos
+   IMPORTANT: no sobreescribe campos si el usuario ya está editándolos.
+*/
 function pollUID(){
   var targetInput = document.querySelector("input[name='target']");
   var target = targetInput ? targetInput.value : '';
@@ -264,7 +336,6 @@ function pollUID(){
       var uidField = document.getElementById('uid');
       var nameField = document.getElementById('name');
       var accField = document.getElementById('account');
-      var warn = document.getElementById('warn');
       var submitBtn = document.getElementById('submitBtn');
       var matField = document.getElementById('materia');
       var profField = document.getElementById('profesor');
@@ -273,67 +344,51 @@ function pollUID(){
 
       if(j.status === 'waiting'){
         // nothing to do
-        isExistingStudent = false; // Reset cuando no hay UID
-        updateMateriaRequirement(); // Actualizar requerimiento de materia
+        isExistingStudent = false;
+        updateMateriaRequirement();
       } else if(j.status === 'blocked'){
-        // IMPORTANT: in blocked cases we do NOT fill UID / name / account.
-        // Only show the blocked message to the user and disable submit.
-        if(warn){ 
-          warn.style.display='block'; 
-          warn.textContent = j.blocked_message || 'Acción no permitida'; 
-          warn.style.background = '#ffeaa7';
-          warn.style.padding = '10px';
-          warn.style.borderRadius = '5px';
-          warn.style.border = '1px solid #fdcb6e';
-        }
+        // blocked: show warning and disable submit, but DO NOT clear user inputs
+        setWarn(j.blocked_message || 'Acción no permitida');
         if(submitBtn) submitBtn.disabled = true;
 
-        // Clear any previous UID data
-        uidField.value = '';
-        nameField.value = '';
-        accField.value = '';
+        // IMPORTANT CHANGE: don't clear fields and don't remove user-edited markers.
+        // Preserve whatever the user has typed.
 
-        // if server requests restart after N ms -> redirect back to capture page (restart capture flow)
+        // Respect server hint to stop capture, but avoid reloading which would clear fields:
         if(j.restart_after_ms){
           setTimeout(function(){
             try { navigator.sendBeacon('/capture_stop'); } catch(e){}
-            window.location.href = '/capture_individual?target=' + encodeURIComponent(target);
+            // do NOT redirect the page - keep user inputs intact
           }, j.restart_after_ms);
         }
       } else if(j.status === 'found'){
-        // Always display UID and autofill name/account when server provides them
-        if(j.uid) uidField.value = j.uid;
-        if(j.name) nameField.value = j.name;
-        if(j.account) accField.value = j.account;
+        // Fill UID if empty (readonly usually) - safe to overwrite
+        if(j.uid && (!uidField.value || uidField.value.trim().length === 0)) uidField.value = j.uid;
 
-        // Determinar si es un alumno existente (solo para target students)
+        // Only fill name/account IF the user has NOT started editing them.
+        if(j.name) {
+          if(!nameField.dataset.userEdited && (!nameField.value || nameField.value.trim().length === 0)) {
+            nameField.value = j.name;
+          }
+        }
+        if(j.account) {
+          if(!accField.dataset.userEdited && (!accField.value || accField.value.trim().length === 0)) {
+            accField.value = j.account;
+          }
+        }
+
         if(target === 'students') {
           isExistingStudent = j.existing || false;
-          updateMateriaRequirement(); // Actualizar requerimiento de materia
+          updateMateriaRequirement();
         }
 
-        // Clear any warning messages
-        if(warn){ 
-          warn.style.display='none'; 
-          warn.textContent='';
-          warn.style.background = '';
-          warn.style.padding = '';
-          warn.style.border = '';
-        }
+        // Clear any warning messages (this only clears the visual message — inputs are preserved)
+        setWarn('');
 
-        // If server indicates blocked_by_account (account used by other UID), show message but do not auto-redirect
         if(j.blocked && j.blocked_message){
-          if(warn){ 
-            warn.style.display='block'; 
-            warn.textContent = j.blocked_message;
-            warn.style.background = '#ffeaa7';
-            warn.style.padding = '10px';
-            warn.style.borderRadius = '5px';
-            warn.style.border = '1px solid #fdcb6e';
-          }
+          setWarn(j.blocked_message);
           if(submitBtn) submitBtn.disabled = true;
         } else {
-          // Enable submit only when no blocking conditions
           if(submitBtn) submitBtn.disabled = false;
         }
       }
@@ -343,59 +398,38 @@ function pollUID(){
     .catch(e => setTimeout(pollUID, 1200));
 }
 
+// Variable de control usada por validaciones
+let isExistingStudent = false;
+
 // Función para actualizar el requerimiento del campo materia
 function updateMateriaRequirement() {
   var matField = document.getElementById('materia');
-  var warn = document.getElementById('warn');
-  
   if (!matField) return;
-  
   if (isExistingStudent) {
-    // Si el alumno ya existe, materia es obligatoria
     matField.required = true;
-    if (warn) {
-      warn.style.display = 'block';
-      warn.textContent = 'Este alumno ya está registrado. Debe asignar una materia.';
-      warn.style.background = '#ffeaa7';
-      warn.style.padding = '10px';
-      warn.style.borderRadius = '5px';
-      warn.style.border = '1px solid #fdcb6e';
-    }
+    setWarn('Este alumno ya está registrado. Debe asignar una materia.');
   } else {
-    // Si es un alumno nuevo, materia es opcional
     matField.required = false;
-    if (warn && warn.textContent === 'Este alumno ya está registrado. Debe asignar una materia.') {
-      warn.style.display = 'none';
-      warn.textContent = '';
-      warn.style.background = '';
-      warn.style.padding = '';
-      warn.style.border = '';
-    }
+    // clear only if warning shows this exact message
+    var warn = document.getElementById('warn');
+    if(warn && warn.textContent === 'Este alumno ya está registrado. Debe asignar una materia.') setWarn('');
   }
 }
 
 document.addEventListener('DOMContentLoaded', function(){
   var mat = document.getElementById('materia');
   var prof = document.getElementById('profesor');
-  var warn = document.getElementById('warn');
   var submitBtn = document.getElementById('submitBtn');
 
-  function setWarn(msg){
-    if(!warn) return;
-    if(msg){ 
-      warn.style.display='block'; 
-      warn.textContent = msg; 
-      warn.style.background = '#ffeaa7';
-      warn.style.padding = '10px';
-      warn.style.borderRadius = '5px';
-      warn.style.border = '1px solid #fdcb6e';
-    } else { 
-      warn.style.display='none'; 
-      warn.textContent='';
-      warn.style.background = '';
-      warn.style.padding = '';
-      warn.style.border = '';
-    }
+  // mark fields as user-edited when the user types so pollUID won't overwrite them
+  var nameField = document.getElementById('name');
+  var accField = document.getElementById('account');
+  if(nameField){
+    nameField.addEventListener('input', function(){ nameField.dataset.userEdited = '1'; });
+    // if user submits or resets, marker will be cleared on submit handler
+  }
+  if(accField){
+    accField.addEventListener('input', function(){ accField.dataset.userEdited = '1'; });
   }
 
   function clearProf(){
@@ -474,14 +508,27 @@ document.addEventListener('DOMContentLoaded', function(){
     if(matSel && matSel.value){
       if(profSel && !profSel.value){ ev.preventDefault(); setWarn('Seleccione un profesor para la materia.'); return false; }
     }
+
+    // On successful submit we can clear user-edited markers to avoid stale state in next capture
+    try {
+      var nf = document.getElementById('name');
+      var af = document.getElementById('account');
+      if(nf) delete nf.dataset.userEdited;
+      if(af) delete af.dataset.userEdited;
+    } catch(e){}
   });
 
 });
 
+
+// Enviar stop si se cierra la pestaña
 window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
 pollUID();
 </script>
 )rawliteral";
+
+  // Footer global (heredado)
+  html += htmlFooter();
 
   server.send(200, "text/html", html);
 }
@@ -1024,8 +1071,11 @@ void capture_individual_editPage() {
   html += "<a class='btn btn-red' href='" + escapeHTML(return_to) + "'>Cancelar</a>";
   html += "</div></form></div>" + htmlFooter();
 
+  // En editPage no hay warn dinámico en general, pero si quieres que aparezca, podemos agregar similar ayuda JS.
   html += R"rawliteral(
 <script>
+/* Si se mostrara un warn dinámico aquí, setWarn podría reutilizarse.
+   Mantengo solo la lógica de carga de profesores (sin cambiar comportamiento). */
 document.addEventListener('DOMContentLoaded', function(){
   var mat = document.getElementById('edit_materia');
   var prof = document.getElementById('edit_profesor');

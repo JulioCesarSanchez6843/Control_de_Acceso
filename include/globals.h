@@ -9,11 +9,9 @@
 #include <vector>
 #include <FS.h>
 
-#if defined(ARDUINO_ARCH_ESP32)
-  #include <ESP32Servo.h>
-#else
-  #include <Servo.h>
-#endif
+// NOTE: no incluimos <Servo.h> ni <ESP32Servo.h> aquí para evitar errores
+// de includePath/IntelliSense en el editor. Hacemos una forward-declaration.
+class Servo;
 
 // ---------------- CONFIG ----------------
 extern const char* WIFI_SSID;
@@ -58,7 +56,8 @@ extern const int SLOT_COUNT;
 extern WebServer server;
 extern MFRC522 mfrc522;
 extern Adafruit_ST7735 tft;
-extern Servo puerta;
+extern Servo puerta; // forward-declared; definido en globals.cpp
+// --------------------------------------------------------------------
 
 // Capture mode globals
 extern volatile bool captureMode;
@@ -70,8 +69,8 @@ extern unsigned long captureDetectedAt;
 
 // Variables para captura batch (declaraciones ONLY -> definidas en globals.cpp)
 extern std::vector<String> capturedUIDs;
-extern bool isCapturing;
-extern bool isBatchCapture;
+extern volatile bool isCapturing;
+extern volatile bool isBatchCapture;
 
 // ---------------- Self-register session type ----------------
 struct SelfRegSession {
@@ -89,9 +88,6 @@ extern unsigned long awaitingSinceMs;
 extern unsigned long SELF_REG_TIMEOUT_MS;
 extern String currentSelfRegToken;
 extern String currentSelfRegUID;
-
-// *** NUEVA VARIABLE PARA BLOQUEO DE RFID DURANTE REGISTRO ***
-extern volatile bool blockRFIDForSelfReg;
 
 // ---------------- Tipos ----------------
 struct Course {
@@ -141,6 +137,11 @@ bool existsUserUidMateria(const String &uid, const String &materia);
 bool existsUserAccountMateria(const String &account, const String &materia);
 std::vector<String> usersForMateria(const String &materia);
 
+// teachers helpers
+String findTeacherByUID(const String &uid);
+bool teacherNameExists(const String &name);
+std::vector<String> teachersForMateriaFile(const String &materia);
+
 // notifications
 void addNotification(const String &uid, const String &name, const String &account, const String &note);
 std::vector<String> readNotifications(int limit = 200);
@@ -157,3 +158,4 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize);
 
 // Nueva función para cancelar captura y volver a pantalla normal
 void cancelCaptureAndReturnToNormal();
+bool isTemporaryMessageActive();

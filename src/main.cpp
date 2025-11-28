@@ -1,9 +1,15 @@
-// src/main.cpp  (versión corregida - asegura updateDisplay() se ejecute)
+// src/main.cpp  (versión corregida - sin inicializar/abrir servo desde setup)
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
 #include <SPIFFS.h>
 #include <time.h>
+
+#if defined(ARDUINO_ARCH_ESP32)
+  #include <ESP32Servo.h>
+#else
+  #include <Servo.h>
+#endif
 
 #include "config.h"
 #include "globals.h"
@@ -186,10 +192,11 @@ void setup() {
   displayInit();
   Serial.println("displayInit() OK.");
 
-  Serial.println("Configurando servo puerta...");
-  puerta.attach(SERVO_PIN);
-  puerta.write(0);
+  // NOTA: He quitado la inicialización/attach del servo según tu petición.
+  // Si en el futuro quieres volver a controlar el servo desde el ESP,
+  // restaura: puerta.attach(SERVO_PIN); puerta.write(0);
 
+  // Registrar rutas web (registerRoutes debe estar en web/web_routes.cpp)
   registerRoutes();
 
   // Ruta de depuración para ajustar epoch vía HTTP (solo pruebas).
@@ -212,8 +219,7 @@ unsigned long lastPoll = 0;
 void loop() {
   server.handleClient();
 
-  // >>> LLAMADA CORREGIDA: actualizar display de forma no bloqueante
-  // Esto permite que overlays temporales (mensaje rojo) expiren correctamente.
+  // >>> LLAMADA: actualizar display de forma no bloqueante
   updateDisplay();
 
   // Manejo RFID / polling periodic

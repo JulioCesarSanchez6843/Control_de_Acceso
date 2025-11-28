@@ -6,13 +6,22 @@
 #include <MFRC522.h>
 #include <WiFi.h>
 #include <vector>
+#include <ctype.h>
+
+// --- IMPORTANTE ---
+// Incluir la librería de Servo **antes** de globals.h para que el tipo Servo
+// esté completamente definido cuando globals.h hace 'extern Servo puerta;'.
+#if defined(ARDUINO_ARCH_ESP32)
+  #include <ESP32Servo.h>
+#else
+  #include <Servo.h>
+#endif
 
 #include "globals.h"
 #include "files_utils.h"
 #include "display.h"
 #include "time_utils.h"
 #include "web/self_register.h"
-#include <ctype.h>
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
@@ -223,7 +232,7 @@ void rfidLoopHandler() {
   String teacherRow = findTeacherByUID(uid);
   bool isTeacher = (teacherRow.length() > 0);
 
-  // Si no existe ni user ni teacher -> denegar
+  // Si no existe ni user ni teacher -> denegar (tarjeta desconocida)
   if (userRows.size() == 0 && !isTeacher) {
     Serial.printf("UID %s no registrado -> DENEGADO\n", uid.c_str());
     String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"NO REGISTRADO\"";
@@ -264,7 +273,6 @@ void rfidLoopHandler() {
     }
 
     if (scheduleBaseMat.length() > 0) {
-      // Hay clase en curso; verificar pertenencia
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
       bool hasCurrent = false;
@@ -275,6 +283,7 @@ void rfidLoopHandler() {
       if (hasCurrent) {
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + wantMat + "\"," + "\"entrada\"";
         appendLineToFile(ATT_FILE, rec);
+        // abrir puerta en acceso concedido
         puerta.write(90);
         showAccessGranted(name, wantMat, uid);
         puerta.write(0);
@@ -292,20 +301,21 @@ void rfidLoopHandler() {
         return;
       }
     } else {
-      // NO hay clase en el horario actual -> permitimos entrada pero GENERAMOS notificación
+      // NO HAY CLASE EN ESTE MOMENTO (scheduleBaseMat vacío)
       if (!userMats.empty()) {
+        // Permitir entrada pero registrar notificación informativa que entró fuera de horario
         String chosenMat = userMats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMat + "\"," + "\"entrada\"";
         appendLineToFile(ATT_FILE, rec);
-        // NOTIFICACIÓN: entrada fuera de horario (alumno)
-        String note = "Entrada fuera de horario: Usuario: " + name + " (" + account + "). Materia registrada: " + chosenMat;
+        // Notificación: entrada fuera de horario (Alumno)
+        String note = "Entrada fuera de horario (Alumno). Usuario: " + name + " (" + account + "). Materia asignada: " + chosenMat;
         addNotification(uid, name, account, note);
         puerta.write(90);
         showAccessGranted(name, chosenMat, uid);
         puerta.write(0);
         ledOff();
       } else {
-        // Sin materia asignada -> denegar y notificar
+        // Usuario sin materias asignadas -> denegar y notificar
         String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size()>1?userRows[0][1]:"") : "");
         addNotification(uid, String(""), String(""), note);
         appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA\""));
@@ -331,7 +341,6 @@ void rfidLoopHandler() {
     std::vector<String> tmats = teacherMatsForUID(uid);
 
     if (scheduleBaseMat.length() > 0) {
-      // Hay una materia en curso en schedule -> verificar si el teacher corresponde
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
       bool hasCurrent = false;
@@ -357,13 +366,13 @@ void rfidLoopHandler() {
         return;
       }
     } else {
-      // NO hay clase en horario: permitir entrada PERO notificar (maestro entró fuera de horario)
+      // NO HAY CLASE: si maestro tiene materias, permitir y notificar (entrada fuera de horario maestro)
       if (!tmats.empty()) {
         String chosenMat = tmats[0];
         String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + chosenMat + "\"," + "\"entrada-teacher\"";
         appendLineToFile(ATT_FILE, rec);
-        // Notificación: maestro entrando fuera de horario
-        String note = "Entrada fuera de horario (maestro): " + tname + " (" + tacc + "). Materia asociada: " + chosenMat;
+        // Notificar entrada de maestro fuera de horario
+        String note = "Entrada fuera de horario (Maestro). Maestro: " + tname + " (" + tacc + "). Materia: " + chosenMat;
         addNotification(uid, tname, tacc, note);
         puerta.write(90);
         showAccessGranted(tname, chosenMat, uid);

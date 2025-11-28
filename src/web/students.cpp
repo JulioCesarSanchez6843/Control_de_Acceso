@@ -10,6 +10,17 @@
 #include "web_common.h"
 #include "files_utils.h"
 
+// Pequeña función de escape HTML usada localmente
+static String htmlEscape(const String &s) {
+  String out = s;
+  out.replace("&", "&amp;");
+  out.replace("<", "&lt;");
+  out.replace(">", "&gt;");
+  out.replace("\"", "&quot;");
+  out.replace("'", "&#39;");
+  return out;
+}
+
 // URL-encode simple
 static String urlEncode(const String &str) {
   String ret;
@@ -86,6 +97,9 @@ void handleStudentsForMateria() {
 
 // GET /students_all
 void handleStudentsAll() {
+  // support optional search_uid param to show only a student (used by notifications modal)
+  String searchUid = server.hasArg("search_uid") ? server.arg("search_uid") : String();
+
   String html = htmlHeader("Alumnos - Todos");
   html += "<div class='card'><h2>Todos los alumnos</h2>";
 
@@ -102,7 +116,7 @@ void handleStudentsAll() {
   if (!f) { html += "<p>No hay archivo de usuarios.</p>"; html += htmlFooter(); server.send(200,"text/html",html); return; }
 
   String header = f.readStringUntil('\n');
-  struct SRec { String name; String acc; std::vector<String> mats; String created; };
+  struct SRec { String name; String acc; std::vector<String> mats; String created; String uid; };
   std::vector<String> uids;
   std::vector<SRec> recs;
 
@@ -112,37 +126,64 @@ void handleStudentsAll() {
     if (c.size() >= 3) {
       String uid = c[0]; String name = c[1]; String acc = c[2]; String mat = (c.size() > 3 ? c[3] : ""); String created = (c.size() > 4 ? c[4] : nowISO());
       int idx=-1; for (int i=0;i<(int)uids.size();i++) if (uids[i]==uid) { idx=i; break; }
-      if (idx==-1) { uids.push_back(uid); SRec r; r.name=name; r.acc=acc; r.created = created; if (mat.length()) r.mats.push_back(mat); recs.push_back(r); }
+      if (idx==-1) { uids.push_back(uid); SRec r; r.name=name; r.acc=acc; r.created = created; r.uid = uid; if (mat.length()) r.mats.push_back(mat); recs.push_back(r); }
       else { if (mat.length()) recs[idx].mats.push_back(mat); }
     }
   }
   f.close();
 
-  if (uids.size()==0) html += "<p>No hay alumnos registrados.</p>";
-  else {
-    html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
-    for (int i=0;i<(int)uids.size();i++) {
-      SRec &r = recs[i];
-      String mats="";
-      for (int j=0;j<(int)r.mats.size();j++) { if (j) mats += "; "; mats += r.mats[j]; }
-      if (mats.length()==0) mats = "-";
-      html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
-
-      html += "<a class='btn btn-green' href='/capture_edit?uid=" + uids[i] + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
-
-      html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";
-      html += "<input type='hidden' name='uid' value='" + uids[i] + "'>";
-      html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
-      html += "</form>";
-
-      html += "</td></tr>";
+  // If searchUid provided, only show matching records
+  if (searchUid.length()) {
+    bool foundAny = false;
+    for (size_t i = 0; i < recs.size(); ++i) {
+      if (recs[i].uid == searchUid) {
+        // render single record
+        SRec &r = recs[i];
+        html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+        String mats="";
+        for (size_t j=0;j<r.mats.size();++j) { if (j) mats += "; "; mats += r.mats[j]; }
+        if (mats.length()==0) mats = "-";
+        html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
+        html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncode(r.uid) + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
+        html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";
+        html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
+        html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
+        html += "</form>";
+        html += "</td></tr></table>";
+        foundAny = true;
+        break;
+      }
     }
-    html += "</table>";
+    if (!foundAny) {
+      html += "<p>No se encontró alumno con UID " + htmlEscape(searchUid) + ".</p>";
+    }
+  } else {
+    if (uids.size()==0) html += "<p>No hay alumnos registrados.</p>";
+    else {
+      html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+      for (int i=0;i<(int)uids.size();i++) {
+        SRec &r = recs[i];
+        String mats="";
+        for (int j=0;j<(int)r.mats.size();j++) { if (j) mats += "; "; mats += r.mats[j]; }
+        if (mats.length()==0) mats = "-";
+        html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
 
-    html += "<script>"
-            "function applyAllStudentFilters(){ const table=document.getElementById('students_all_table'); if(!table) return; const f1=document.getElementById('sa_name').value.trim().toLowerCase(); const f2=document.getElementById('sa_acc').value.trim().toLowerCase(); const f3=document.getElementById('sa_mat').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<4) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const mats=row.cells[2].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1); row.style.display = ok ? '' : 'none'; } }"
-            "function clearAllStudentFilters(){ document.getElementById('sa_name').value=''; document.getElementById('sa_acc').value=''; document.getElementById('sa_mat').value=''; applyAllStudentFilters(); }"
-            "</script>";
+        html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncode(r.uid) + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
+
+        html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";
+        html += "<input type='hidden' name='uid' value='" + uids[i] + "'>";
+        html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
+        html += "</form>";
+
+        html += "</td></tr>";
+      }
+      html += "</table>";
+
+      html += "<script>"
+              "function applyAllStudentFilters(){ const table=document.getElementById('students_all_table'); if(!table) return; const f1=document.getElementById('sa_name').value.trim().toLowerCase(); const f2=document.getElementById('sa_acc').value.trim().toLowerCase(); const f3=document.getElementById('sa_mat').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<4) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const mats=row.cells[2].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1); row.style.display = ok ? '' : 'none'; } }"
+              "function clearAllStudentFilters(){ document.getElementById('sa_name').value=''; document.getElementById('sa_acc').value=''; document.getElementById('sa_mat').value=''; applyAllStudentFilters(); }"
+              "</script>";
+    }
   }
 
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
@@ -165,7 +206,7 @@ void handleStudentRemoveCourse() {
   }
   f.close();
   writeAllLines(USERS_FILE, lines);
-  server.sendHeader("Location","/students?materia=" + urlEncode(materia));
+  server.sendHeader("Location","/students?materia=" + urlEncode(String(materia)));
   server.send(303,"text/plain","Removed");
 }
 
