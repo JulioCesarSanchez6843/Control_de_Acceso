@@ -1,4 +1,4 @@
-// src/main.cpp  (versión corregida - sin inicializar/abrir servo desde setup)
+// src/main.cpp  (versión corregida - inicializa y attach del servo)
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
@@ -17,10 +17,6 @@
 #include "files_utils.h"
 #include "rfid_handler.h"
 #include "web/web_routes.h"
-
-// NOTA: las variables globales relacionadas con captura (capturedUIDs,
-// isCapturing, isBatchCapture) se DEFINEN en globals.cpp. Aquí NO deben
-// volver a definirse para evitar errores de linkeo.
 
 // cuánto esperar (ms) a que NTP sincronice antes de seguir 
 static const unsigned long NTP_TIMEOUT_MS = 30UL * 1000UL; // 30 segundos
@@ -192,9 +188,17 @@ void setup() {
   displayInit();
   Serial.println("displayInit() OK.");
 
-  // NOTA: He quitado la inicialización/attach del servo según tu petición.
-  // Si en el futuro quieres volver a controlar el servo desde el ESP,
-  // restaura: puerta.attach(SERVO_PIN); puerta.write(0);
+  // ------------------------------------------------
+  // INICIALIZAR SERVO (necesario para que puerta.write() funcione)
+  // ------------------------------------------------
+  // Asegúrate de que SERVO_PIN esté definido en config.h y corresponde al pin físico.
+  // Si tu SERVO necesita ajuste de ángulos o valores min/max, cámbialo aquí.
+  Serial.printf("Inicializando servo. Pin esperado (SERVO_PIN) = %d\n", SERVO_PIN);
+  // Attach del servo
+  puerta.attach(SERVO_PIN);
+  // Posición inicial (cerrado). Ajusta si en tu mecánica "0" no es cerrado.
+  puerta.write(0);
+  Serial.println("Servo attach OK. Posición inicial 0.");
 
   // Registrar rutas web (registerRoutes debe estar en web/web_routes.cpp)
   registerRoutes();
