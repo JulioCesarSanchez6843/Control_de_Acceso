@@ -1,4 +1,4 @@
-// src/display.cpp  (corregido)
+// src/display.cpp
 #include "display.h"
 #include "globals.h"
 #include "config.h"
@@ -7,7 +7,7 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
-#include <algorithm> // std::min
+#include <algorithm>
 
 #pragma push_macro("LOW")
 #pragma push_macro("HIGH")
@@ -23,10 +23,11 @@
 #pragma pop_macro("HIGH")
 #pragma pop_macro("LOW")
 
-static const unsigned long ACCESS_SCREEN_MS = 4000UL; // 4s>
-static const unsigned long TEMP_RED_MS = 3000UL;      // 2s para mensajes rojos (ajustado)
+// Duraciones de pantallas
+static const unsigned long ACCESS_SCREEN_MS = 4000UL;
+static const unsigned long TEMP_RED_MS = 3000UL;
 
-// Estado interno para restauración de pantalla tras mensajes temporales
+// Estado para restauración de pantalla
 static bool g_lastWasQR = false;
 static String g_lastQRUrl = String();
 static int g_lastQRSize = 0;
@@ -35,14 +36,16 @@ static bool g_lastWasCapture = false;
 static bool g_lastCaptureBatch = false;
 static String g_lastCaptureUID = String();
 
-// Estado para mensajes temporales no bloqueantes
-static bool g_showTempMessage = false;           // requested to show
+// Estado de mensajes rojos temporales
+static bool g_showTempMessage = false;
 static String g_tempMessage = "";
 static unsigned long g_tempMessageStart = 0;
 static unsigned long g_tempMessageDuration = 0;
-static bool g_tempMessageActive = false;         // currently drawn on screen
+static bool g_tempMessageActive = false;
 
-// ----------------- Helpers gráficos -----------------
+// ---------------------------------------------------------
+// Funciones de dibujo básicas
+// ---------------------------------------------------------
 static void drawCheckIcon(int cx, int cy, int r) {
   tft.fillCircle(cx, cy, r, ST77XX_GREEN);
   int x1 = cx - r/2;
@@ -65,6 +68,56 @@ static void drawCrossIcon(int cx, int cy, int r) {
     tft.drawLine(cx - off + o, cy + off, cx + off + o, cy - off, ST77XX_WHITE);
   }
 }
+
+// Reloj de arena dibujado con dos triángulos unidos (estilo icono enviado)
+static void drawWaitIcon(int cx, int cy, int r) {
+  // r controla el "radio" aproximado; ajustamos puntos relativos
+  uint16_t frameColor = ST77XX_WHITE;
+  uint16_t sandColor  = ST77XX_YELLOW;
+  uint16_t glassColor = ST77XX_BLUE; // opcional para relleno del vidrio si se quisiera
+
+  // coordenadas principales
+  int topY = cy - r;       // línea superior del triángulo superior
+  int bottomY = cy + r;    // línea inferior del triángulo inferior
+  int left = cx - r;
+  int right = cx + r;
+  int centerX = cx;
+  int centerY = cy;
+
+  // limpiar área del icono (evita solapamientos)
+  tft.fillRect(left - 2, topY - 2, (right - left) + 5, (bottomY - topY) + 5, ST77XX_BLACK);
+
+  // Dibujar líneas de marco superior e inferior (como en la imagen)
+  tft.drawLine(left, topY - 2, right, topY - 2, frameColor);     // barra superior
+  tft.drawLine(left, bottomY + 2, right, bottomY + 2, frameColor); // barra inferior
+
+  // Dibujar triángulos (contorno)
+  tft.drawTriangle(left, topY, right, topY, centerX, centerY, frameColor);     // triángulo superior (vértices: left-top, right-top, center)
+  tft.drawTriangle(left, bottomY, right, bottomY, centerX, centerY, frameColor); // triángulo inferior (vértices: left-bottom, right-bottom, center)
+
+  // Relleno "vidrio" opcional muy sutil (comentar si no se quiere)
+  // tft.fillTriangle(left+1, topY+1, right-1, topY+1, centerX, centerY-1, glassColor);
+  // tft.fillTriangle(left+1, bottomY-1, right-1, bottomY-1, centerX, centerY+1, glassColor);
+
+  // Rellenar "arena" superior (pequeña porción en triángulo superior)
+  int sandTopLeftX = cx - r/3;
+  int sandTopRightX = cx + r/3;
+  int sandTopY = topY + (r/3);
+  tft.fillTriangle(sandTopLeftX, sandTopY, sandTopRightX, sandTopY, centerX, centerY - (r/6), sandColor);
+
+  // Rellenar "arena" acumulada abajo
+  int sandBotLeftX = cx - r/2;
+  int sandBotRightX = cx + r/2;
+  int sandBotY = bottomY;
+  tft.fillTriangle(sandBotLeftX, sandBotY, sandBotRightX, sandBotY, centerX, centerY + (r/2), sandColor);
+
+  // Línea central fina que sugiere paso de arena
+  tft.drawFastVLine(centerX, centerY - (r/8), (r/4) + 1, frameColor);
+}
+
+// --------------------------------------------------------------------------------
+// resto del archivo (sin cambios de lógica salvo posicionamiento del icono/UID)
+// --------------------------------------------------------------------------------
 
 static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
   tft.setTextSize(size);
@@ -90,7 +143,7 @@ static void drawHeader() {
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
-// Dibuja mensaje rojo (no bloqueante) encima de lo que haya
+// Dibuja mensaje rojo temporal
 static void drawTemporaryRedMessageNow(const String &msg) {
   int wpad = 8;
   tft.setTextSize(1);
@@ -101,6 +154,7 @@ static void drawTemporaryRedMessageNow(const String &msg) {
   int boxH = h + 8;
   int left = (tft.width() - boxW) / 2;
   int top = (tft.height() - boxH) / 2;
+
   if (left < 0) left = 0;
   if (top < 0) top = 0;
 
@@ -110,7 +164,9 @@ static void drawTemporaryRedMessageNow(const String &msg) {
   tft.print(msg);
 }
 
-// ----------------- API pública -----------------
+// ---------------------------------------------------------
+// Inicialización
+// ---------------------------------------------------------
 void displayInit() {
   tft.initR(INITR_BLACKTAB);
   tft.setRotation(1);
@@ -121,29 +177,30 @@ void displayInit() {
 
   drawHeader();
   ledOff();
-
   showWaitingMessage();
 }
 
+// Pantalla principal
 void showWaitingMessage() {
-  // actualizar estado
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
-  // reset mensajes temporales
+
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
   drawHeader();
   clearContentArea();
-  drawCenteredText("Bienvenido", 28, 1, ST77XX_WHITE);
-  drawCenteredText("Esperando tarjeta...", 56, 1, ST77XX_WHITE);
+  drawCenteredText("Bienvenido", 28, 1);
+  drawCenteredText("Esperando tarjeta...", 56, 1);
   ledOff();
 }
 
+// ---------------------------------------------------------
+// Acceso concedido
+// ---------------------------------------------------------
 void showAccessGranted(const String &name, const String &materia, const String &uid) {
-  // cancelar cualquier temp message activo
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
@@ -152,30 +209,31 @@ void showAccessGranted(const String &name, const String &materia, const String &
   g_lastCaptureUID = String();
 
   tft.fillScreen(ST77XX_BLACK);
+
   int cx = tft.width() / 2;
   int cy = 34;
   int r = std::min(tft.width(), tft.height()) / 7;
   drawCheckIcon(cx, cy, r);
 
   int baseY = cy + r + 4;
-  drawCenteredText("ACCESO CONCEDIDO", baseY, 1, ST77XX_WHITE);
+  drawCenteredText("ACCESO CONCEDIDO", baseY, 1);
 
-  if (name.length()) drawCenteredText(name, baseY + 16, 1, ST77XX_WHITE);
-  if (materia.length()) drawCenteredText(materia, baseY + 28, 1, ST77XX_WHITE);
-  if (uid.length()) drawCenteredText(uid, baseY + 40, 1, ST77XX_WHITE);
+  if (name.length()) drawCenteredText(name, baseY + 16, 1);
+  if (materia.length()) drawCenteredText(materia, baseY + 28, 1);
+  if (uid.length()) drawCenteredText(uid, baseY + 40, 1);
 
   ledGreenOn();
 
   unsigned long start = millis();
-  while (millis() - start < ACCESS_SCREEN_MS) {
-    delay(10);
-  }
+  while (millis() - start < ACCESS_SCREEN_MS) delay(10);
 
   showWaitingMessage();
 }
 
+// ---------------------------------------------------------
+// Acceso denegado
+// ---------------------------------------------------------
 void showAccessDenied(const String &reason, const String &uid) {
-  // cancelar cualquier temp message activo
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
@@ -184,30 +242,31 @@ void showAccessDenied(const String &reason, const String &uid) {
   g_lastCaptureUID = String();
 
   tft.fillScreen(ST77XX_BLACK);
+
   int cx = tft.width() / 2;
   int cy = 34;
   int r = std::min(tft.width(), tft.height()) / 7;
   drawCrossIcon(cx, cy, r);
 
   int baseY = cy + r + 4;
-  drawCenteredText("ACCESO DENEGADO", baseY, 1, ST77XX_WHITE);
+  drawCenteredText("ACCESO DENEGADO", baseY, 1);
 
-  if (reason.length()) drawCenteredText(reason, baseY + 16, 1, ST77XX_WHITE);
-  else drawCenteredText("Tarjeta no reconocida", baseY + 16, 1, ST77XX_WHITE);
+  if (reason.length()) drawCenteredText(reason, baseY + 16, 1);
+  else drawCenteredText("Tarjeta no reconocida", baseY + 16, 1);
 
-  if (uid.length()) drawCenteredText(uid, baseY + 32, 1, ST77XX_WHITE);
+  if (uid.length()) drawCenteredText(uid, baseY + 32, 1);
 
   ledRedOn();
 
   unsigned long start = millis();
-  while (millis() - start < ACCESS_SCREEN_MS) {
-    delay(10);
-  }
+  while (millis() - start < ACCESS_SCREEN_MS) delay(10);
 
   showWaitingMessage();
 }
 
-// ----------------- Dibujar QR -----------------
+// ---------------------------------------------------------
+// Mostrar QR
+// ---------------------------------------------------------
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   using qrcodegen::QrCode;
   QrCode qr = QrCode::encodeText(url.c_str(), static_cast<qrcodegen::QrCode::Ecc>(0));
@@ -221,14 +280,12 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   if (modulePx <= 0) modulePx = 1;
   int totalPx = modulePx * s;
 
-  // marcar estado QR activo (para restauración luego)
   g_lastWasQR = true;
   g_lastQRUrl = url;
   g_lastQRSize = pixelBoxSize;
   g_lastWasCapture = false;
   g_lastCaptureUID = String();
 
-  // reset temp temporary message states so QR shows clean
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
@@ -236,14 +293,13 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
 
   int left = (tft.width() - totalPx) / 2;
   int top  = (tft.height() - totalPx) / 2;
-  if (left < 0) left = 0;
-  if (top < 0) top = 0;
 
   const int pad = 3;
   int bgLeft = left - pad;
   int bgTop  = top  - pad;
   int bgW    = totalPx + 2 * pad;
   int bgH    = totalPx + 2 * pad;
+
   if (bgLeft < 0) bgLeft = 0;
   if (bgTop < 0) bgTop = 0;
   if (bgLeft + bgW > tft.width())  bgW = tft.width() - bgLeft;
@@ -253,181 +309,144 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
 
   for (int y = 0; y < s; ++y) {
     for (int x = 0; x < s; ++x) {
-      bool dark = qr.getModule(x, y);
-      int px = left + x * modulePx;
-      int py = top  + y * modulePx;
-      if (dark) tft.fillRect(px, py, modulePx, modulePx, ST77XX_BLACK);
+      if (qr.getModule(x, y)) {
+        int px = left + x * modulePx;
+        int py = top  + y * modulePx;
+        tft.fillRect(px, py, modulePx, modulePx, ST77XX_BLACK);
+      }
     }
   }
 
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE);
-
   String hint = "Escanee el QR para registrarse";
-  int16_t x1, y1; uint16_t w, h;
-  int spaceBelow = tft.height() - (top + totalPx);
-  int textY;
-  if (spaceBelow > 28) textY = top + totalPx + 2;
-  else textY = 2;
-
-  tft.getTextBounds(hint, 0, textY, &x1, &y1, &w, &h);
-  int tx = (tft.width() - w) / 2; if (tx < 0) tx = 0;
-  tft.setCursor(tx, textY);
-  tft.print(hint);
+  int textY = top + totalPx + 2;
+  drawCenteredText(hint, textY, 1);
 
   String title = "Registrando nuevo usuario";
-  int titleY = textY + 14;
-  if (titleY + 12 > tft.height()) titleY = textY - 12;
-  drawCenteredText(title, titleY, 1, ST77XX_WHITE);
+  drawCenteredText(title, textY + 14, 1);
 
-  // Mostrar banner superior pequeño para instrucción (no borra QR)
   showSelfRegisterBanner(String());
 }
 
-// Mostrar banner pequeño indicando bloqueo por auto-registro (overlay sobre pantalla actual).
-void showSelfRegisterBanner(const String & /*uid_unused_for_qr*/) {
+void showSelfRegisterBanner(const String &) {
   int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
   tft.drawFastHLine(0, h-1, tft.width(), ST77XX_WHITE);
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE);
-
-  String t = "Registrando nuevo usuario... No pasar tarjeta";
-  if (t.length() > 48) t = t.substring(0, 48);
-  int16_t x1,y1; uint16_t w,hb;
-  tft.getTextBounds(t,0,2,&x1,&y1,&w,&hb);
-  int x = (tft.width()-w)/2; if (x<0) x=0;
-  tft.setCursor(x, 2);
-  tft.print(t);
+  drawCenteredText("Registrando nuevo usuario... No pasar tarjeta", 2, 1);
 }
 
-// ----------------- Indicador modo captura -----------------
+// ---------------------------------------------------------
+// Modo captura
+// ---------------------------------------------------------
 void showCaptureMode(bool batch, bool paused) {
   int bannerH = 18;
   int y = 22;
+
   tft.fillRect(0, y, tft.width(), bannerH, ST77XX_BLACK);
   tft.drawFastHLine(0, y + bannerH - 1, tft.width(), ST77XX_WHITE);
-  tft.setTextSize(1);
-  tft.setTextColor(ST77XX_WHITE);
 
   String txt;
   if (batch) {
-    txt = "Modo Captura: BATCH";
-    if (paused) txt += " (PAUSADO)";
-    else txt += " (ACTIVO)";
+    txt = paused ? "Modo Captura: BATCH (PAUSADO)" : "Modo Captura: BATCH (ACTIVO)";
   } else {
     txt = "Modo Captura: INDIVIDUAL";
   }
 
-  if (txt.length() > 48) txt = txt.substring(0, 48);
-  int16_t x1,y1; uint16_t w,h;
-  tft.getTextBounds(txt,0,y+2,&x1,&y1,&w,&h);
-  int x = (tft.width() - w) / 2;
-  if (x < 0) x = 0;
-  tft.setCursor(x, y + 2);
-  tft.print(txt);
+  drawCenteredText(txt, y + 2, 1);
 }
 
-// ----------------- Pantalla: captura en progreso -----------------
+// ---------------------------------------------------------
+// Pantalla de captura en progreso
+// ---------------------------------------------------------
 void showCaptureInProgress(bool batch, const String &uid) {
-  // actualizar estado
   g_lastWasCapture = true;
   g_lastCaptureBatch = batch;
   g_lastCaptureUID = uid;
   g_lastWasQR = false;
-  g_lastQRUrl = String();
 
-  // no borrar un temp message activo aquí; updateDisplay() se encargará de restaurar si corresponde
-  g_showTempMessage = g_showTempMessage; // no-op to indicate we preserve it
-
-  drawHeader();
-  clearContentArea();
-
+  // Para BATCH mantenemos encabezado; para INDIVIDUAL quitamos encabezado para ganar espacio
   if (batch) {
-    drawCenteredText("CAPTURA EN LOTE", 28, 2, ST77XX_WHITE);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    int left = 8;
-    int y = 56;
-    tft.setCursor(left, y);
-    tft.print("Acerca varias tarjetas. Cada UID se pondrÃ¡ en la cola.");
-    tft.setCursor(left, y + 14);
-    tft.print("Revise la app / web para ver la lista y terminar.");
+    drawHeader();
+    clearContentArea();
   } else {
-    drawCenteredText("CAPTURA INDIVIDUAL", 28, 2, ST77XX_WHITE);
-    tft.setTextSize(1);
-    tft.setTextColor(ST77XX_WHITE);
-    int left = 8;
-    int y = 56;
-    tft.setCursor(left, y);
-    tft.print("Acerca una tarjeta para generar el formulario.");
-    tft.setCursor(left, y + 14);
-    tft.print("Complete los datos en la web.");
+    // limpiar explícitamente el encabezado y el contenido para evitar solape
+    tft.fillRect(0, 0, tft.width(), 22, ST77XX_BLACK);
+    clearContentArea();
   }
 
-  // Mostrar UID en proceso (si se dio) en renglones cortos
+  if (batch) {
+    drawCenteredText("CAPTURA EN LOTE", 28, 2);
+    tft.setCursor(8, 56);
+    tft.print("Acerca varias tarjetas.");
+    tft.setCursor(8, 70);
+    tft.print("Cada UID se pondra en cola.");
+  } else {
+    // Texto resumido para modo individual, ubicado más arriba para evitar solape
+    drawCenteredText("MODO CAPTURA INDIVIDUAL", 28, 1);
+    drawCenteredText("Espere al administrador", 44, 1);
+
+    // Ícono (reloj de arena de dos triángulos) en la posición entre texto y UID
+    int cx = tft.width() / 2;
+    int icon_cy = (88 + (tft.height() - 52)) / 2; // posición entre texto y área de UID
+    int r = 12; // tamaño del icono
+    drawWaitIcon(cx, icon_cy, r);
+  }
+
+  // Mostrar UID en proceso (si se dio) en la parte más baja de la pantalla
   if (uid.length()) {
     String uu = uid;
     if (uu.length() > 16) uu = uu.substring(0, 16);
     if (uu.length() > 8) {
       String r1 = uu.substring(0, uu.length()/2);
       String r2 = uu.substring(uu.length()/2);
-      drawCenteredText(r1, tft.height() - 44, 1, ST77XX_WHITE);
-      drawCenteredText(r2, tft.height() - 32, 1, ST77XX_WHITE);
+      // dos líneas colocadas muy abajo
+      drawCenteredText(r1, tft.height() - 18, 1);
+      drawCenteredText(r2, tft.height() - 8, 1);
     } else {
-      drawCenteredText("UID: " + uu, tft.height() - 38, 1, ST77XX_WHITE);
+      // una línea colocada muy abajo
+      drawCenteredText("UID: " + uu, tft.height() - 8, 1);
     }
   }
 
-  unsigned long m = millis();
-  int dots = (m / 400) % 4; // 0..3
-  String dotsStr = "";
-  for (int i = 0; i < dots; ++i) dotsStr += ".";
-  String waiting = "Esperando tarjeta" + dotsStr;
-  drawCenteredText(waiting, tft.height() - 18, 1, ST77XX_WHITE);
+  // Mantener animación "Esperando tarjeta..." solo para BATCH
+  if (batch) {
+    unsigned long m = millis();
+    int dots = (m / 400) % 4;
+    String dotsStr = "";
+    for (int i = 0; i < dots; ++i) dotsStr += ".";
+    drawCenteredText("Esperando tarjeta" + dotsStr, tft.height() - 18, 1);
+  }
 }
 
-// ----------------- Mensajes temporales (rojo) NO BLOQUEANTE -----------------
-// Ahora: si ya hay un mensaje temporal activo, NO lo sobreescribimos ni reiniciamos.
-// Esto evita efectos de 'pegado' cuando varias partes llaman a la función.
+// ---------------------------------------------------------
+// Mensajes rojos temporales
+// ---------------------------------------------------------
 void showTemporaryRedMessage(const String &msg, unsigned long durationMs) {
   if (durationMs == 0) durationMs = TEMP_RED_MS;
+  if (g_tempMessageActive) return;
 
-  // Si ya hay un mensaje temporal activo, ignorar nuevas solicitudes
-  if (g_tempMessageActive) {
-    // opcional: podemos extender la duración si se quiere; por ahora no extiende
-    return;
-  }
-
-  // Configurar el mensaje temporal
   g_showTempMessage = true;
   g_tempMessage = msg;
   g_tempMessageStart = millis();
   g_tempMessageDuration = durationMs;
   g_tempMessageActive = true;
 
-  // Dibujar el mensaje inmediatamente
   drawTemporaryRedMessageNow(msg);
 }
 
-// Complemento: consulta (opcional) para otros módulos
 bool isTemporaryMessageActive() {
   return g_tempMessageActive;
 }
 
-// ----------------- Función de actualización no bloqueante -----------------
+// ---------------------------------------------------------
+// Actualización de pantalla
+// ---------------------------------------------------------
 void updateDisplay() {
-  // Manejar mensajes temporales
   if (g_tempMessageActive) {
-    unsigned long currentTime = millis();
-    if (currentTime - g_tempMessageStart >= g_tempMessageDuration) {
-      // tiempo cumplido -> limpiar overlay y restaurar pantalla anterior
+    if (millis() - g_tempMessageStart >= g_tempMessageDuration) {
       g_showTempMessage = false;
       g_tempMessageActive = false;
 
-      // Restaurar pantalla previa según estado guardado
       if (g_lastWasQR && g_lastQRUrl.length() > 0) {
-        // volver a redibujar QR
         showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
       } else if (g_lastWasCapture) {
         showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
@@ -439,9 +458,10 @@ void updateDisplay() {
   }
 }
 
-// ----------------- Cancelar captura y volver a normal -----------------
+// ---------------------------------------------------------
+// Cancelar captura
+// ---------------------------------------------------------
 void cancelCaptureAndReturnToNormal() {
-  // Limpiar todos los estados de captura y QR
   g_lastWasQR = false;
   g_lastQRUrl = String();
   g_lastWasCapture = false;
@@ -450,11 +470,12 @@ void cancelCaptureAndReturnToNormal() {
   g_showTempMessage = false;
   g_tempMessageActive = false;
 
-  // Volver directamente a la pantalla de bienvenido
   showWaitingMessage();
 }
 
-// ----------------- LEDs -----------------
+// ---------------------------------------------------------
+// LEDs
+// ---------------------------------------------------------
 void ledOff() {
   digitalWrite(RGB_R_PIN, HIGH);
   digitalWrite(RGB_G_PIN, HIGH);

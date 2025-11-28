@@ -1,10 +1,9 @@
 #pragma once
 // Declaraciones públicas de utilidades de archivos usadas por el proyecto.
-// Este header **no** vuelve a declarar Course/ScheduleEntry (ya están en globals.h).
 #include <vector>
 #include <Arduino.h>
 #include <FS.h>
-#include "globals.h"   // <-- usar las definiciones de structs desde aquí
+#include "globals.h"  
 
 // --- Parse / I/O básico ---
 std::vector<String> parseQuotedCSVLine(const String &line);

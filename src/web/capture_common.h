@@ -10,9 +10,6 @@
 #include "files_utils.h"
 #include "self_register.h"
 
-// Nota: header-only helpers como static inline para evitar multiple definition.
-
-// Ruta por defecto si no fue definida externamente
 #ifndef CAPTURE_QUEUE_FILE
 static const char *CAPTURE_QUEUE_FILE_LOCAL = "/capture_queue.csv";
 #define CAPTURE_QUEUE_FILE CAPTURE_QUEUE_FILE_LOCAL
@@ -68,7 +65,6 @@ static inline bool writeCaptureQueue(const std::vector<String> &q) {
   return true;
 }
 
-// Sanitizers separados para alumnos / maestros — evita redirigir maestros a students_all
 static inline String sanitizeReturnToStudents(const String &rt) {
   if (rt.length() > 0 && rt[0] == '/') return rt;
   return String("/students_all");

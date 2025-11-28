@@ -9,8 +9,6 @@
 #include <vector>
 #include <FS.h>
 
-// NOTE: no incluimos <Servo.h> ni <ESP32Servo.h> aquí para evitar errores
-// de includePath/IntelliSense en el editor. Hacemos una forward-declaration.
 class Servo;
 
 // ---------------- CONFIG ----------------
