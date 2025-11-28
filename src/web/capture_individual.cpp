@@ -10,11 +10,10 @@
 #include "web_common.h"
 #include "files_utils.h"
 #include "display.h"
-#include "edit.h"   // <-- añadido para delegar /capture_edit a edit.cpp
+#include "edit.h"   // <-- delegado para /capture_edit
 
 // JSON escape
 static String jsonEscapeLocal(const String &s) {
-  // Evita problemas de sobrecarga en algunos toolchains pasando String(...) a replace
   String o = s;
   o.replace(String("\\"), String("\\\\"));
   o.replace(String("\""), String("\\\""));
@@ -191,12 +190,23 @@ void capture_individual_page() {
   captureAccount = "";
   captureDetectedAt = 0;
 
-  #ifdef USE_DISPLAY
-  showCaptureMode(false, false);
-  #endif
-
   String target = server.hasArg("target") ? server.arg("target") : "students";
   String return_page = (target == "teachers") ? String("/teachers_all") : String("/students_all");
+
+  // --- START=1 HANDLER ---
+  // Si la URL contiene start=1 queremos activar modo captura y mostrar la pantalla
+  // de captura en el display inmediatamente. Esto permite que los enlaces
+  // /capture_individual?target=...&start=1 activen display + form en un paso.
+  if (server.hasArg("start") && server.arg("start") == "1") {
+    bool isTeacher = (target == "teachers");
+    #ifdef USE_DISPLAY
+    Serial.println("capture_individual_page: start=1 -> showCaptureEntered()");
+    // Mostrar la pantalla explicativa / de entrada a modo captura (no bloqueante)
+    showCaptureEntered(isTeacher);
+    // Mostrar el banner de modo captura (pequeño)
+    showCaptureMode(isTeacher, false);
+    #endif
+  }
 
   // preparar lista materias si es students
   std::vector<String> materias;
@@ -352,14 +362,10 @@ function pollUID(){
         setWarn(j.blocked_message || 'Acción no permitida');
         if(submitBtn) submitBtn.disabled = true;
 
-        // IMPORTANT CHANGE: don't clear fields and don't remove user-edited markers.
-        // Preserve whatever the user has typed.
-
         // Respect server hint to stop capture, but avoid reloading which would clear fields:
         if(j.restart_after_ms){
           setTimeout(function(){
             try { navigator.sendBeacon('/capture_stop'); } catch(e){}
-            // do NOT redirect the page - keep user inputs intact
           }, j.restart_after_ms);
         }
       } else if(j.status === 'found'){
@@ -427,7 +433,6 @@ document.addEventListener('DOMContentLoaded', function(){
   var accField = document.getElementById('account');
   if(nameField){
     nameField.addEventListener('input', function(){ nameField.dataset.userEdited = '1'; });
-    // if user submits or resets, marker will be cleared on submit handler
   }
   if(accField){
     accField.addEventListener('input', function(){ accField.dataset.userEdited = '1'; });
@@ -730,7 +735,7 @@ void capture_individual_confirm() {
 
     if (materiasList.size() > 0) {
       String mats = "";
-      for (size_t i=0;i<materiasList.size();++i) {
+      for (size_t i=0;i<materiasList.size();++i){
         if (i) mats += "; ";
         mats += materiasList[i];
       }
@@ -742,7 +747,7 @@ void capture_individual_confirm() {
     html += "<p class='small' style='margin-top:10px;color:#333;'>Si desea editar este usuario pulse el botón Editar usuario. También puede cancelar la captura con el botón rojo.</p>";
 
     html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
-    // ORDER CHANGED: Volver a Captura (verde) in place of previous Inicio
+    // Volver a Captura (verde)
     html += "<a class='btn btn-green' href='/capture_individual?target=" + escapeHTML(target) + "' style='background:#27ae60;color:#fff;" + btnStyle + "'>Volver a Captura</a>";
 
     // Editar usuario (amarillo)
@@ -753,10 +758,10 @@ void capture_individual_confirm() {
       html += "<a class='btn btn-yellow' href='/' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
     }
 
-    // Now put Inicio where Volver used to be (blue)
+    // Inicio (azul)
     html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;" + btnStyle + "'>Inicio</a>";
 
-    // Cancelar registro (rojo) - como formulario para POST
+    // Cancelar registro (rojo)
     html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
             "<input type='hidden' name='return_to' value='/' />"
             "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;" + btnStyle + "border:none;cursor:pointer;'>Cancelar registro</button>"
@@ -770,7 +775,7 @@ void capture_individual_confirm() {
   // PROHIBIR que una tarjeta registrada como alumno sea registrada como maestro y viceversa (POST side)
   if (target == "teachers") {
     if (uidExistsInUsers(uid)) {
-      // tarjeta ya usada como alumno -> denegar (this is a double-check, poll already blocks earlier)
+      // tarjeta ya usada como alumno -> denegar
       String foundName="", foundAccount="";
       std::vector<String> materiasList;
       File fu = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -817,7 +822,7 @@ void capture_individual_confirm() {
     }
   } else if (target == "students") {
     if (uidExistsInTeachers(uid)) {
-      // tarjeta ya usada como maestro -> denegar (double-check)
+      // tarjeta ya usada como maestro -> denegar
       String foundName="", foundAccount="";
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
@@ -899,6 +904,12 @@ void capture_individual_confirm() {
     }
 
     // OK: persist user record (materia puede estar vacía)
+    // Mostrar overlay indicando que admin está procesando (pantalla reloj/espera)
+    #ifdef USE_DISPLAY
+    showTemporaryRedMessage("Administrador capturando, por favor espere...", 1500UL);
+    delay(1600); // breve pausa para que el overlay sea visible
+    #endif
+
     String created = nowISO();
     String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
     if (!appendLineToFile(USERS_FILE, line)) { server.send(500, "text/plain", "Error guardando usuario"); return; }
@@ -906,6 +917,11 @@ void capture_individual_confirm() {
     // attendance
     String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura\"";
     if (!appendLineToFile(ATT_FILE, rec)) { server.send(500, "text/plain", "Error guardando attendance"); return; }
+
+    // Mostrar éxito en el display (si está habilitado) — ALUMNO
+    #ifdef USE_DISPLAY
+    showAccessGranted(name, (materia.length() ? materia : String("Alumno")), uid);
+    #endif
 
     // reset capture
     captureMode = false; captureBatchMode = false;
@@ -924,9 +940,21 @@ void capture_individual_confirm() {
   // FLOW: teachers
   if (target == "teachers") {
     // account uniqueness already checked above
+
+    // Mostrar overlay indicando que admin está procesando (pantalla reloj/espera)
+    #ifdef USE_DISPLAY
+    showTemporaryRedMessage("Administrador capturando, por favor espere...", 1500UL);
+    delay(1600); // breve pausa para que el overlay sea visible
+    #endif
+
     String created = nowISO();
     String teacherLine = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"\",\"" + created + "\"";
     if (!appendLineToFile(TEACHERS_FILE, teacherLine)) { server.send(500, "text/plain", "Error guardando maestro"); return; }
+
+    // Mostrar éxito en el display (si está habilitado) — MAESTRO
+    #ifdef USE_DISPLAY
+    showAccessGranted(name, String("Maestro"), uid);
+    #endif
 
     captureMode = false; captureBatchMode = false;
     captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
@@ -947,12 +975,23 @@ void capture_individual_confirm() {
 // start/stop helpers
 // --------------------------------------------------
 void capture_individual_startPOST() {
+  // Leer target si el llamado lo incluye (p. ej. ?target=teachers)
+  String target = server.hasArg("target") ? server.arg("target") : String("students");
+  bool isTeacher = (target == "teachers");
+
   captureMode = true; captureBatchMode = false;
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+
   #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
+  // Mostrar pantalla explicativa de captura (usa showCaptureInProgress con uid vacío)
+  showCaptureInProgress(false, String());
+  // Mostrar también el banner de modo
+  showCaptureMode(isTeacher, false);
   #endif
-  server.sendHeader("Location", "/capture_individual");
+
+  // Redirigir manteniendo el target para que el formulario cargue en el modo correcto
+  String loc = "/capture_individual?target=" + target;
+  server.sendHeader("Location", loc);
   server.send(303, "text/plain", "capture started");
 }
 
@@ -967,18 +1006,10 @@ void capture_individual_stopGET() {
 // --------------------------------------------------
 // EDIT page/post - ahora delegan al handler unificado en edit.cpp
 // --------------------------------------------------
-
-// Nota: handleEditGet() y handleEditPost() están implementados en edit.cpp.
-// Este archivo simplemente delega las rutas /capture_edit y /capture_edit_post
-// para que muestren/usen la UI y la lógica unificada de edit.cpp.
-
 void capture_individual_editPage() {
-  // Delegar a handleEditGet() para que /capture_edit use la UI mejorada en edit.cpp
   handleEditGet();
 }
 
 void capture_individual_editPost() {
-  // Delegar al mismo POST handler que usa /edit -> handleEditPost()
-  // Esto permite que tanto /edit_post como /capture_edit_post terminen ejecutando la misma lógica.
   handleEditPost();
 }
