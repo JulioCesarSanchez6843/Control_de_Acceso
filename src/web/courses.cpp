@@ -6,6 +6,7 @@
 #include "globals.h"
 #include <SPIFFS.h>
 #include <vector>
+#include <algorithm>
 
 // ---------- Helpers locales ----------
 static const char *COURSE_KEY_SEP = "||";
@@ -50,10 +51,8 @@ static String jsonEscape(const String &s) {
   return o;
 }
 
-// ---------- Nota importante ----------
 /*
-  loadCourses() y writeCourses() NO se definen aquí para evitar duplicados.
-  Deben existir en files_utils.cpp y estar declaradas en globals.h (ya lo tienes).
+  Nota: loadCourses() y writeCourses() NO se definen aquí; están en files_utils.cpp
 */
 
 // ---------- Helper: contar cursos con nombre dado ----------
@@ -110,7 +109,6 @@ static std::vector<String> getUniqueMateriaNamesLocal() {
 }
 
 // Devuelve lista de profesores para una materia (puede haber varios)
-// Función interna (local)
 static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
   std::vector<String> out;
   auto courses = loadCourses();
@@ -161,6 +159,7 @@ std::vector<String> loadRegisteredTeachersNames() {
 }
 
 // ---------- Handlers: materias ----------
+
 void handleMaterias() {
   String html = htmlHeader("Materias");
   html += "<div class='card'><h2>Materias disponibles</h2>";
@@ -197,10 +196,13 @@ void handleMaterias() {
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
-      html += "<a class='btn btn-green' href='/materias/edit?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "'>✏️ Editar</a> ";
-      html += "<a class='btn btn-yellow' href='/materias_new_schedule?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#f1c40f;color:#111;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📅 Horarios</a> ";
-      html += "<a class='btn btn-purple' href='/students?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>👥 Administrar Estudiantes</a> ";
-      html += "<a class='btn btn-orange' href='/materia_history?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' title='Historial por días' style='background:#e67e22;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>📆 Historial</a> ";
+      // Botones sin iconos; horario con azul claro para que no se pierda
+      html += "<a class='btn btn-green' href='/materias/edit?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "'>Editar</a> ";
+      html += "<a class='btn' href='/materias_new_schedule?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#5dade2;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>Horarios</a> ";
+      // enviar return_to para que la página de students pueda mostrar 'Volver' al listado de materias
+      // además pasamos hide_capture=1 para indicar que desde aquí queremos ocultar los botones de captura en el sub-menu de estudiantes
+      html += "<a class='btn btn-purple' href='/students?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "&return_to=/materias&hide_capture=1' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>Administrar Estudiantes</a> ";
+      html += "<a class='btn btn-orange' href='/materia_history?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='margin-left:6px;'>Historial</a> ";
       html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Eliminar materia y sus horarios/usuarios? Esta acción es irreversible.\");'>"
               "<input type='hidden' name='materia' value='" + c.materia + "'>"
               "<input type='hidden' name='profesor' value='" + c.profesor + "'>"
@@ -228,7 +230,7 @@ void handleMaterias() {
             "</script>";
   }
 
-  html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>➕ Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
+  html += "<p style='margin-top:8px'><a class='btn btn-green' href='/materias/new'>Agregar nueva materia</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200, "text/html", html);
 }
@@ -360,7 +362,7 @@ void handleMateriasNewScheduleGET() {
         html += "<input type='hidden' name='day' value='" + day + "'>";
         html += "<input type='hidden' name='start' value='" + start + "'>";
         html += "<input type='hidden' name='end' value='" + end + "'>";
-        html += "<input class='btn btn-green' type='submit' value='Agregar'>"; 
+        html += "<input class='btn btn-green' type='submit' value='Agregar'>";
         html += "</form>";
       }
       html += "</td>";
@@ -373,7 +375,7 @@ void handleMateriasNewScheduleGET() {
   html += "<p style='margin-top:12px'>";
   if (fromNewFlow) {
     html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Continuar</button></form> ";
-    html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>"; 
+    html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>";
     html += "<input type='hidden' name='materia' value='" + mat + "'>";
     html += "<input type='hidden' name='profesor' value='" + prof + "'>";
     html += "<button class='btn btn-red' type='submit'>Cancelar registro</button>";
@@ -434,7 +436,7 @@ void handleMateriasNewScheduleDelPOST() {
         if (dayc == day && startc == start) {
           String ownerMat, ownerProf;
           if (splitCourseKey(owner, ownerMat, ownerProf)) {
-            if (owner == courseKey) continue; 
+            if (owner == courseKey) continue;
           } else {
             if (owner == mat && countCoursesWithName(mat) == 1) continue;
           }
@@ -461,16 +463,54 @@ void handleMateriasEditGET() {
   }
   if (idx == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
+  // obtener lista de profesores registrados para mostrar en select
+  auto teachers = loadRegisteredTeachersNamesLocal();
+
+  // estilo parecido a capture_individual: tarjeta limpia, inputs amplios
   String html = htmlHeader("Editar Materia");
-  html += "<div class='card'><h2>Editar materia</h2>";
+  html += R"rawliteral(
+<style>
+.edit-card { max-width:720px; margin:14px auto; padding:16px; box-sizing:border-box; }
+.edit-card h2 { margin-top:0; }
+.form-row { margin-bottom:12px; }
+.form-row label { display:block; font-weight:600; margin-bottom:6px; }
+.form-row input, .form-row select { width:100%; padding:10px; border-radius:8px; border:1px solid #dceef9; background:#fff; font-size:14px; }
+.actions-row { display:flex; gap:10px; justify-content:flex-start; margin-top:12px; }
+.small-note { font-size:12px; color:#666; margin-top:6px; }
+</style>
+)rawliteral";
+
+  html += "<div class='card edit-card'><h2>Editar materia</h2>";
   html += "<form method='POST' action='/materias_edit'>";
   html += "<input type='hidden' name='orig_materia' value='" + mat + "'>";
   html += "<input type='hidden' name='orig_profesor' value='" + prof + "'>";
-  html += "Nombre materia:<br><input name='materia' value='" + courses[idx].materia + "' required><br>";
-  html += "Profesor:<br><input name='profesor' value='" + courses[idx].profesor + "' required><br><br>";
-  html += "<input class='btn btn-green' type='submit' value='Guardar cambios'>";
-  html += "</form>";
-  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>" + htmlFooter();
+
+  html += "<div class='form-row'><label>Nombre materia:</label>";
+  html += "<input name='materia' value='" + courses[idx].materia + "' required></div>";
+
+  if (teachers.size() == 0) {
+    html += "<div class='form-row'><label>Profesor (no hay profesores registrados — ingrese nombre):</label>";
+    html += "<input name='profesor' value='" + courses[idx].profesor + "' required></div>";
+    html += "<div class='small-note'>No se encontraron profesores registrados. Puede registrar profesores en el menú de Maestros o escribir el nombre aquí.</div>";
+  } else {
+    html += "<div class='form-row'><label>Profesor (seleccione):</label>";
+    bool currentInList = false;
+    html += "<select name='profesor' required>";
+    for (auto &t : teachers) {
+      if (t == courses[idx].profesor) { html += "<option value='" + t + "' selected>" + t + "</option>"; currentInList = true; }
+      else html += "<option value='" + t + "'>" + t + "</option>";
+    }
+    if (!currentInList) {
+      html += "<option value='" + courses[idx].profesor + "' selected>" + courses[idx].profesor + "</option>";
+    }
+    html += "</select></div>";
+    html += "<div class='small-note'>Si desea un profesor diferente que no aparece en la lista, agréguelo en Maestros y luego estará disponible aquí.</div>";
+  }
+
+  html += "<div class='actions-row'><button class='btn btn-green' type='submit'>Guardar cambios</button>";
+  html += "<a class='btn btn-blue' href='/materias'>Volver</a></div>";
+
+  html += "</form></div>" + htmlFooter();
   server.send(200, "text/html", html);
 }
 
@@ -555,7 +595,11 @@ void handleMateriasEditPOST() {
       if (c.size() >= 4) {
         String uid = c[0], name = c[1], acc = c[2], mm = c[3];
         String created = (c.size() > 4 ? c[4] : "");
-        if (mm == oldMat) mm = mat;
+        if (mm == oldMat && countCoursesWithName(oldMat) == 1) mm = mat;
+        String umat, uprof;
+        if (splitCourseKey(mm, umat, uprof)) {
+          if (mm == oldKey) mm = newKey;
+        }
         ulines.push_back("\"" + uid + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + created + "\"");
       } else ulines.push_back(l);
     }
@@ -613,6 +657,7 @@ void handleMateriasDeletePOST() {
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
         String uid = c[0], name = c[1], acc = c[2], mm = c[3];
+        if (mm == makeCourseKey(mat, prof)) continue;
         if (mm == mat && countCoursesWithName(mat) == 0) continue;
         ulines.push_back(l);
       } else ulines.push_back(l);
@@ -625,15 +670,16 @@ void handleMateriasDeletePOST() {
   server.send(303, "text/plain", "Eliminado");
 }
 
-// --- NUEVO: endpoint JSON para obtener profesores por materia ---
-// GET /profesores_for?materia=...
+// --- Endpoint JSON para obtener profesores por materia ---
+// Responde siempre 200 con JSON {"profesores": [...]}, vacío si no hay materia o no se encuentran
 void handleProfesoresForMateriaGET() {
-  if (!server.hasArg("materia")) {
-    server.send(400, "application/json", "{\"error\":\"materia required\"}");
-    return;
+  String mat = "";
+  if (server.hasArg("materia")) {
+    mat = server.arg("materia");
+    mat.trim();
   }
-  String mat = server.arg("materia"); mat.trim();
-  std::vector<String> profs = getProfessorsForMateria(mat);
+  std::vector<String> profs;
+  if (mat.length() > 0) profs = getProfessorsForMateria(mat);
   String j = "{\"profesores\":[";
   for (size_t i = 0; i < profs.size(); ++i) {
     if (i) j += ",";

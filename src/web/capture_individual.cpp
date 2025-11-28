@@ -10,6 +10,7 @@
 #include "web_common.h"
 #include "files_utils.h"
 #include "display.h"
+#include "edit.h"   // <-- añadido para delegar /capture_edit a edit.cpp
 
 // JSON escape
 static String jsonEscapeLocal(const String &s) {
@@ -964,257 +965,20 @@ void capture_individual_stopGET() {
 }
 
 // --------------------------------------------------
-// EDIT page/post (mantengo lo existente, igual funcionalidad)
+// EDIT page/post - ahora delegan al handler unificado en edit.cpp
 // --------------------------------------------------
-static String sanitizeReturnToLocal(const String &rt) {
-  if (rt.length() > 0 && rt[0] == '/') return rt;
-  return String("/students_all");
-}
+
+// Nota: handleEditGet() y handleEditPost() están implementados en edit.cpp.
+// Este archivo simplemente delega las rutas /capture_edit y /capture_edit_post
+// para que muestren/usen la UI y la lógica unificada de edit.cpp.
 
 void capture_individual_editPage() {
-  if (!server.hasArg("uid")) { server.send(400, "text/plain", "uid required"); return; }
-  String uid = server.arg("uid");
-  String return_to = server.hasArg("return_to") ? server.arg("return_to") : "/students_all";
-  return_to = sanitizeReturnToLocal(return_to);
-
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  bool found = false;
-  String foundName="", foundAccount="", foundMateria="", foundCreated="";
-  String source = "users";
-  if (f) {
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim(); if (l.length()==0) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 1 && c[0] == uid) {
-        foundName = (c.size() > 1 ? c[1] : "");
-        foundAccount = (c.size() > 2 ? c[2] : "");
-        foundMateria = (c.size() > 3 ? c[3] : "");
-        foundCreated = (c.size() > 4 ? c[4] : nowISO());
-        found = true;
-        source = "users";
-        break;
-      }
-    }
-    f.close();
-  }
-
-  if (!found) {
-    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-    if (ft) {
-      while (ft.available()) {
-        String l = ft.readStringUntil('\n'); l.trim(); if (l.length()==0) continue;
-        auto c = parseQuotedCSVLine(l);
-        if (c.size() >= 1 && c[0] == uid) {
-          foundName = (c.size() > 1 ? c[1] : "");
-          foundAccount = (c.size() > 2 ? c[2] : "");
-          foundMateria = (c.size() > 3 ? c[3] : "");
-          foundCreated = (c.size() > 4 ? c[4] : nowISO());
-          found = true;
-          source = "teachers";
-          break;
-        }
-      }
-      ft.close();
-    }
-  }
-
-  if (!found) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
-
-  auto courses2 = loadCourses();
-  std::vector<String> materias;
-  for (auto &c : courses2) {
-    bool ok = true;
-    for (auto &m : materias) if (m == c.materia) { ok = false; break; }
-    if (ok) materias.push_back(c.materia);
-  }
-
-  String foundProfesor = inferProfessorForMateria(foundMateria);
-
-  String html = htmlHeader("Editar Usuario");
-  html += "<div class='card'><h2>Editar Usuario</h2>";
-  html += "<form method='POST' action='/capture_edit_post'>";
-  html += "<input type='hidden' name='uid' value='" + escapeHTML(uid) + "'>";
-  html += "<input type='hidden' name='return_to' value='" + escapeHTML(return_to) + "'>";
-  html += "<input type='hidden' name='source' value='" + escapeHTML(source) + "'>";
-  html += "<label>UID (no editable):</label><br>";
-  html += "<input readonly style='background:#eee;' value='" + escapeHTML(uid) + "'><br><br>";
-  html += "<label>Nombre:</label><br>";
-  html += "<input name='name' required value='" + escapeHTML(foundName) + "'><br><br>";
-  html += "<label>Cuenta:</label><br>";
-  html += "<input name='account' required maxlength='7' minlength='7' value='" + escapeHTML(foundAccount) + "'><br><br>";
-
-  if (source == "users") {
-    html += "<label>Materia:</label><br><select id='edit_materia' name='materia'>";
-    html += "<option value=''>-- Ninguna --</option>";
-    for (auto &m : materias) {
-      String sel = (m == foundMateria) ? " selected" : "";
-      html += "<option value='" + escapeHTML(m) + "'" + sel + ">" + escapeHTML(m) + "</option>";
-    }
-    html += "</select><br><br>";
-
-    html += "<label>Profesor:</label><br>";
-    html += "<select id='edit_profesor' name='profesor'><option value=''>-- Ninguno --</option>";
-    if (foundProfesor.length()) {
-      html += "<option value='" + escapeHTML(foundProfesor) + "' selected>" + escapeHTML(foundProfesor) + "</option>";
-    }
-    html += "</select><br><br>";
-  } else {
-    html += "<input type='hidden' name='materia' value=''>\n";
-    html += "<input type='hidden' name='profesor' value=''>\n";
-    html += "<p class='small'>Este usuario es un maestro; las materias se gestionan por separado.</p>";
-  }
-
-  html += "<label>Registrado:</label><br>";
-  html += "<div style='padding:6px;background:#f5f7f5;border-radius:4px;'>" + escapeHTML(foundCreated) + "</div><br>";
-  html += "<div style='display:flex;gap:10px;justify-content:center;margin-top:10px;'>";
-  html += "<button type='submit' class='btn btn-green'>Guardar</button>";
-  html += "<a class='btn btn-red' href='" + escapeHTML(return_to) + "'>Cancelar</a>";
-  html += "</div></form></div>" + htmlFooter();
-
-  // En editPage no hay warn dinámico en general, pero si quieres que aparezca, podemos agregar similar ayuda JS.
-  html += R"rawliteral(
-<script>
-/* Si se mostrara un warn dinámico aquí, setWarn podría reutilizarse.
-   Mantengo solo la lógica de carga de profesores (sin cambiar comportamiento). */
-document.addEventListener('DOMContentLoaded', function(){
-  var mat = document.getElementById('edit_materia');
-  var prof = document.getElementById('edit_profesor');
-  function clearProf(){ if(prof) { prof.innerHTML = '<option value="">-- Ninguno --</option>'; } }
-  if(mat){
-    mat.addEventListener('change', function(){
-      var val = mat.value || '';
-      clearProf();
-      if(!val) return;
-      fetch('/profesores_for?materia=' + encodeURIComponent(val))
-        .then(r=>r.json())
-        .then(j=>{
-          if(!j || !j.profesores) return;
-          for(var i=0;i<j.profesores.length;i++){
-            var o = document.createElement('option');
-            o.value = j.profesores[i];
-            o.textContent = j.profesores[i];
-            prof.appendChild(o);
-          }
-        }).catch(e=>{});
-    });
-  }
-});
-</script>
-)rawliteral";
-
-  server.send(200, "text/html", html);
+  // Delegar a handleEditGet() para que /capture_edit use la UI mejorada en edit.cpp
+  handleEditGet();
 }
 
 void capture_individual_editPost() {
-  if (!server.hasArg("uid") || !server.hasArg("name") || !server.hasArg("account") || !server.hasArg("return_to") || !server.hasArg("source")) {
-    server.send(400, "text/plain", "Faltan parámetros");
-    return;
-  }
-  String uid = server.arg("uid"); uid.trim();
-  String name = server.arg("name"); name.trim();
-  String account = server.arg("account"); account.trim();
-  String materia = server.hasArg("materia") ? server.arg("materia") : String();
-  materia.trim();
-  String return_to = sanitizeReturnToLocal(server.arg("return_to"));
-  String source = server.arg("source");
-
-  if (uid.length() == 0) { server.send(400, "text/plain", "UID vacío"); return; }
-  if (name.length() == 0) { server.send(400, "text/plain", "Nombre vacío"); return; }
-  if (account.length() != 7) { server.send(400, "text/plain", "Cuenta inválida"); return; }
-  for (size_t i = 0; i < account.length(); i++) if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
-
-  // si cambias la cuenta asegúrate que no exista en otro UID
-  auto accFound = findByAccount(account);
-  if (accFound.first.length() && accFound.first != uid) {
-    server.send(400, "text/plain", "Cuenta duplicada con otro usuario");
-    return;
-  }
-
-  const char* targetFile = (source == "teachers") ? TEACHERS_FILE : USERS_FILE;
-
-  File f = SPIFFS.open(targetFile, FILE_READ);
-  if (!f) { server.send(500, "text/plain", "No se pudo abrir archivo"); return; }
-
-  std::vector<String> lines;
-  String header = f.readStringUntil('\n');
-  lines.push_back(header);
-  bool updated = false;
-
-  // Guardaremos el nombre antiguo si encontramos la línea
-  String oldName = "";
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (l.length() == 0) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 1 && c[0] == uid) {
-      // capture old name before overwriting
-      if (c.size() > 1) oldName = c[1];
-      String created = (c.size() > 4 ? c[4] : nowISO());
-      String mat = (materia.length() ? materia : (c.size() > 3 ? c[3] : ""));
-      String newline = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + mat + "\",\"" + created + "\"";
-      lines.push_back(newline);
-      updated = true;
-    } else lines.push_back(l);
-  }
-  f.close();
-
-  if (!updated) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
-
-  if (!writeAllLines(targetFile, lines)) { server.send(500, "text/plain", "Error guardando"); return; }
-
-  //
-  // NUEVO: Si hemos editado un maestro, y el nombre cambió, actualizar courses y schedules
-  //
-  if (source == "teachers" && oldName.length() && oldName != name) {
-    // 1) actualizar courses: cambiar profesor viejo por nuevo
-    auto courses = loadCourses();
-    bool coursesChanged = false;
-    for (auto &c : courses) {
-      if (c.profesor == oldName) {
-        c.profesor = name;
-        coursesChanged = true;
-      }
-    }
-    if (coursesChanged) {
-      writeCourses(courses);
-    }
-
-    // 2) actualizar schedules: si owner es "materia||oldName" -> "materia||name"
-    File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-    std::vector<String> slines;
-    if (fs) {
-      String sheader = fs.readStringUntil('\n');
-      slines.push_back(sheader);
-      while (fs.available()) {
-        String l = fs.readStringUntil('\n'); l.trim();
-        if (!l.length()) continue;
-        auto p = parseQuotedCSVLine(l);
-        if (p.size() >= 4) {
-          String owner = p[0];
-          int idx = owner.indexOf("||");
-          if (idx >= 0) {
-            String ownerMat = owner.substring(0, idx);
-            String ownerProf = owner.substring(idx + 2);
-            if (ownerProf == oldName) {
-              // replace owner
-              String newOwner = ownerMat + String("||") + name;
-              String day = p[1];
-              String start = p[2];
-              String rest = p[3];
-              String newline = "\"" + newOwner + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
-              slines.push_back(newline);
-              continue;
-            }
-          }
-        }
-        slines.push_back(l);
-      }
-      fs.close();
-      writeAllLines(SCHEDULES_FILE, slines);
-    }
-  }
-
-  server.sendHeader("Location", return_to);
-  server.send(303, "text/plain", "Updated");
+  // Delegar al mismo POST handler que usa /edit -> handleEditPost()
+  // Esto permite que tanto /edit_post como /capture_edit_post terminen ejecutando la misma lógica.
+  handleEditPost();
 }

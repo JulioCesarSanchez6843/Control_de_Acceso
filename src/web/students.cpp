@@ -47,15 +47,26 @@ static String urlEncode(const String &str) {
 void handleStudentsForMateria() {
   if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
   String materia = server.arg("materia");
+  String profesor = server.hasArg("profesor") ? server.arg("profesor") : String();
+  // return_to: optional (where "Volver" should point). If absent, we'll show /materias.
+  String return_to = server.hasArg("return_to") ? server.arg("return_to") : String();
+  bool hideCaptureButtons = server.hasArg("hide_capture") && server.arg("hide_capture") == "1";
+
   String html = htmlHeader(("Alumnos - " + materia).c_str());
   html += "<div class='card'><h2>Alumnos - " + materia + "</h2>";
 
-  // Right-side capture buttons (capturar individual y lote)
+  // Right-side capture buttons (capturar individual y lote) -> SOLO si hideCaptureButtons == false
   String rt = String("/students?materia=") + urlEncode(materia);
-  html += "<div style='display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;'>";
-  html += "<a class='btn btn-blue' href='/capture_individual?return_to=" + urlEncode(rt) + "&target=students'>Capturar individual</a>";
-  html += "<a class='btn btn-blue' href='/capture_batch?return_to=" + urlEncode(rt) + "'>Capturar lote</a>";
-  html += "</div>";
+  if (profesor.length()) rt += "&profesor=" + urlEncode(profesor);
+  if (!hideCaptureButtons) {
+    html += "<div style='display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;'>";
+    html += "<a class='btn btn-blue' href='/capture_individual?return_to=" + urlEncode(rt) + "&target=students'>Capturar individual</a>";
+    html += "<a class='btn btn-blue' href='/capture_batch?return_to=" + urlEncode(rt) + "'>Capturar lote</a>";
+    html += "</div>";
+  } else {
+    // mantén el espacio para que el layout no salte
+    html += "<div style='height:8px;margin-bottom:8px;'></div>";
+  }
 
   // Filtros cliente: Nombre y Cuenta
   html += "<div class='filters'><input id='sf_name' placeholder='Filtrar Nombre'><input id='sf_acc' placeholder='Filtrar Cuenta'><button class='search-btn btn btn-blue' onclick='applyStudentFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearStudentFilters()'>Limpiar</button></div>";
@@ -75,9 +86,13 @@ void handleStudentsForMateria() {
       html += "<tr><td>" + name + "</td><td>" + acc + "</td><td>" + created + "</td>";
 
       html += "<td>";
+      // Form para ELIMINAR SOLO LA MATERIA del alumno
       html += "<form method='POST' action='/student_remove_course' style='display:inline' onsubmit='return confirm(\"Eliminar este alumno de la materia?\");'>";
       html += "<input type='hidden' name='uid' value='" + uid + "'>";
       html += "<input type='hidden' name='materia' value='" + materia + "'>";
+      if (profesor.length()) html += "<input type='hidden' name='profesor' value='" + profesor + "'>";
+      if (return_to.length()) html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
+      html += "<input type='hidden' name='hide_capture' value='" + String(hideCaptureButtons ? "1" : "0") + "'>";
       html += "<input class='btn btn-red' type='submit' value='Eliminar del curso'>";
       html += "</form>";
       html += "</td></tr>";
@@ -90,7 +105,9 @@ void handleStudentsForMateria() {
             "</script>";
   }
 
-  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
+  // Botones inferiores: Volver (usa return_to si existe) y Inicio
+  String backTarget = return_to.length() ? return_to : String("/materias");
+  html += "<p style='margin-top:8px'><a class='btn btn-blue' href='" + backTarget + "'>Volver</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
@@ -194,19 +211,67 @@ void handleStudentsAll() {
 // POST /student_remove_course
 void handleStudentRemoveCourse() {
   if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
-  String uid = server.arg("uid"); String materia = server.arg("materia");
+  String uid = server.arg("uid");
+  String materia = server.arg("materia");
+  String profesor = server.hasArg("profesor") ? server.arg("profesor") : String();
+  String return_to = server.hasArg("return_to") ? server.arg("return_to") : String();
+  bool hideCapture = server.hasArg("hide_capture") && server.arg("hide_capture") == "1";
+
+  // Abrir archivo y leer todas las líneas (sin header)
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) { server.send(500,"text/plain","no file"); return; }
-  std::vector<String> lines; String header = f.readStringUntil('\n'); lines.push_back(header);
+
+  String header = f.readStringUntil('\n');
+  std::vector<String> origLines;
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size()>=4 && c[0]==uid && c[3]==materia) continue;
-    lines.push_back(l);
+    origLines.push_back(l);
   }
   f.close();
-  writeAllLines(USERS_FILE, lines);
-  server.sendHeader("Location","/students?materia=" + urlEncode(String(materia)));
+
+  // Contar cuántas líneas existen para este uid (puede haber varias - diferentes materias)
+  int uidCount = 0;
+  for (auto &l : origLines) {
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 1 && c[0] == uid) uidCount++;
+  }
+
+  // Construir cadenas de comparación: materia simple y posible clave materia||profesor
+  String match1 = materia;
+  String match2 = "";
+  if (profesor.length()) match2 = materia + String("||") + profesor;
+
+  std::vector<String> outLines;
+  outLines.push_back(header);
+
+  for (auto &l : origLines) {
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 4 && c[0] == uid && (c[3] == match1 || (match2.length() && c[3] == match2))) {
+      // Es la línea que vincula este uid con la materia que queremos quitar.
+      if (uidCount > 1) {
+        // hay otras líneas para el mismo uid -> ELIMINAR esta línea (quitar solo esa materia)
+        // (no push)
+        continue;
+      } else {
+        // es la única línea del uid -> conservamos el alumno pero dejamos el campo materia vacío
+        String created = (c.size() > 4 ? c[4] : "");
+        outLines.push_back("\"" + c[0] + "\"," + "\"" + c[1] + "\"," + "\"" + c[2] + "\"," + "\"\"" + "," + "\"" + created + "\"");
+        continue;
+      }
+    }
+    // linea no afectada -> preservar
+    outLines.push_back(l);
+  }
+
+  writeAllLines(USERS_FILE, outLines);
+
+  // construir redirect a la misma lista de estudiantes (preservando return_to, profesor y hide_capture)
+  String redirect = String("/students?materia=") + urlEncode(materia);
+  if (profesor.length()) redirect += "&profesor=" + urlEncode(profesor);
+  if (return_to.length()) redirect += "&return_to=" + urlEncode(return_to);
+  if (hideCapture) redirect += "&hide_capture=1";
+
+  server.sendHeader("Location", redirect);
   server.send(303,"text/plain","Removed");
 }
 
