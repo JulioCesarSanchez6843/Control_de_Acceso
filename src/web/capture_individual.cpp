@@ -1140,11 +1140,16 @@ void capture_individual_editPost() {
   lines.push_back(header);
   bool updated = false;
 
+  // Guardaremos el nombre antiguo si encontramos la línea
+  String oldName = "";
+
   while (f.available()) {
     String l = f.readStringUntil('\n'); l.trim();
     if (l.length() == 0) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 1 && c[0] == uid) {
+      // capture old name before overwriting
+      if (c.size() > 1) oldName = c[1];
       String created = (c.size() > 4 ? c[4] : nowISO());
       String mat = (materia.length() ? materia : (c.size() > 3 ? c[3] : ""));
       String newline = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + mat + "\",\"" + created + "\"";
@@ -1157,6 +1162,58 @@ void capture_individual_editPost() {
   if (!updated) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
 
   if (!writeAllLines(targetFile, lines)) { server.send(500, "text/plain", "Error guardando"); return; }
+
+  //
+  // NUEVO: Si hemos editado un maestro, y el nombre cambió, actualizar courses y schedules
+  //
+  if (source == "teachers" && oldName.length() && oldName != name) {
+    // 1) actualizar courses: cambiar profesor viejo por nuevo
+    auto courses = loadCourses();
+    bool coursesChanged = false;
+    for (auto &c : courses) {
+      if (c.profesor == oldName) {
+        c.profesor = name;
+        coursesChanged = true;
+      }
+    }
+    if (coursesChanged) {
+      writeCourses(courses);
+    }
+
+    // 2) actualizar schedules: si owner es "materia||oldName" -> "materia||name"
+    File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
+    std::vector<String> slines;
+    if (fs) {
+      String sheader = fs.readStringUntil('\n');
+      slines.push_back(sheader);
+      while (fs.available()) {
+        String l = fs.readStringUntil('\n'); l.trim();
+        if (!l.length()) continue;
+        auto p = parseQuotedCSVLine(l);
+        if (p.size() >= 4) {
+          String owner = p[0];
+          int idx = owner.indexOf("||");
+          if (idx >= 0) {
+            String ownerMat = owner.substring(0, idx);
+            String ownerProf = owner.substring(idx + 2);
+            if (ownerProf == oldName) {
+              // replace owner
+              String newOwner = ownerMat + String("||") + name;
+              String day = p[1];
+              String start = p[2];
+              String rest = p[3];
+              String newline = "\"" + newOwner + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
+              slines.push_back(newline);
+              continue;
+            }
+          }
+        }
+        slines.push_back(l);
+      }
+      fs.close();
+      writeAllLines(SCHEDULES_FILE, slines);
+    }
+  }
 
   server.sendHeader("Location", return_to);
   server.send(303, "text/plain", "Updated");

@@ -18,6 +18,8 @@
 #include "self_register.h"  // declara handlers para self-registration
 #include "teachers.h"       // handlers para maestros
 #include "edit.h"           // si no existiera, quítalo o crea el header correspondiente
+// Nota: no incluimos aquí capture_lote.h ni registramos rutas capture_lote_*
+// a menos que tengas implementado ese módulo completo (header + .cpp).
 
 // Declaraciones externas para acceder a las variables de self-register
 extern volatile bool awaitingSelfRegister;
@@ -26,12 +28,15 @@ extern String currentSelfRegToken;
 extern volatile bool blockRFIDForSelfReg;
 extern std::vector<SelfRegSession> selfRegSessions;
 
-// ----- Si agregaste nuevas rutas pero aún no declaraste sus prototipos en headers,
-//       las declaramos aquí para evitar errores de compilación. Si ya están en
-//       notifications.h puedes eliminar estas líneas.
+// ----- Prototipos/forward declarations para funciones que pueden no estar
+//      declaradas en headers incluidos (evita errores de "identifier not defined")
+//      Mantén solo los que realmente falten en tu proyecto.
 void handleNotificationsDeletePOST();
 void handleNotificationsMarkPOST();
-// -----
+
+// El endpoint que devuelve profesores por materia debe existir en courses.cpp
+void handleProfesoresForMateriaGET();
+// ------------------------------------------------------------------------------
 
 void registerRoutes() {
   server.on("/", handleRoot);
@@ -48,19 +53,23 @@ void registerRoutes() {
   server.on("/materias_new_schedule_add", HTTP_POST, handleMateriasNewScheduleAddPOST);
   server.on("/materias_new_schedule_del", HTTP_POST, handleMateriasNewScheduleDelPOST);
 
+  // Endpoint usado por la UI para obtener profesores de una materia (AJAX)
+  // GET /profesores_for?materia=...
+  server.on("/profesores_for", HTTP_GET, handleProfesoresForMateriaGET);
+
   // Students
   server.on("/students", handleStudentsForMateria);
   server.on("/students_all", handleStudentsAll);
   server.on("/student_remove_course", HTTP_POST, handleStudentRemoveCourse);
   server.on("/student_delete", HTTP_POST, handleStudentDelete);
 
-  // Teachers (nuevo conjunto de rutas)
+  // Teachers
   server.on("/teachers", handleTeachersForMateria);
   server.on("/teachers_all", handleTeachersAll);
   server.on("/teacher_remove_course", HTTP_POST, handleTeacherRemoveCourse);
   server.on("/teacher_delete", HTTP_POST, handleTeacherDelete);
 
-  // Captura (shim delega en capture_individual / capture_lote)
+  // Captura (shim delega en capture_individual / capture_batch)
   server.on("/capture", HTTP_GET, handleCapturePage);
   server.on("/capture_individual", HTTP_GET, handleCaptureIndividualPage);
   server.on("/capture_batch", HTTP_GET, handleCaptureBatchPage);
@@ -69,12 +78,15 @@ void registerRoutes() {
   server.on("/capture_poll", HTTP_GET, handleCapturePoll);
   server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
 
-  // Batch endpoints
+  // Batch endpoints (no confundir con capture_lote; estos deben existir)
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
   server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
   server.on("/capture_batch_pause", HTTP_POST, handleCaptureBatchPausePOST);
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
+
+  // Nota: aquí NO registramos las rutas capture_lote_* porque las implementaciones
+  // no están presentes en tu repo actual (evita undefined references).
 
   // Cancel capture & reset display. Ahora respeta return_to si se envía.
   server.on("/cancel_capture", HTTP_POST, []() {

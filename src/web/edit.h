@@ -1,5 +1,8 @@
-#pragma once
-#include <Arduino.h>
+#ifndef WEB_EDIT_H
+#define WEB_EDIT_H
 
-void handleEditGet();   
-void handleEditPost();  
+// Handlers para editar usuarios/maestros
+void handleEditGet();
+void handleEditPost();
+
+#endif // WEB_EDIT_H
