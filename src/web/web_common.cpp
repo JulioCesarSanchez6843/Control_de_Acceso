@@ -1,3 +1,4 @@
+// src/web/web_common.cpp
 #include <Arduino.h>
 #include <WiFi.h>
 #include <FS.h>
@@ -9,15 +10,27 @@
 #include "files_utils.h"   // necesario para parseQuotedCSVLine()
 #include <vector>
 
-// Helper local: construye la misma key que notifications.cpp (ts|uid|nota-truncada)
-static String _makeNotifKeyLocal(const String &ts, const String &uid, const String &note) {
-  String k = ts + "|" + uid;
-  String frag = note;
-  if (frag.length() > 80) frag = frag.substring(0, 80);
-  frag.replace("\n", " ");
-  frag.replace("\r", " ");
-  k += "|" + frag;
-  return k;
+// ---------------------------
+// Utilities: hashing (stable) - DEBE SER IDÉNTICO A notifications.cpp
+// ---------------------------
+// FNV-1a 32bit for a small, stable hex id
+static uint32_t fnv1a_local(const String &s) {
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < s.length(); i++) {
+    hash ^= (uint8_t)s[i];
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+static String notifKeyLocal(const String &ts, const String &uid, const String &note) {
+  // Use full content (ts|uid|note) hashed to produce a compact, stable key.
+  String raw = ts + "|" + uid + "|" + note;
+  uint32_t h = fnv1a_local(raw);
+  // hex string (lowercase)
+  String out = String(h, HEX);
+  out.toLowerCase();
+  return out;
 }
 
 // Cuenta solo las notificaciones NO LEÍDAS (buscando coincidencias con /.notif_read)
@@ -25,7 +38,7 @@ int unreadNotifCount() {
   const char *readFile = "/.notif_read";
   if (!SPIFFS.exists(NOTIF_FILE)) return 0;
 
-  // 1) leer notificaciones y construir keys
+  // 1) leer notificaciones y construir keys usando el mismo método que notifications.cpp
   std::vector<String> notifKeys;
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   if (!f) return 0;
@@ -39,7 +52,8 @@ int unreadNotifCount() {
     String ts = (cols.size()>0?cols[0]:"");
     String uid = (cols.size()>1?cols[1]:"");
     String note = (cols.size()>4?cols[4]:"");
-    String key = _makeNotifKeyLocal(ts, uid, note);
+    // Usar EXACTAMENTE el mismo método que notifications.cpp
+    String key = notifKeyLocal(ts, uid, note);
     notifKeys.push_back(key);
   }
   f.close();
@@ -60,16 +74,19 @@ int unreadNotifCount() {
   }
   rf.close();
 
-  // 4) contar coincidencias (leídas)
-  int matched = 0;
+  // 4) contar NOTIFICACIONES NO LEÍDAS (las que NO están en readKeys)
+  int unread = 0;
   for (auto &k : notifKeys) {
+    bool found = false;
     for (auto &rk : readKeys) {
-      if (k == rk) { matched++; break; }
+      if (k == rk) { 
+        found = true; 
+        break; 
+      }
     }
+    if (!found) unread++;
   }
 
-  int unread = total - matched;
-  if (unread < 0) unread = 0;
   return unread;
 }
 
@@ -514,7 +531,7 @@ String htmlHeader(const char* title) {
   // Barra superior con título y notificaciones
   h += "<div class='topbar'><div style='display:flex;gap:12px;align-items:center'>";
   h += "<div class='title' onclick='location.href=\"/\"'>Control de Acceso - Laboratorio</div>";
-  h += "<a class='notif' href='/notifications' title='Notificaciones'>🔔";
+  h += "<a class='notif' href='/notifications' title='Notificaciones No Leídas'>🔔";
   if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 

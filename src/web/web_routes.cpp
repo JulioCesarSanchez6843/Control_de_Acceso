@@ -31,6 +31,9 @@ extern std::vector<SelfRegSession> selfRegSessions;
 // ----- Prototipos/forward declarations para funciones que pueden no estar
 //      declaradas en headers incluidos (evita errores de "identifier not defined")
 //      Mantén solo los que realmente falten en tu proyecto.
+void handleNotificationsPage();
+void handleNotificationsReadPage();
+void handleNotificationsClearPOST();
 void handleNotificationsDeletePOST();
 void handleNotificationsMarkPOST();
 
@@ -155,10 +158,13 @@ void registerRoutes() {
   server.on("/schedules_for_add", HTTP_POST, handleSchedulesForMateriaAddPOST);
   server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST);
 
-  // Notifications: lista + acciones (clear ya existía)
-  server.on("/notifications", handleNotificationsPage);
+  // Notifications: lista + acciones
+  // /notifications -> vista por defecto: No leídas (GET)
+  server.on("/notifications", HTTP_GET, handleNotificationsPage);           
+  // /notifications_read -> vista: Leídas (GET)
+  server.on("/notifications_read", HTTP_GET, handleNotificationsReadPage);  
+  // acciones (POST)
   server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST);
-  // Rutas nuevas: eliminar una sola notificación y marcar como leído/no leído
   server.on("/notifications_delete", HTTP_POST, handleNotificationsDeletePOST);
   server.on("/notifications_mark", HTTP_POST, handleNotificationsMarkPOST);
 
@@ -174,27 +180,103 @@ void registerRoutes() {
   // CSV endpoints (descarga directa)
   server.on("/users.csv", [](){
     if (!SPIFFS.exists(USERS_FILE)) { server.send(404,"text/plain","No users"); return; }
-    File f = SPIFFS.open(USERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
+    File f = SPIFFS.open(USERS_FILE, FILE_READ); 
+    server.sendHeader("Content-Type", "text/csv");
+    server.sendHeader("Content-Disposition", "attachment; filename=users.csv");
+    server.streamFile(f, "text/csv"); 
+    f.close();
   });
 
   server.on("/attendance.csv", [](){
     if (!SPIFFS.exists(ATT_FILE)) { server.send(404,"text/plain","no att"); return; }
-    File f = SPIFFS.open(ATT_FILE, FILE_READ); server.streamFile(f,"text/csv"); f.close();
+    File f = SPIFFS.open(ATT_FILE, FILE_READ); 
+    server.sendHeader("Content-Type", "text/csv");
+    server.sendHeader("Content-Disposition", "attachment; filename=attendance.csv");
+    server.streamFile(f,"text/csv"); 
+    f.close();
   });
 
   server.on("/notifications.csv", [](){
     if (!SPIFFS.exists(NOTIF_FILE)) { server.send(404,"text/plain","no"); return; }
-    File f = SPIFFS.open(NOTIF_FILE, FILE_READ); server.streamFile(f,"text/csv"); f.close();
+    File f = SPIFFS.open(NOTIF_FILE, FILE_READ); 
+    server.sendHeader("Content-Type", "text/csv");
+    server.sendHeader("Content-Disposition", "attachment; filename=notifications.csv");
+    server.streamFile(f,"text/csv"); 
+    f.close();
   });
 
   // Teachers CSV
   server.on("/teachers.csv", [](){
     if (!SPIFFS.exists(TEACHERS_FILE)) { server.send(404,"text/plain","No teachers"); return; }
-    File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); server.streamFile(f, "text/csv"); f.close();
+    File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); 
+    server.sendHeader("Content-Type", "text/csv");
+    server.sendHeader("Content-Disposition", "attachment; filename=teachers.csv");
+    server.streamFile(f, "text/csv"); 
+    f.close();
   });
 
   server.on("/history", handleHistoryPage);
   server.on("/history.csv", handleHistoryCSV);
   server.on("/history_clear", HTTP_POST, handleHistoryClearPOST);
   server.on("/materia_history", handleMateriaHistoryGET);
+
+  // Página de configuración si existe
+  #ifdef HAS_CONFIG_PAGE
+  server.on("/config", handleConfigPage);
+  server.on("/config_save", HTTP_POST, handleConfigSavePOST);
+  #endif
+
+  // Página de logs si existe
+  #ifdef HAS_LOGS_PAGE
+  server.on("/logs", handleLogsPage);
+  #endif
+
+  // Ruta para favicon (evita errores 404 en navegadores)
+  server.on("/favicon.ico", []() {
+    if (SPIFFS.exists("/favicon.ico")) {
+      File f = SPIFFS.open("/favicon.ico", FILE_READ);
+      server.streamFile(f, "image/x-icon");
+      f.close();
+    } else {
+      server.send(404, "text/plain", "No favicon");
+    }
+  });
+
+  // Ruta para iconos/logo si existen
+  server.on("/logo.png", []() {
+    if (SPIFFS.exists("/logo.png")) {
+      File f = SPIFFS.open("/logo.png", FILE_READ);
+      server.streamFile(f, "image/png");
+      f.close();
+    } else {
+      server.send(404, "text/plain", "No logo");
+    }
+  });
+
+  // Ruta para estilos CSS si existe un archivo separado
+  server.on("/style.css", []() {
+    if (SPIFFS.exists("/style.css")) {
+      File f = SPIFFS.open("/style.css", FILE_READ);
+      server.streamFile(f, "text/css");
+      f.close();
+    } else {
+      server.send(404, "text/plain", "No CSS file");
+    }
+  });
+
+  // Manejo de error 404
+  server.onNotFound([]() {
+    String message = "File Not Found\n\n";
+    message += "URI: ";
+    message += server.uri();
+    message += "\nMethod: ";
+    message += (server.method() == HTTP_GET) ? "GET" : "POST";
+    message += "\nArguments: ";
+    message += server.args();
+    message += "\n";
+    for (uint8_t i = 0; i < server.args(); i++) {
+      message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+    }
+    server.send(404, "text/plain", message);
+  });
 }
