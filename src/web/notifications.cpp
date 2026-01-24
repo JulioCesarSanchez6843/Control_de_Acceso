@@ -110,7 +110,7 @@ static void cleanupReadKeys() {
 }
 
 // Escapa texto para HTML
-static String htmlEscapeLocal(const String &s) {
+static String htmlEscape(const String &s) {
   String r; r.reserve(s.length());
   for (size_t i = 0; i < (size_t)s.length(); ++i) {
     char c = s[i];
@@ -193,9 +193,8 @@ static String extractFieldFromNote(const String &note, const String &keysCSV) {
 }
 
 // Función común para generar el HTML de notificaciones
-// Mejoras de performance: carga las claves leídas UNA sola vez; almacena la nota en base64 para no romper la clave al enviarla.
 static String generateNotificationsHTML(bool showUnreadOnly, const String &pageTitle) {
-  String html = htmlHeader(pageTitle.c_str());
+  String html = "";
 
   // Leer notificaciones (una sola vez)
   auto nots = readNotifications(500);
@@ -211,7 +210,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
   std::vector<String> filteredNotifications;
   std::vector<bool> isReadStatus;
   std::vector<String> keys;
-  std::vector<String> rawNotes; // para base64
+  std::vector<String> rawNotes;
 
   for (size_t i = 0; i < nots.size(); ++i) {
     String ln = nots[i];
@@ -221,7 +220,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     String note = (c.size() > 4 ? c[4] : "");
     String key = notifKey(ts, uid, note);
 
-    // buscar en readKeysVec (vector en memoria, mucho más rápido que abrir archivo cada vez)
     bool isRead = (std::find(readKeysVec.begin(), readKeysVec.end(), key) != readKeysVec.end());
 
     if (isRead) readCount++; else unreadCount++;
@@ -236,20 +234,28 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
 
   // Header + controles
   if (showUnreadOnly) {
-    html += "<div class='card'><h2 style='display:flex;align-items:center;gap:12px;'>Notificaciones No Leídas <span id='unread_badge' style='background:#ef4444;color:#fff;padding:6px 10px;border-radius:999px;font-weight:800;font-size:0.95em;'>" + String(unreadCount) + "</span></h2>";
+    html += "<h2>Notificaciones No Leídas <span id='unread_badge' style='background:#ef4444;color:#fff;padding:6px 10px;border-radius:999px;font-weight:800;font-size:0.95em;'>" + String(unreadCount) + "</span></h2>";
   } else {
-    html += "<div class='card'><h2 style='display:flex;align-items:center;gap:12px;'>Notificaciones Leídas</h2>";
+    // Agregué un badge azul para las notificaciones leídas
+    html += "<h2>Notificaciones Leídas <span id='read_badge' style='background:#1d4ed8;color:#fff;padding:6px 10px;border-radius:999px;font-weight:800;font-size:0.95em;'>" + String(readCount) + "</span></h2>";
   }
+
+  html += "<p class='small'>Esta pestaña muestra las notificaciones generadas por el sistema. Use los filtros para localizar rápidamente notificaciones específicas.</p>";
 
   html += "<div style='margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;'>";
   html += "<form method='POST' action='/notifications_clear' onsubmit='return confirm(\"Borrar todas las notificaciones? Esta acción es irreversible.\");' style='display:inline'>";
   html += "<input class='btn btn-red' type='submit' value='🗑️ Borrar Todas'></form>";
   html += "<a class='btn btn-blue' href='/'>Inicio</a>";
-  if (showUnreadOnly) html += "<a class='btn btn-switch' href='/notifications_read'>Ver Leídas (" + String(readCount) + ")</a>";
-  else html += "<a class='btn btn-switch active' href='/notifications'>Ver No Leídas (" + String(unreadCount) + ")</a>";
-  html += "</div>";
+  
+  // Contenedor para mensaje de estado - JUSTO ANTES del botón de navegación
+  html += "<div style='margin-left:auto;display:flex;align-items:center;gap:8px;'>";
+  html += "<span id='status_message' style='display:none;background:#10b981;color:white;padding:6px 12px;border-radius:6px;font-weight:600;font-size:0.9em;'></span>";
+  
+  if (showUnreadOnly) html += "<a class='btn btn-blue' href='/notifications_read'>Ver Leídas (" + String(readCount) + ")</a>";
+  else html += "<a class='btn btn-blue' href='/notifications'>Ver No Leídas (" + String(unreadCount) + ")</a>";
+  html += "</div></div>";
 
-  // filtros + estilos (igual que antes)
+  // filtros
   html += "<div class='filters' style='margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>";
   html += "<input id='nf_materia' placeholder='Filtrar por materia' style='min-width:160px'>";
   html += "<input id='nf_prof' placeholder='Filtrar por profesor' style='min-width:160px'>";
@@ -278,16 +284,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       .modal-body { margin-top:10px; color:#0f172a; font-size:1em; max-height:320px; overflow:auto; white-space: pre-wrap; line-height: 1.5; }
       .modal-meta-big { margin-top:15px; font-size:0.95em; color:#475569; background: #f8fafc; padding: 12px; border-radius: 8px; }
       .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:20px; flex-wrap: wrap; }
-      .btn-switch { background:transparent; border:1px solid #e5e7eb; color:#0f172a; padding:8px 12px; border-radius:8px; cursor:pointer; font-weight:600; transition: all 0.2s ease; text-decoration: none; display: inline-block; }
-      .btn-switch:hover { background:#f3f4f6; }
-      .btn-switch.active { background:#1d4ed8; color:white; border-color:transparent; box-shadow:0 6px 18px rgba(29,78,216,0.12); }
-      .btn { border:none; border-radius:8px; padding:8px 12px; cursor:pointer; font-weight:700; transition: all 0.2s ease; text-decoration: none; display: inline-block; text-align: center; }
-      .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-      .btn-green { background:#10b981; color:#fff; }
-      .btn-orange { background:#f59e0b; color:#fff; }
-      .btn-red { background:#ef4444; color:#fff; }
-      .btn-blue { background:#06b6d4; color:#05345b; }
-      .btn-purple { background:#8b5cf6; color:#fff; }
       @media (max-width:900px) { .compact-actions { flex-direction:row; } .modal-actions { flex-direction: column; } .modal-card { padding: 15px; } }
     </style>
   )rawliteral";
@@ -324,16 +320,15 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         else if (tipo.indexOf("Informativa (Maestro)") == 0) { bg="#f0fff0"; badgeBg="#c7f9d6"; badgeColor="#065f46"; }
       }
 
-      String noteEsc = htmlEscapeLocal(note);
-      String nameEsc = htmlEscapeLocal(name);
-      String accEsc = htmlEscapeLocal(acc);
-      String tsEsc = htmlEscapeLocal(ts);
-      String uidEsc = htmlEscapeLocal(uid);
-      String tipoEsc = htmlEscapeLocal(tipo);
-      String keyEsc = htmlEscapeLocal(key);
+      String noteEsc = htmlEscape(note);
+      String nameEsc = htmlEscape(name);
+      String accEsc = htmlEscape(acc);
+      String tsEsc = htmlEscape(ts);
+      String uidEsc = htmlEscape(uid);
+      String tipoEsc = htmlEscape(tipo);
+      String keyEsc = htmlEscape(key);
       String noteB64 = base64Encode(note);
 
-      // data-idx corresponde al índice en la lista filtrada
       html += "<div class='notif-item' style='background:" + bg + ";' data-idx='" + String(i) + "' data-ts='" + tsEsc + "' data-uid='" + uidEsc + "' data-name='" + nameEsc + "' data-note-html='" + noteEsc + "' data-type='" + tipoEsc + "' data-key='" + keyEsc + "' data-isread='" + (isRead ? "1" : "0") + "'>";
       html += "<div class='notif-header'>";
       html += "<div style='display:flex;flex-direction:column;gap:6px;'><span class='notif-type' style='background:" + badgeBg + ";color:" + badgeColor + ";'>" + tipo + "</span></div>";
@@ -347,11 +342,11 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       String meta = tsEsc;
       if (nameEsc.length()) meta += " • " + nameEsc;
       if (accEsc.length()) meta += " • " + accEsc;
-      if (materiaFromNote.length()) meta += " • " + htmlEscapeLocal(materiaFromNote);
+      if (materiaFromNote.length()) meta += " • " + htmlEscape(materiaFromNote);
       html += "<div class='notif-meta'>" + meta + "</div>";
       html += "<div class='notif-note'>" + (noteEsc.length() ? noteEsc : "<i>(sin detalles)</i>") + "</div>";
 
-      // Datos ocultos: uid, ts, name, acc, key, isread, y nota codificada base64 (para enviarla intacta)
+      // Datos ocultos
       html += "<div id='notif_uid_" + String(i) + "' style='display:none'>" + uidEsc + "</div>";
       html += "<div id='notif_ts_" + String(i) + "' style='display:none'>" + tsEsc + "</div>";
       html += "<div id='notif_name_" + String(i) + "' style='display:none'>" + nameEsc + "</div>";
@@ -389,30 +384,28 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     </div>
   )rawliteral";
 
-  // JavaScript: delegación de eventos + atob() para nota original (base64)
+  // JavaScript
   html += R"rawliteral(
     <script>
       var currentIdx = -1;
       var currentNotificationData = null;
 
-      // Delegación de eventos: un listener para la lista (esto evita hacer un listener por item)
+      // Delegación de eventos
       document.addEventListener('DOMContentLoaded', function() {
         var list = document.getElementById('notif_list');
         if (list) {
           list.addEventListener('click', function(e) {
             var btn = e.target.closest('button');
-            if (btn) {
-              // botón dentro de una notificación: determinar su acción (marcar o desmarcar)
+            if (btn && btn.classList.contains('btn-mark-inline')) {
               var item = e.target.closest('.notif-item');
               if (!item) return;
               var idx = item.getAttribute('data-idx');
               if (!idx) return;
-              if (btn.classList.contains('btn-mark-inline')) {
-                var markAsRead = btn.classList.contains('btn-green');
-                markInline(parseInt(idx), markAsRead, e);
-              }
+              var markAsRead = btn.classList.contains('btn-green');
+              markInline(parseInt(idx), markAsRead, e);
               return;
             }
+            
             var item = e.target.closest('.notif-item');
             if (!item) return;
             var idx = item.getAttribute('data-idx');
@@ -453,7 +446,31 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         applyNotifFilters();
       }
 
-      // Nota: la nota original se recupera con atob(document.getElementById('notif_note_enc_' + idx).textContent)
+      function showStatusMessage(message, type) {
+        var msgEl = document.getElementById('status_message');
+        if (!msgEl) return;
+        
+        msgEl.textContent = message;
+        msgEl.style.display = 'inline-block';
+        
+        // Configurar color según tipo
+        if (type === 'success') {
+          msgEl.style.backgroundColor = '#10b981';
+          msgEl.style.color = 'white';
+        } else if (type === 'info') {
+          msgEl.style.backgroundColor = '#06b6d4';
+          msgEl.style.color = 'white';
+        } else if (type === 'warning') {
+          msgEl.style.backgroundColor = '#f59e0b';
+          msgEl.style.color = 'white';
+        }
+        
+        // Ocultar después de 3 segundos
+        setTimeout(function() {
+          msgEl.style.display = 'none';
+        }, 3000);
+      }
+
       function markInline(idx, markAsRead, event){
         if (event && event.stopPropagation) event.stopPropagation();
         var uidEl  = document.getElementById('notif_uid_' + idx);
@@ -470,30 +487,29 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
-            // Si estamos en /notifications (no leídas) y marcamos como leído, quitar del DOM y redirigir a /notifications_read
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (item) {
-              if (window.location.pathname === '/notifications' && markAsRead) {
-                if (item.parentNode) item.parentNode.removeChild(item);
-                window.location.href = '/notifications_read';
-                return;
-              } else if (window.location.pathname === '/notifications_read' && !markAsRead) {
-                if (item.parentNode) item.parentNode.removeChild(item);
-                window.location.href = '/notifications';
-                return;
+              // Eliminar el elemento de la lista
+              if (item.parentNode) item.parentNode.removeChild(item);
+              
+              // Actualizar contadores
+              updateCounts();
+              
+              // Mostrar mensaje según el tipo de acción
+              if (markAsRead) {
+                if (window.location.pathname === '/notifications') {
+                  showStatusMessage('Notificación marcada como leída', 'success');
+                } else {
+                  showStatusMessage('Notificación actualizada', 'info');
+                }
               } else {
-                // actualizar UI localmente
-                item.setAttribute('data-isread', markAsRead ? '1' : '0');
-                var badge = item.querySelector('.badge-new');
-                if (badge) badge.style.display = markAsRead ? 'none' : '';
-                var btn = item.querySelector('.btn-mark-inline');
-                if (btn) {
-                  if (markAsRead) { btn.textContent = 'Marcar no leído'; btn.className = 'btn btn-orange btn-mark-inline'; }
-                  else { btn.textContent = 'Marcar leído'; btn.className = 'btn btn-green btn-mark-inline'; }
+                if (window.location.pathname === '/notifications_read') {
+                  showStatusMessage('Notificación movida a no leídas', 'info');
+                } else {
+                  showStatusMessage('Notificación actualizada', 'info');
                 }
               }
             }
-            updateCounts();
           } else {
             alert('Error al cambiar estado');
           }
@@ -520,29 +536,8 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         var isRead = isReadEl ? (isReadEl.textContent === '1') : false;
         currentNotificationData = { idx: idx, ts: ts, uid: uid, note: note, name: name, acc: acc, isRead: isRead };
 
-        // Si no está leída, marcar automáticamente (y si estamos en vista /notifications, redirigir a /notifications_read para mostrar el cambio)
-        if (!isRead) {
-          var xhr = new XMLHttpRequest();
-          xhr.open('POST', '/notifications_mark', true);
-          xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-          xhr.onload = function() {
-            // Si OK, eliminar del DOM y redirigir para que la vista muestre la notificación entre leídas
-            if (xhr.status === 200) {
-              var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-              if (item) {
-                if (item.parentNode) item.parentNode.removeChild(item);
-                // redirigir para ver la lista de leídas inmediatamente
-                window.location.href = '/notifications_read';
-                return;
-              }
-            }
-            // si falla o no hizo redirect, mostramos modal igualmente
-            showModal();
-          };
-          xhr.send('action=mark&ts=' + encodeURIComponent(ts) + '&uid=' + encodeURIComponent(uid) + '&note=' + encodeURIComponent(note));
-        } else {
-          showModal();
-        }
+        // Mostrar modal inmediatamente
+        showModal();
       }
 
       function showModal() {
@@ -608,10 +603,38 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         document.addEventListener('keydown', handleEscKey);
       }
 
-      function handleEscKey(e) { if (e.key === 'Escape') closeModal(); }
+      function handleEscKey(e) { 
+        if (e.key === 'Escape') closeModal(); 
+      }
 
       function closeModal() {
         document.getElementById('modal_back').style.display='none';
+        
+        // Si estamos en /notifications y la notificación no estaba leída, marcarla automáticamente
+        if (window.location.pathname === '/notifications' && currentNotificationData && !currentNotificationData.isRead) {
+          var idx = currentNotificationData.idx;
+          var encEl = document.getElementById('notif_note_enc_' + idx);
+          var note = '';
+          try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = currentNotificationData.note; }
+          var xhr = new XMLHttpRequest();
+          xhr.open('POST', '/notifications_mark', true);
+          xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+          xhr.onload = function() {
+            if (xhr.status === 200) {
+              // Actualizar UI
+              var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
+              if (item && item.parentNode) {
+                item.parentNode.removeChild(item);
+              }
+              updateCounts();
+              showStatusMessage('Notificación marcada como leída', 'success');
+            } else {
+              alert('Error al marcar como leído');
+            }
+          };
+          xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
+        }
+        
         currentIdx = -1;
         currentNotificationData = null;
         document.removeEventListener('keydown', handleEscKey);
@@ -628,18 +651,28 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
-            // si estábamos en /notifications (no leídas) redirigir para ver leídas
-            if (window.location.pathname === '/notifications') {
-              closeModal();
-              window.location.href = '/notifications_read';
-              return;
+            // Actualizar UI
+            var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
+            if (item && item.parentNode) {
+              item.parentNode.removeChild(item);
             }
-            // si estamos en /notifications_read, simplemente actualizar UI
-            var el = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-            if (el) { el.setAttribute('data-isread','1'); var b = el.querySelector('.badge-new'); if (b) b.style.display='none'; }
             updateCounts();
-            closeModal();
-          } else alert('Error al marcar como leído');
+            // Cerrar modal
+            document.getElementById('modal_back').style.display='none';
+            
+            // Mostrar mensaje de estado
+            if (window.location.pathname === '/notifications') {
+              showStatusMessage('Notificación marcada como leída', 'success');
+            } else {
+              showStatusMessage('Notificación actualizada', 'info');
+            }
+            
+            currentIdx = -1;
+            currentNotificationData = null;
+            document.removeEventListener('keydown', handleEscKey);
+          } else {
+            alert('Error al marcar como leído');
+          }
         };
         xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
@@ -655,16 +688,28 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
-            if (window.location.pathname === '/notifications_read') {
-              closeModal();
-              window.location.href = '/notifications';
-              return;
+            // Actualizar UI
+            var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
+            if (item && item.parentNode) {
+              item.parentNode.removeChild(item);
             }
-            var el = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-            if (el) { el.setAttribute('data-isread','0'); var b = el.querySelector('.badge-new'); if (b) b.style.display=''; }
             updateCounts();
-            closeModal();
-          } else alert('Error al marcar como no leído');
+            // Cerrar modal
+            document.getElementById('modal_back').style.display='none';
+            
+            // Mostrar mensaje de estado
+            if (window.location.pathname === '/notifications_read') {
+              showStatusMessage('Notificación movida a no leídas', 'info');
+            } else {
+              showStatusMessage('Notificación actualizada', 'info');
+            }
+            
+            currentIdx = -1;
+            currentNotificationData = null;
+            document.removeEventListener('keydown', handleEscKey);
+          } else {
+            alert('Error al marcar como no leído');
+          }
         };
         xhr.send('action=unmark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
@@ -684,8 +729,14 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
             var el = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (el && el.parentNode) el.parentNode.removeChild(el);
             updateCounts();
-            closeModal();
-          } else alert('Error al eliminar notificación');
+            document.getElementById('modal_back').style.display='none';
+            showStatusMessage('Notificación eliminada', 'info');
+            currentIdx = -1;
+            currentNotificationData = null;
+            document.removeEventListener('keydown', handleEscKey);
+          } else {
+            alert('Error al eliminar notificación');
+          }
         };
         xhr.send('ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
@@ -693,7 +744,9 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       // cerrar modal al hacer click fuera
       (function() {
         var mb = document.getElementById('modal_back');
-        if (mb) mb.addEventListener('click', function(e) { if (e.target.id === 'modal_back') closeModal(); });
+        if (mb) mb.addEventListener('click', function(e) { 
+          if (e.target.id === 'modal_back') closeModal(); 
+        });
       })();
 
       function updateCounts(){
@@ -706,25 +759,46 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           var isRead = it.getAttribute('data-isread') === '1';
           if (isRead) readVisible++; else unreadVisible++;
         }
+        // Actualizar badge de no leídas (solo en página de no leídas)
         var hUnread = document.querySelector('#unread_badge');
         if (hUnread) hUnread.textContent = String(unreadVisible);
+        
+        // Actualizar badge de leídas (solo en página de leídas)
+        var hRead = document.querySelector('#read_badge');
+        if (hRead) hRead.textContent = String(readVisible);
+        
+        // Actualizar enlaces de switch
+        var switchLink = document.querySelector('a.btn-blue[href="/notifications_read"]');
+        if (switchLink && window.location.pathname === '/notifications') {
+          switchLink.textContent = 'Ver Leídas (' + readVisible + ')';
+        }
+        var switchLink2 = document.querySelector('a.btn-blue[href="/notifications"]');
+        if (switchLink2 && window.location.pathname === '/notifications_read') {
+          switchLink2.textContent = 'Ver No Leídas (' + unreadVisible + ')';
+        }
       }
-
     </script>
   )rawliteral";
 
-  html += "</div>" + htmlFooter();
   return html;
 }
 
 // Rutas: /notifications (no leídas) y /notifications_read (leídas)
 void handleNotificationsPage() {
-  String html = generateNotificationsHTML(true, "Notificaciones No Leídas");
+  String html = htmlHeader("Notificaciones No Leídas");
+  html += "<div class='card'>";
+  html += generateNotificationsHTML(true, "Notificaciones No Leídas");
+  html += "</div>";
+  html += htmlFooter();
   server.send(200, "text/html", html);
 }
 
 void handleNotificationsReadPage() {
-  String html = generateNotificationsHTML(false, "Notificaciones Leídas");
+  String html = htmlHeader("Notificaciones Leídas");
+  html += "<div class='card'>";
+  html += generateNotificationsHTML(false, "Notificaciones Leídas");
+  html += "</div>";
+  html += htmlFooter();
   server.send(200, "text/html", html);
 }
 

@@ -554,7 +554,7 @@ String htmlHeader(const char* title) {
 // Construye el footer fijo con autores del proyecto.
 String htmlFooter() {
   String f = "</div>";
-  f += "<footer>Proyecto desarrollado por: Kevin González Gutiérrez • Julio César Sánchez Méndez • Dylan Adayr de la Rosa Ramos</footer>";
+  f += "<footer>Proyecto desarrollado por: Kevin González Gutiérrez • Julio César Sánchez Méndez</footer>";
   f += "</div></body></html>";
   return f;
 }
