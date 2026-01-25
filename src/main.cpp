@@ -11,6 +11,8 @@
   #include <Servo.h>
 #endif
 
+#include <ESPmDNS.h> // <-- agregado para mDNS
+
 #include "config.h"
 #include "globals.h"
 #include "display.h"
@@ -157,6 +159,18 @@ void setup() {
   Serial.println("initFiles() -> OK.");
 
   connectWiFiWithTimeout(30000UL); // 30s
+
+  // ---------- Iniciar mDNS si hay conexión WiFi ----------
+  if (WiFi.status() == WL_CONNECTED) {
+    if (MDNS.begin("control-acceso")) {
+      Serial.println("mDNS iniciado: http://control-acceso.local");
+    } else {
+      Serial.println("WARN: No se pudo iniciar mDNS");
+    }
+  } else {
+    Serial.println("WARN: WiFi no conectado, omitiendo mDNS");
+  }
+  // -------------------------------------------------------
 
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6"; // fallback POSIX para UTC-6
