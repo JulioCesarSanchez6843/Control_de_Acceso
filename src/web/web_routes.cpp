@@ -3,7 +3,7 @@
 #include <FS.h>
 #include <SPIFFS.h>
 
-#include "web_routes.h"
+#include "web/web_routes.h"
 #include "globals.h"
 #include "display.h"
 
@@ -14,7 +14,7 @@
 #include "schedules.h"
 #include "history.h"
 #include "notifications.h"
-#include "web_common.h"
+#include "web/web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
 #include "teachers.h"       // handlers para maestros
 #include "edit.h"           // si no existiera, quítalo o crea el header correspondiente

@@ -1,16 +1,30 @@
 #pragma once
 #include <Arduino.h>
 
-// Inicialización de display y estado visual
-void displayInit();                 // iniciar tft, rotation, cursor básico
-void showWaitingMessage();          // pantalla "Esperando tarjeta..."
+// Inicialización y pantallas comunes
+void displayInit();
+void showWaitingMessage();
 void showAccessGranted(const String &name, const String &materia, const String &uid);
 void showAccessDenied(const String &reason, const String &uid);
 
-// LEDs / feedback
+// QR
+void showQRCodeOnDisplay(const String &url, int pixelBoxSize);
+
+// Self-register
+void showSelfRegisterBanner(const String &uid);
+
+// Captura
+void showCaptureMode(bool batch, bool paused);
+void showCaptureInProgress(bool batch, const String &uid);
+void cancelCaptureAndReturnToNormal();
+
+// Mensajes temporales
+void showTemporaryRedMessage(const String &msg, unsigned long durationMs);
+
+// Actualización no bloqueante
+void updateDisplay();
+
+// LEDs
 void ledOff();
 void ledRedOn();
 void ledGreenOn();
-
-// funciones para mensajes breves
-void showInfo(const String &title, const String &line1, unsigned long ms = 2000);
