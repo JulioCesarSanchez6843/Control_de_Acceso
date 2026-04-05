@@ -1,6 +1,4 @@
-#ifndef DB_SYNC_H
-#define DB_SYNC_H
-
+#pragma once
 #include <Arduino.h>
 
 bool pingServer();
@@ -14,4 +12,19 @@ bool sendAsistencia(
     String mode
 );
 
-#endif
+// created_at es opcional; si no se manda, el ESP lo genera
+bool sendAlumnoRegistro(
+    String uid,
+    String nombre,
+    String cuenta,
+    String materia = String(),
+    String created_at = String()
+);
+
+// account + created_at también opcionales por compatibilidad
+bool sendProfesorRegistro(
+    String uid,
+    String nombre,
+    String cuenta,
+    String created_at = String()
+);

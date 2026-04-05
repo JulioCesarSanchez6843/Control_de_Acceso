@@ -10,7 +10,9 @@
 #include "web_common.h"
 #include "files_utils.h"
 #include "display.h"
-#include "edit.h"   // <-- delegado para /capture_edit
+#include "edit.h"
+#include "db_sync.h"
+#include "time_utils.h"
 
 // JSON escape
 static String jsonEscapeLocal(const String &s) {
@@ -22,7 +24,7 @@ static String jsonEscapeLocal(const String &s) {
   return o;
 }
 
-// HTML escape (utilizada por esta unidad)
+// HTML escape
 static String escapeHTML(const String &s) {
   String o;
   o.reserve(s.length());
@@ -40,7 +42,6 @@ static String escapeHTML(const String &s) {
   return o;
 }
 
-// Infer professor if materia has exactly 1 professor
 static String inferProfessorForMateria(const String &materia) {
   if (materia.length() == 0) return String();
   auto courses = loadCourses();
@@ -57,7 +58,6 @@ static String inferProfessorForMateria(const String &materia) {
   return String();
 }
 
-// Local: get professors for materia (independiente de otros files)
 static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
   std::vector<String> out;
   if (materia.length() == 0) return out;
@@ -72,7 +72,6 @@ static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
   return out;
 }
 
-// Comprueba existencia exacta uid+materia en USERS_FILE
 static bool userExistsUidMateriaExact(const String &uid, const String &materia) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
@@ -90,11 +89,9 @@ static bool userExistsUidMateriaExact(const String &uid, const String &materia) 
   return false;
 }
 
-// Busca por cuenta; devuelve pair(uid,source) o ("","") si no existe.
-// source = "users" o "teachers"
 static std::pair<String,String> findByAccount(const String &account) {
   if (account.length() == 0) return std::make_pair(String(""), String(""));
-  // buscar users
+
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (f) {
     while (f.available()) {
@@ -108,7 +105,7 @@ static std::pair<String,String> findByAccount(const String &account) {
     }
     f.close();
   }
-  // buscar teachers
+
   File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (ft) {
     while (ft.available()) {
@@ -122,15 +119,14 @@ static std::pair<String,String> findByAccount(const String &account) {
     }
     ft.close();
   }
+
   return std::make_pair(String(""), String(""));
 }
 
-// reusa findAnyUserByUID de files_utils (devuelve línea completa o "")
 static String findAnyUserLineByUID(const String &uid) {
   return findAnyUserByUID(uid);
 }
 
-// Comprueba si uid existe en USERS_FILE
 static bool uidExistsInUsers(const String &uid) {
   if (uid.length() == 0) return false;
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -144,7 +140,6 @@ static bool uidExistsInUsers(const String &uid) {
   return false;
 }
 
-// Comprueba si uid existe en TEACHERS_FILE
 static bool uidExistsInTeachers(const String &uid) {
   if (uid.length() == 0) return false;
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
@@ -158,7 +153,6 @@ static bool uidExistsInTeachers(const String &uid) {
   return false;
 }
 
-// Devuelve el nombre del usuario para uid+materia si existe, si no el primer nombre encontrado para uid, si no vacio
 static String getUserNameForUidMateria(const String &uid, const String &materia) {
   String name = "";
   if (uid.length() == 0) return name;
@@ -169,14 +163,38 @@ static String getUserNameForUidMateria(const String &uid, const String &materia)
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 1 && c[0] == uid) {
       if (c.size() > 1 && c[1].length()) {
-        // prefer exact materia match if provided
         if (materia.length() > 0 && c.size() > 3 && c[3] == materia) { name = c[1]; break; }
-        if (name.length() == 0) name = c[1]; // keep first found as fallback
+        if (name.length() == 0) name = c[1];
       }
     }
   }
   f.close();
   return name;
+}
+
+// --------------------------------------------------
+// Sincronización remota usando db_sync.cpp
+// --------------------------------------------------
+static void syncAlumnoToOracle(const String &uid, const String &name, const String &account, const String &materia, const String &createdAt) {
+  if (!sendAlumnoRegistro(uid, name, account, materia, createdAt)) {
+    Serial.println("WARN: no se pudo sincronizar alumno con Oracle");
+  } else {
+    Serial.println("DB_SYNC: alumno sincronizado correctamente");
+  }
+
+  if (!sendAsistencia(createdAt, uid, name, account, materia, "captura")) {
+    Serial.println("WARN: no se pudo sincronizar asistencia de captura");
+  } else {
+    Serial.println("DB_SYNC: asistencia de captura sincronizada correctamente");
+  }
+}
+
+static void syncTeacherToOracle(const String &uid, const String &name, const String &account, const String &createdAt) {
+  if (!sendProfesorRegistro(uid, name, account, createdAt)) {
+    Serial.println("WARN: no se pudo sincronizar profesor con Oracle");
+  } else {
+    Serial.println("DB_SYNC: profesor sincronizado correctamente");
+  }
 }
 
 // --------------------------------------------------
@@ -193,22 +211,15 @@ void capture_individual_page() {
   String target = server.hasArg("target") ? server.arg("target") : "students";
   String return_page = (target == "teachers") ? String("/teachers_all") : String("/students_all");
 
-  // --- START=1 HANDLER ---
-  // Si la URL contiene start=1 queremos activar modo captura y mostrar la pantalla
-  // de captura en el display inmediatamente. Esto permite que los enlaces
-  // /capture_individual?target=...&start=1 activen display + form en un paso.
   if (server.hasArg("start") && server.arg("start") == "1") {
     bool isTeacher = (target == "teachers");
     #ifdef USE_DISPLAY
     Serial.println("capture_individual_page: start=1 -> showCaptureEntered()");
-    // Mostrar la pantalla explicativa / de entrada a modo captura (no bloqueante)
     showCaptureEntered(isTeacher);
-    // Mostrar el banner de modo captura (pequeño)
     showCaptureMode(isTeacher, false);
     #endif
   }
 
-  // preparar lista materias si es students
   std::vector<String> materias;
   if (target == "students") {
     auto courses = loadCourses();
@@ -219,14 +230,9 @@ void capture_individual_page() {
     }
   }
 
-  // Usar el header global de web_common
   String html = htmlHeader("Capturar - Individual");
-
-  // --- Estilos LOCALES y discretos para mejorar organización del formulario ---
-  // No sobreescriben el header global; solo afectan a esta página.
   html += R"rawliteral(
 <style>
-/* Scoped small form improvements */
 .capture-card { max-width: 900px; margin: 6px auto 20px auto; padding: 18px; }
 .form-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; align-items:start; }
 .form-row{ display:flex; flex-direction:column; }
@@ -241,29 +247,24 @@ input[readonly]{ background:#f8fafc; color:#274151; }
 </style>
 )rawliteral";
 
-  // Contenido (hereda el .card global)
   html += "<div class='card capture-card'>";
   html += "<h2>Captura Individual</h2>";
 
-  // Mensaje específico según el target
   if (target == "teachers") {
     html += "<p class='lead small'>Acerca la tarjeta del maestro. El sistema verificará automáticamente si la tarjeta está disponible.</p>";
   } else {
     html += "<p class='lead small'>Acerca la tarjeta del alumno. UID autocompletará nombre y cuenta si existe; seleccione materia si desea asignar/añadir una materia.</p>";
   }
 
-  // Modo info
   html += "<div style='background:#f1f5f9;border:1px solid #e2e8f0;padding:10px;border-radius:8px;margin-bottom:12px;color:#0f172a;font-weight:600;'>";
   if (target == "teachers") html += "Modo: Maestro — Las materias se gestionan por separado.";
   else html += "Modo: Alumno — Puede asignar materia y profesor al guardarlo.";
   html += "</div>";
 
-  // Formulario: mantener ids y nombres exactamente iguales
   html += "<form id='capForm' method='POST' action='/capture_confirm' novalidate>";
   html += "<input type='hidden' name='target' value='" + escapeHTML(target) + "'>";
 
   html += "<div class='form-grid'>";
-
   html += "<div class='form-row full'><label for='uid'>UID (autocompleta):</label>";
   html += "<input id='uid' name='uid' readonly></div>";
 
@@ -285,29 +286,22 @@ input[readonly]{ background:#f8fafc; color:#274151; }
     html += "<option value=''>-- Ninguno --</option>";
     html += "</select></div>";
   } else {
-    // ocultos para maestros (la lógica requiere esos campos)
     html += "<input type='hidden' name='materia' value=''>\n";
     html += "<input type='hidden' name='profesor' value=''>\n";
   }
 
-  html += "</div>"; // cierre form-grid
-
-  // Div de advertencias (usar id warn para control centralizado)
+  html += "</div>";
   html += "<div id='warn' class='warn'></div>";
 
-  // Botones
   html += "<div class='form-actions'>";
   html += "<button id='submitBtn' type='submit' class='btn btn-green' disabled>Confirmar</button>";
   html += "<a class='btn btn-red' href='" + escapeHTML(return_page) + "' onclick='fetch(\"/capture_stop\");return true;'>Cancelar</a>";
   html += "</div>";
 
-  html += "</form></div>"; // cierre card + form
+  html += "</form></div>";
 
-  // JS: mantener lógica original, pero centralizar setWarn() with auto-hide 5s
-  // Also: avoid overwriting inputs the user has already typed into.
   html += R"rawliteral(
 <script>
-/* Central warning helper: muestra mensaje y lo oculta automáticamente tras 5s */
 var __warnTimer = null;
 function setWarn(msg){
   var warn = document.getElementById('warn');
@@ -327,7 +321,7 @@ function setWarn(msg){
         warn.style.opacity = '0';
         setTimeout(function(){ warn.style.display='none'; warn.style.opacity='1'; warn.textContent=''; }, 260);
       }catch(e){}
-    }, 5000); // 5000 ms = 5s
+    }, 5000);
   } else {
     if(__warnTimer){ clearTimeout(__warnTimer); __warnTimer = null; }
     warn.style.display='none';
@@ -335,9 +329,6 @@ function setWarn(msg){
   }
 }
 
-/* pollUID mantiene la lógica: pide al servidor y actualiza campos
-   IMPORTANT: no sobreescribe campos si el usuario ya está editándolos.
-*/
 function pollUID(){
   var targetInput = document.querySelector("input[name='target']");
   var target = targetInput ? targetInput.value : '';
@@ -354,25 +345,19 @@ function pollUID(){
       if(!uidField || !nameField || !accField) return;
 
       if(j.status === 'waiting'){
-        // nothing to do
         isExistingStudent = false;
         updateMateriaRequirement();
       } else if(j.status === 'blocked'){
-        // blocked: show warning and disable submit, but DO NOT clear user inputs
         setWarn(j.blocked_message || 'Acción no permitida');
         if(submitBtn) submitBtn.disabled = true;
-
-        // Respect server hint to stop capture, but avoid reloading which would clear fields:
         if(j.restart_after_ms){
           setTimeout(function(){
             try { navigator.sendBeacon('/capture_stop'); } catch(e){}
           }, j.restart_after_ms);
         }
       } else if(j.status === 'found'){
-        // Fill UID if empty (readonly usually) - safe to overwrite
         if(j.uid && (!uidField.value || uidField.value.trim().length === 0)) uidField.value = j.uid;
 
-        // Only fill name/account IF the user has NOT started editing them.
         if(j.name) {
           if(!nameField.dataset.userEdited && (!nameField.value || nameField.value.trim().length === 0)) {
             nameField.value = j.name;
@@ -389,7 +374,6 @@ function pollUID(){
           updateMateriaRequirement();
         }
 
-        // Clear any warning messages (this only clears the visual message — inputs are preserved)
         setWarn('');
 
         if(j.blocked && j.blocked_message){
@@ -405,10 +389,8 @@ function pollUID(){
     .catch(e => setTimeout(pollUID, 1200));
 }
 
-// Variable de control usada por validaciones
 let isExistingStudent = false;
 
-// Función para actualizar el requerimiento del campo materia
 function updateMateriaRequirement() {
   var matField = document.getElementById('materia');
   if (!matField) return;
@@ -417,7 +399,6 @@ function updateMateriaRequirement() {
     setWarn('Este alumno ya está registrado. Debe asignar una materia.');
   } else {
     matField.required = false;
-    // clear only if warning shows this exact message
     var warn = document.getElementById('warn');
     if(warn && warn.textContent === 'Este alumno ya está registrado. Debe asignar una materia.') setWarn('');
   }
@@ -428,7 +409,6 @@ document.addEventListener('DOMContentLoaded', function(){
   var prof = document.getElementById('profesor');
   var submitBtn = document.getElementById('submitBtn');
 
-  // mark fields as user-edited when the user types so pollUID won't overwrite them
   var nameField = document.getElementById('name');
   var accField = document.getElementById('account');
   if(nameField){
@@ -446,7 +426,7 @@ document.addEventListener('DOMContentLoaded', function(){
 
   function updateStateAfterProfChange(){
     if(!mat) return;
-    if(!mat.value){ // materia vacia -> profesor opcional
+    if(!mat.value){
       clearProf();
       setWarn('');
       if(submitBtn) submitBtn.disabled = false;
@@ -503,19 +483,17 @@ document.addEventListener('DOMContentLoaded', function(){
     if(!/^[0-9]{7}$/.test(acc)){ ev.preventDefault(); setWarn('Cuenta inválida: debe tener 7 dígitos.'); return false; }
     var matSel = document.getElementById('materia');
     var profSel = document.getElementById('profesor');
-    
-    // Validación específica: si el alumno ya existe, materia es obligatoria
+
     if (isExistingStudent && (!matSel || !matSel.value)) {
-      ev.preventDefault(); 
-      setWarn('Este alumno ya está registrado. Debe asignar una materia.'); 
+      ev.preventDefault();
+      setWarn('Este alumno ya está registrado. Debe asignar una materia.');
       return false;
     }
-    
+
     if(matSel && matSel.value){
       if(profSel && !profSel.value){ ev.preventDefault(); setWarn('Seleccione un profesor para la materia.'); return false; }
     }
 
-    // On successful submit we can clear user-edited markers to avoid stale state in next capture
     try {
       var nf = document.getElementById('name');
       var af = document.getElementById('account');
@@ -526,59 +504,41 @@ document.addEventListener('DOMContentLoaded', function(){
 
 });
 
-
-// Enviar stop si se cierra la pestaña
 window.addEventListener('beforeunload', function(){ try { navigator.sendBeacon('/capture_stop'); } catch(e){} });
 pollUID();
 </script>
 )rawliteral";
 
-  // Footer global (heredado)
   html += htmlFooter();
-
   server.send(200, "text/html", html);
 }
 
-// --------------------------------------------------
-// Poll endpoint JSON - MODIFICADO para incluir información de alumno existente
-// --------------------------------------------------
 void capture_individual_poll() {
   if (captureUID.length() == 0) {
     server.send(200, "application/json", "{\"status\":\"waiting\"}");
     return;
   }
 
-  // copy local values (but note: for blocked cases we will NOT return UID/name/account)
   String nameOut = captureName;
   String accountOut = captureAccount;
-  String uidSnapshot = captureUID; // snapshot if needed internally
+  String uidSnapshot = captureUID;
 
-  // Try to get stored name/account (from either file)
   String storedLine = findAnyUserLineByUID(uidSnapshot);
   if (storedLine.length() > 0) {
     auto parts = parseQuotedCSVLine(storedLine);
     if (parts.size() > 1) nameOut = parts[1];
     if (parts.size() > 2) accountOut = parts[2];
-    // intentionally do NOT set materia/profesor here to allow re-capture assignment
   }
 
-  // get optional target param
   String target = "";
   if (server.hasArg("target")) {
     target = server.arg("target");
     target.trim();
   }
 
-  // ----------------------
-  // BLOCK CASES (server will NOT include UID/name/account in response)
-  // ----------------------
-
-  // CASO 1: Si target==students pero UID existe en teachers -> block & restart
   if (target == "students" && uidExistsInTeachers(uidSnapshot)) {
-    // Clear the capture so the system does not keep the UID / show it on any display
     captureUID = "";
     captureDetectedAt = 0;
-
     String msg = "Esta tarjeta ya está registrada como maestro. No puede registrarse como alumno.";
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
     j += ",\"restart_after_ms\":5000}";
@@ -586,11 +546,9 @@ void capture_individual_poll() {
     return;
   }
 
-  // CASO 2: Si target==teachers y UID existe en users -> block & restart
   if (target == "teachers" && uidExistsInUsers(uidSnapshot)) {
     captureUID = "";
     captureDetectedAt = 0;
-
     String msg = "Esta tarjeta pertenece a un alumno. No puede registrarse como maestro.";
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
     j += ",\"restart_after_ms\":5000}";
@@ -598,11 +556,9 @@ void capture_individual_poll() {
     return;
   }
 
-  // CASO 3: Si target==teachers y UID ya existe en teachers -> block & restart
   if (target == "teachers" && uidExistsInTeachers(uidSnapshot)) {
     captureUID = "";
     captureDetectedAt = 0;
-
     String msg = "Este maestro ya está registrado, no puede capturarse de nuevo.";
     String j = "{\"status\":\"blocked\",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
     j += ",\"restart_after_ms\":5000}";
@@ -610,25 +566,19 @@ void capture_individual_poll() {
     return;
   }
 
-  // ----------------------
-  // NORMAL FOUND CASE - TARJETA LIBRE/NUEVA
-  // ----------------------
   String j = "{\"status\":\"found\",\"uid\":\"" + jsonEscapeLocal(uidSnapshot) + "\"";
   if (nameOut.length()) j += ",\"name\":\"" + jsonEscapeLocal(nameOut) + "\"";
   if (accountOut.length()) j += ",\"account\":\"" + jsonEscapeLocal(accountOut) + "\"";
 
-  // AÑADIDO: Información sobre si el alumno ya existe (solo para target students)
   if (target == "students") {
     bool existing = uidExistsInUsers(uidSnapshot);
     j += ",\"existing\":" + String(existing ? "true" : "false");
   }
 
-  // also check if the account (number) is already used by other UID (across files)
   if (accountOut.length()) {
     auto accFound = findByAccount(accountOut);
     if (accFound.first.length() && accFound.first != uidSnapshot) {
       String msg = "La cuenta " + accountOut + " ya está asociada a otra tarjeta (UID " + accFound.first + ").";
-      // Add as blocked indicator so UI will show message and disable submit
       j += ",\"blocked\":true";
       j += ",\"blocked_message\":\"" + jsonEscapeLocal(msg) + "\"";
     }
@@ -638,9 +588,6 @@ void capture_individual_poll() {
   server.send(200, "application/json", j);
 }
 
-// --------------------------------------------------
-// Confirm (POST) - MODIFICADO para validar materia obligatoria en alumnos existentes
-// --------------------------------------------------
 void capture_individual_confirm() {
   if (!server.hasArg("uid") || !server.hasArg("name") ||
       !server.hasArg("account") || !server.hasArg("target")) {
@@ -658,16 +605,10 @@ void capture_individual_confirm() {
   String target = server.arg("target"); target.trim();
 
   if (uid.length() == 0) { server.send(400, "text/plain", "UID vacío"); return; }
-  if (name.length() == 0) {
-    server.send(400, "text/plain", "Nombre vacío"); return;
-  }
-
-  if (account.length() != 7) {
-    server.send(400, "text/plain", "Cuenta inválida"); return;
-  }
+  if (name.length() == 0) { server.send(400, "text/plain", "Nombre vacío"); return; }
+  if (account.length() != 7) { server.send(400, "text/plain", "Cuenta inválida"); return; }
   for (size_t i = 0; i < account.length(); i++) if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
 
-  // AÑADIDO: Validación específica - Si el alumno ya existe, materia es obligatoria
   if (target == "students" && uidExistsInUsers(uid) && materia.length() == 0) {
     String html = htmlHeader("Error - Materia obligatoria");
     html += "<div class='card'><h3 style='color:#b00020;'>Materia obligatoria para alumno existente</h3>";
@@ -678,13 +619,11 @@ void capture_individual_confirm() {
     return;
   }
 
-  // server-side: check account uniqueness (across users and teachers)
   auto accFound = findByAccount(account);
   if (accFound.first.length() && accFound.first != uid) {
     String foundUID = accFound.first;
     String foundSource = accFound.second;
 
-    // gather name & materias for foundUID
     String foundName = "";
     std::vector<String> materiasList;
     if (foundSource == "users") {
@@ -704,7 +643,7 @@ void capture_individual_confirm() {
         }
         fu.close();
       }
-    } else { // teachers
+    } else {
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
         while (ft.available()) {
@@ -723,14 +662,12 @@ void capture_individual_confirm() {
       }
     }
 
-    // build HTML informative page (sin iconos)
     String btnStyle = "padding:8px 12px;border-radius:6px;text-decoration:none;min-width:140px;display:inline-block;text-align:center;";
 
     String html = htmlHeader("Error - Cuenta duplicada");
     html += "<div class='card'>";
     html += "<h3 style='color:#b00020;'>Cuenta ya registrada</h3>";
     html += "<p class='small'>La cuenta <b>" + escapeHTML(account) + "</b> ya está registrada con UID <b>" + escapeHTML(foundUID) + "</b> en <b>" + escapeHTML(foundSource) + "</b>. No se puede usar la misma cuenta para otro usuario.</p>";
-
     if (foundName.length()) html += "<p><b>Nombre:</b> " + escapeHTML(foundName) + "</p>";
 
     if (materiasList.size() > 0) {
@@ -747,35 +684,23 @@ void capture_individual_confirm() {
     html += "<p class='small' style='margin-top:10px;color:#333;'>Si desea editar este usuario pulse el botón Editar usuario. También puede cancelar la captura con el botón rojo.</p>";
 
     html += "<div style='display:flex;gap:12px;justify-content:center;margin-top:12px;'>";
-    // Volver a Captura (verde)
     html += "<a class='btn btn-green' href='/capture_individual?target=" + escapeHTML(target) + "' style='background:#27ae60;color:#fff;" + btnStyle + "'>Volver a Captura</a>";
-
-    // Editar usuario (amarillo)
     if (foundUID.length()) {
       if (foundSource == "users") html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/students_all' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
       else html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(foundUID) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
     } else {
       html += "<a class='btn btn-yellow' href='/' style='background:#f1c40f;color:#000;" + btnStyle + "'>Editar usuario</a>";
     }
-
-    // Inicio (azul)
     html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;" + btnStyle + "'>Inicio</a>";
-
-    // Cancelar registro (rojo)
-    html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
-            "<input type='hidden' name='return_to' value='/' />"
-            "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;" + btnStyle + "border:none;cursor:pointer;'>Cancelar registro</button>"
-            "</form>";
+    html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'><input type='hidden' name='return_to' value='/' /><button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;" + btnStyle + "border:none;cursor:pointer;'>Cancelar registro</button></form>";
     html += "</div></div>" + htmlFooter();
 
     server.send(200, "text/html", html);
     return;
   }
 
-  // PROHIBIR que una tarjeta registrada como alumno sea registrada como maestro y viceversa (POST side)
   if (target == "teachers") {
     if (uidExistsInUsers(uid)) {
-      // tarjeta ya usada como alumno -> denegar
       String foundName="", foundAccount="";
       std::vector<String> materiasList;
       File fu = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -812,17 +737,13 @@ void capture_individual_confirm() {
       html += "<a class='btn btn-green' href='/capture_individual?target=teachers' style='background:#27ae60;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Volver a Captura</a>";
       html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/students_all' style='background:#f1c40f;color:#000;min-width:140px;padding:8px 12px;border-radius:6px;'>Editar usuario</a>";
       html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Inicio</a>";
-      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
-              "<input type='hidden' name='return_to' value='/' />"
-              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
-              "</form>";
+      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'><input type='hidden' name='return_to' value='/' /><button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button></form>";
       html += "</div></div>" + htmlFooter();
       server.send(200, "text/html", html);
       return;
     }
   } else if (target == "students") {
     if (uidExistsInTeachers(uid)) {
-      // tarjeta ya usada como maestro -> denegar
       String foundName="", foundAccount="";
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
@@ -848,19 +769,14 @@ void capture_individual_confirm() {
       html += "<a class='btn btn-green' href='/capture_individual?target=students' style='background:#27ae60;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Volver a Captura</a>";
       html += "<a class='btn btn-yellow' href='/capture_edit?uid=" + escapeHTML(uid) + "&return_to=/teachers_all' style='background:#f1c40f;color:#000;min-width:140px;padding:8px 12px;border-radius:6px;'>Editar maestro</a>";
       html += "<a class='btn btn-blue' href='/' style='background:#3498db;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;'>Inicio</a>";
-      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'>"
-              "<input type='hidden' name='return_to' value='/' />"
-              "<button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button>"
-              "</form>";
+      html += "<form method='POST' action='/cancel_capture' style='display:inline;margin:0;'><input type='hidden' name='return_to' value='/' /><button type='submit' class='btn btn-red' style='background:#d9534f;color:#fff;min-width:140px;padding:8px 12px;border-radius:6px;border:none;cursor:pointer;'>Cancelar registro</button></form>";
       html += "</div></div>" + htmlFooter();
       server.send(200, "text/html", html);
       return;
     }
   }
 
-  // FLOW: students
   if (target == "students") {
-    // materia optional: if provided, verify it exists
     if (materia.length() > 0) {
       if (!courseExists(materia)) {
         String html = htmlHeader("Error - Materia");
@@ -870,13 +786,11 @@ void capture_individual_confirm() {
         return;
       }
 
-      // if profesor empty, try infer
       if (profesor.length() == 0) {
         String inf = inferProfessorForMateria(materia);
         if (inf.length() > 0) profesor = inf;
       }
 
-      // profesor required when materia specified
       auto profs = getProfessorsForMateriaLocal(materia);
       bool profOk = false;
       for (auto &p : profs) if (p == profesor) { profOk = true; break; }
@@ -889,9 +803,7 @@ void capture_individual_confirm() {
       }
     }
 
-    // if uid already registered in this materia -> dedicated page (do not accept)
     if (materia.length() > 0 && userExistsUidMateriaExact(uid, materia)) {
-      // get student name for uid+materia (prefer exact materia match)
       String studentName = getUserNameForUidMateria(uid, materia);
       String html = htmlHeader("Duplicado - Ya registrado");
       html += "<div class='card'><h3 style='color:red;'>El alumno ya está registrado en esa materia</h3>";
@@ -903,27 +815,24 @@ void capture_individual_confirm() {
       return;
     }
 
-    // OK: persist user record (materia puede estar vacía)
-    // Mostrar overlay indicando que admin está procesando (pantalla reloj/espera)
     #ifdef USE_DISPLAY
     showTemporaryRedMessage("Administrador capturando, por favor espere...", 1500UL);
-    delay(1600); // breve pausa para que el overlay sea visible
+    delay(1600);
     #endif
 
     String created = nowISO();
-    String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"" + created + "\"";
+    String line = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + materia + "\",\"" + created + "\"";
     if (!appendLineToFile(USERS_FILE, line)) { server.send(500, "text/plain", "Error guardando usuario"); return; }
 
-    // attendance
-    String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + materia + "\"," + "\"captura\"";
+    String rec = "\"" + nowISO() + "\",\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + materia + "\",\"" + "captura" + "\"";
     if (!appendLineToFile(ATT_FILE, rec)) { server.send(500, "text/plain", "Error guardando attendance"); return; }
 
-    // Mostrar éxito en el display (si está habilitado) — ALUMNO
+    syncAlumnoToOracle(uid, name, account, materia, created);
+
     #ifdef USE_DISPLAY
     showAccessGranted(name, (materia.length() ? materia : String("Alumno")), uid);
     #endif
 
-    // reset capture
     captureMode = false; captureBatchMode = false;
     captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
@@ -937,21 +846,18 @@ void capture_individual_confirm() {
     return;
   }
 
-  // FLOW: teachers
   if (target == "teachers") {
-    // account uniqueness already checked above
-
-    // Mostrar overlay indicando que admin está procesando (pantalla reloj/espera)
     #ifdef USE_DISPLAY
     showTemporaryRedMessage("Administrador capturando, por favor espere...", 1500UL);
-    delay(1600); // breve pausa para que el overlay sea visible
+    delay(1600);
     #endif
 
     String created = nowISO();
     String teacherLine = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"\",\"" + created + "\"";
     if (!appendLineToFile(TEACHERS_FILE, teacherLine)) { server.send(500, "text/plain", "Error guardando maestro"); return; }
 
-    // Mostrar éxito en el display (si está habilitado) — MAESTRO
+    syncTeacherToOracle(uid, name, account, created);
+
     #ifdef USE_DISPLAY
     showAccessGranted(name, String("Maestro"), uid);
     #endif
@@ -971,11 +877,7 @@ void capture_individual_confirm() {
   server.send(400, "text/plain", "target inválido");
 }
 
-// --------------------------------------------------
-// start/stop helpers
-// --------------------------------------------------
 void capture_individual_startPOST() {
-  // Leer target si el llamado lo incluye (p. ej. ?target=teachers)
   String target = server.hasArg("target") ? server.arg("target") : String("students");
   bool isTeacher = (target == "teachers");
 
@@ -983,13 +885,10 @@ void capture_individual_startPOST() {
   captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
 
   #ifdef USE_DISPLAY
-  // Mostrar pantalla explicativa de captura (usa showCaptureInProgress con uid vacío)
   showCaptureInProgress(false, String());
-  // Mostrar también el banner de modo
   showCaptureMode(isTeacher, false);
   #endif
 
-  // Redirigir manteniendo el target para que el formulario cargue en el modo correcto
   String loc = "/capture_individual?target=" + target;
   server.sendHeader("Location", loc);
   server.send(303, "text/plain", "capture started");
@@ -1003,9 +902,6 @@ void capture_individual_stopGET() {
   server.send(303, "text/plain", "stopped");
 }
 
-// --------------------------------------------------
-// EDIT page/post - ahora delegan al handler unificado en edit.cpp
-// --------------------------------------------------
 void capture_individual_editPage() {
   handleEditGet();
 }
