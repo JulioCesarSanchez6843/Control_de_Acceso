@@ -1,22 +1,38 @@
+// src/db_sync.cpp
 #include "db_sync.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
-String SERVER_URL = "http://IP_DE_TU_PC:8000"; 
-// CAMBIA esto por la IP de tu PC
+static const char* SERVER_URL = "http://192.168.100.8:8000";
 
 bool pingServer() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("DB_SYNC: sin WiFi, pingServer() = false");
+    return false;
+  }
 
-    HTTPClient http;
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(SERVER_URL) + "/ping";
 
-    http.begin(SERVER_URL + "/ping");
+  Serial.print("DB_SYNC ping -> ");
+  Serial.println(url);
 
-    int httpCode = http.GET();
+  if (!http.begin(client, url)) {
+    Serial.println("DB_SYNC: http.begin() falló en ping");
+    return false;
+  }
 
-    http.end();
+  int code = http.GET();
+  String body = http.getString();
 
-    return (httpCode == 200);
+  Serial.printf("DB_SYNC ping HTTP code: %d\n", code);
+  Serial.print("DB_SYNC ping body: ");
+  Serial.println(body);
+
+  http.end();
+  return (code == 200);
 }
 
 bool sendAsistencia(
@@ -27,27 +43,47 @@ bool sendAsistencia(
     String materia,
     String mode
 ) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("DB_SYNC: sin WiFi, no se puede enviar asistencia");
+    return false;
+  }
 
-    HTTPClient http;
+  WiFiClient client;
+  HTTPClient http;
+  String url = String(SERVER_URL) + "/asistencia";
 
-    http.begin(SERVER_URL + "/asistencia");
-    http.addHeader("Content-Type", "application/json");
+  Serial.print("DB_SYNC POST -> ");
+  Serial.println(url);
 
-    StaticJsonDocument<256> doc;
+  if (!http.begin(client, url)) {
+    Serial.println("DB_SYNC: http.begin() falló en asistencia");
+    return false;
+  }
 
-    doc["timestamp"] = timestamp;
-    doc["rfid_uid"] = rfid_uid;
-    doc["name"] = name;
-    doc["account"] = account;
-    doc["materia"] = materia;
-    doc["mode"] = mode;
+  http.addHeader("Content-Type", "application/json");
 
-    String json;
-    serializeJson(doc, json);
+  StaticJsonDocument<256> doc;
+  doc["timestamp"] = timestamp;
+  doc["rfid_uid"] = rfid_uid;
+  doc["name"] = name;
+  doc["account"] = account;
+  doc["materia"] = materia;
+  doc["mode"] = mode;
 
-    int httpCode = http.POST(json);
+  String json;
+  serializeJson(doc, json);
 
-    http.end();
+  Serial.print("DB_SYNC JSON: ");
+  Serial.println(json);
 
-    return (httpCode == 200);
+  int httpCode = http.POST(json);
+  String response = http.getString();
+
+  Serial.printf("DB_SYNC asistencia HTTP code: %d\n", httpCode);
+  Serial.print("DB_SYNC respuesta: ");
+  Serial.println(response);
+
+  http.end();
+
+  return (httpCode == 200);
 }

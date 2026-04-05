@@ -22,12 +22,14 @@
 #include "display.h"
 #include "time_utils.h"
 #include "web/self_register.h"
+#include "db_sync.h"
 
 // Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
   int idx = owner.indexOf("||");
   if (idx < 0) {
-    String o = owner; o.trim();
+    String o = owner;
+    o.trim();
     return o;
   }
   String b = owner.substring(0, idx);
@@ -37,7 +39,9 @@ static String baseMateriaFromOwner(const String &owner) {
 
 // Normaliza una materia (quita espacios al inicio/fin)
 static String normMat(const String &s) {
-  String t = s; t.trim(); return t;
+  String t = s;
+  t.trim();
+  return t;
 }
 
 // Devuelve string con materias separadas por "; "
@@ -62,28 +66,37 @@ static void appendUidToQueueAvoidDup(const String &uid) {
   if (uid.length() == 0) return;
   const char *QFILE = CAPTURE_QUEUE_FILE;
   bool exists = false;
+
   if (SPIFFS.exists(QFILE)) {
     File f = SPIFFS.open(QFILE, FILE_READ);
     if (f) {
       while (f.available()) {
-        String l = f.readStringUntil('\n'); l.trim();
-        if (l.length() > 0 && l == uid) { exists = true; break; }
+        String l = f.readStringUntil('\n');
+        l.trim();
+        if (l.length() > 0 && l == uid) {
+          exists = true;
+          break;
+        }
       }
       f.close();
     }
   }
+
   if (!exists) appendLineToFile(QFILE, uid);
 }
 
 // Helper: obtiene lista única de materias asociadas a un teacher (por uid y por courses)
 static std::vector<String> teacherMatsForUID(const String &uid) {
   std::vector<String> out;
+
   // Desde TEACHERS_FILE por uid (si el registro contiene columna de materia)
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (f) {
-    String header = f.readStringUntil('\n'); (void)header;
+    String header = f.readStringUntil('\n');
+    (void)header;
     while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
+      String l = f.readStringUntil('\n');
+      l.trim();
       if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
@@ -98,6 +111,7 @@ static std::vector<String> teacherMatsForUID(const String &uid) {
     }
     f.close();
   }
+
   // Además, buscar en courses por nombre de profesor (si existe)
   String teacherName;
   String trec = findTeacherByUID(uid);
@@ -105,6 +119,7 @@ static std::vector<String> teacherMatsForUID(const String &uid) {
     auto cc = parseQuotedCSVLine(trec);
     if (cc.size() > 1) teacherName = cc[1];
   }
+
   if (teacherName.length()) {
     auto courses = loadCourses();
     for (auto &c : courses) {
@@ -116,6 +131,36 @@ static std::vector<String> teacherMatsForUID(const String &uid) {
     }
   }
   return out;
+}
+
+// Guardado local + remoto de asistencia
+static void saveAttendanceLocalAndRemote(
+    const String &timestamp,
+    const String &uid,
+    const String &name,
+    const String &account,
+    const String &materia,
+    const String &mode
+) {
+  String rec = "\"" + timestamp + "\","
+             + "\"" + uid + "\","
+             + "\"" + name + "\","
+             + "\"" + account + "\","
+             + "\"" + materia + "\","
+             + "\"" + mode + "\"";
+
+  // Guardado local
+  appendLineToFile(ATT_FILE, rec);
+
+  // Envío remoto
+  if (WiFi.status() == WL_CONNECTED) {
+    bool ok = sendAsistencia(timestamp, uid, name, account, materia, mode);
+    if (!ok) {
+      Serial.printf("WARN: no se pudo sincronizar asistencia UID=%s\n", uid.c_str());
+    }
+  } else {
+    Serial.printf("WARN: WiFi no disponible, asistencia UID=%s quedó solo local\n", uid.c_str());
+  }
 }
 
 // Handler principal para eventos RFID:
@@ -158,7 +203,7 @@ void rfidLoopHandler() {
           Serial.printf("UID %s detectada como MAESTRO durante batch -> bloquear y notificar al dashboard\n", uid.c_str());
 
           // Registrar en DENIED_FILE (para trazabilidad)
-          String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_BLOQUEADO_LOTE\"";
+          String recDenied = "\"" + nowISO() + "\",\"" + uid + "\",\"MAESTRO_BLOQUEADO_LOTE\"";
           appendLineToFile(DENIED_FILE, recDenied);
 
           // Notificación global
@@ -168,7 +213,9 @@ void rfidLoopHandler() {
             auto tc = parseQuotedCSVLine(teacherRow);
             if (tc.size() > 1) teacherName = tc[1];
           }
-          String notificationMsg = "Tarjeta de maestro detectada en captura por lote y bloqueada: " + (teacherName.length() ? teacherName : String("Sin nombre")) + " (UID: " + uid + ")";
+          String notificationMsg = "Tarjeta de maestro detectada en captura por lote y bloqueada: " +
+                                   (teacherName.length() ? teacherName : String("Sin nombre")) +
+                                   " (UID: " + uid + ")";
           addNotification(uid, String(""), String(""), notificationMsg);
 
           // IMPORTANTE: dejar captureUID = uid para que el poll del dashboard (/capture_batch poll)
@@ -258,7 +305,8 @@ void rfidLoopHandler() {
   if (f) {
     String header = f.readStringUntil('\n');
     while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
+      String l = f.readStringUntil('\n');
+      l.trim();
       if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() > 0 && c[0] == uid) userRows.push_back(c);
@@ -275,7 +323,7 @@ void rfidLoopHandler() {
   // Si no existe ni user ni teacher -> denegar (tarjeta desconocida)
   if (userRows.size() == 0 && !isTeacher) {
     Serial.printf("UID %s no registrado -> DENEGADO\n", uid.c_str());
-    String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"NO REGISTRADO\"";
+    String recDenied = "\"" + nowISO() + "\",\"" + uid + "\",\"NO REGISTRADO\"";
     appendLineToFile(DENIED_FILE, recDenied);
     String note = "Tarjeta no registrada (UID: " + uid + ")";
     addNotification(uid, String(""), String(""), note);
@@ -331,8 +379,8 @@ void rfidLoopHandler() {
       }
 
       if (hasCurrent) {
-        String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + wantMat + "\"," + "\"entrada\"";
-        appendLineToFile(ATT_FILE, rec);
+        String ts = nowISO();
+        saveAttendanceLocalAndRemote(ts, uid, name, account, wantMat, "entrada");
         // abrir puerta en acceso concedido
         puerta.write(90);
         showAccessGranted(name, wantMat, uid);
@@ -342,7 +390,7 @@ void rfidLoopHandler() {
         String mmstr = joinMats(userMats);
         String note = "Intento fuera de materia en curso. Usuario: " + name + " (" + account + "). Materias del usuario: " + mmstr + ". Materia en curso: " + wantMat;
         addNotification(uid, name, account, note);
-        String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + note + "\"";
+        String rec = "\"" + nowISO() + "\",\"" + uid + "\",\"" + note + "\"";
         appendLineToFile(DENIED_FILE, rec);
         showAccessDenied(String("No pertenece a: ") + wantMat, uid);
         ledOff();
@@ -355,8 +403,8 @@ void rfidLoopHandler() {
       if (!userMats.empty()) {
         // Permitir entrada pero registrar notificación informativa que entró fuera de horario
         String chosenMat = userMats[0];
-        String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMat + "\"," + "\"entrada\"";
-        appendLineToFile(ATT_FILE, rec);
+        String ts = nowISO();
+        saveAttendanceLocalAndRemote(ts, uid, name, account, chosenMat, "entrada");
         // Notificación: entrada fuera de horario (Alumno)
         String note = "Entrada fuera de horario (Alumno). Usuario: " + name + " (" + account + "). Materia asignada: " + chosenMat;
         addNotification(uid, name, account, note);
@@ -366,7 +414,7 @@ void rfidLoopHandler() {
         ledOff();
       } else {
         // Usuario sin materias asignadas -> denegar y notificar
-        String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size()>1?userRows[0][1]:"") : "");
+        String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size() > 1 ? userRows[0][1] : "") : "");
         addNotification(uid, String(""), String(""), note);
         appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"NO MATERIA\""));
         showAccessDenied("Sin materia asignada", uid);
@@ -401,8 +449,8 @@ void rfidLoopHandler() {
         // Comparación case-insensitive del nombre del profesor asignado en el horario
         if (lowerCopy(tname) == lowerCopy(scheduleOwnerProf)) {
           // Profesor es exactamente el asignado en el horario -> permitir acceso
-          String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + wantMat + "\"," + "\"entrada-teacher\"";
-          appendLineToFile(ATT_FILE, rec);
+          String ts = nowISO();
+          saveAttendanceLocalAndRemote(ts, uid, tname, tacc, wantMat, "entrada-teacher");
           puerta.write(90);
           showAccessGranted(tname, wantMat, uid);
           puerta.write(0);
@@ -426,8 +474,8 @@ void rfidLoopHandler() {
           if (lowerCopy(m) == wantMatLower) { hasCurrent = true; break; }
         }
         if (hasCurrent) {
-          String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + wantMat + "\"," + "\"entrada-teacher\"";
-          appendLineToFile(ATT_FILE, rec);
+          String ts = nowISO();
+          saveAttendanceLocalAndRemote(ts, uid, tname, tacc, wantMat, "entrada-teacher");
           puerta.write(90);
           showAccessGranted(tname, wantMat, uid);
           puerta.write(0);
@@ -448,8 +496,8 @@ void rfidLoopHandler() {
       // NO HAY CLASE: si maestro tiene materias, permitir y notificar (entrada fuera de horario maestro)
       if (!tmats.empty()) {
         String chosenMat = tmats[0];
-        String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + tname + "\"," + "\"" + tacc + "\"," + "\"" + chosenMat + "\"," + "\"entrada-teacher\"";
-        appendLineToFile(ATT_FILE, rec);
+        String ts = nowISO();
+        saveAttendanceLocalAndRemote(ts, uid, tname, tacc, chosenMat, "entrada-teacher");
         // Notificar entrada de maestro fuera de horario
         String note = "Entrada fuera de horario (Maestro). Maestro: " + tname + " (" + tacc + "). Materia: " + chosenMat;
         addNotification(uid, tname, tacc, note);
