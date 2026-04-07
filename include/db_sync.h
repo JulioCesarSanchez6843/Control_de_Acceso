@@ -28,3 +28,10 @@ bool sendProfesorRegistro(
     String cuenta,
     String created_at = String()
 );
+
+// Registrar materia/curso en servidor
+bool sendMateriaRegistro(
+    String materia,
+    String profesor,
+    String created_at = String()
+);

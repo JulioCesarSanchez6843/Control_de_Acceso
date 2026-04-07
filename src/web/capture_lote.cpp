@@ -4,6 +4,7 @@
 #include "web_common.h"
 #include "globals.h"
 #include "files_utils.h"
+#include "db_sync.h"
 
 #include <FS.h>
 #include <SPIFFS.h>
@@ -60,8 +61,13 @@ static String computeScheduleBaseMat() {
   String scheduleOwner = currentScheduledMateria();
   String scheduleBaseMat;
   int idx = scheduleOwner.indexOf("||");
-  if (idx < 0) { scheduleBaseMat = scheduleOwner; scheduleBaseMat.trim(); }
-  else { scheduleBaseMat = scheduleOwner.substring(0, idx); scheduleBaseMat.trim(); }
+  if (idx < 0) {
+    scheduleBaseMat = scheduleOwner;
+    scheduleBaseMat.trim();
+  } else {
+    scheduleBaseMat = scheduleOwner.substring(0, idx);
+    scheduleBaseMat.trim();
+  }
   return scheduleBaseMat;
 }
 
@@ -91,13 +97,14 @@ static bool studentExistsInMateria(const String &uid, const String &materia) {
   return false;
 }
 
-// uidExistsInTeachers/uidExistsInUsers (idénticas a capture_individual)
+// uidExistsInTeachers/uidExistsInUsers
 static bool uidExistsInTeachers(const String &uid) {
   if (uid.length() == 0) return false;
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (!f) return false;
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    String l = f.readStringUntil('\n'); l.trim();
+    if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
   }
@@ -110,7 +117,8 @@ static bool uidExistsInUsers(const String &uid) {
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) return false;
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    String l = f.readStringUntil('\n'); l.trim();
+    if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
   }
@@ -124,12 +132,12 @@ static std::vector<String> filterOutTeachersFromList(std::vector<String> &list) 
   for (int i = (int)list.size() - 1; i >= 0; --i) {
     String uid = list[i];
     if (uidExistsInTeachers(uid)) {
-      // obtener nombre si está en teachers file
       String teacherName = "";
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
         while (ft.available()) {
-          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          String l = ft.readStringUntil('\n'); l.trim();
+          if (!l.length()) continue;
           auto c = parseQuotedCSVLine(l);
           if (c.size() >= 2 && c[0] == uid) { teacherName = c[1]; break; }
         }
@@ -143,16 +151,31 @@ static std::vector<String> filterOutTeachersFromList(std::vector<String> &list) 
   return removed;
 }
 
+// Sync helpers
+static void syncBatchAlumnoToOracle(const String &uid, const String &name, const String &account, const String &materia, const String &createdAt) {
+  if (name.length() == 0 || account.length() == 0) return;
+  if (!sendAlumnoRegistro(uid, name, account, materia, createdAt)) {
+    Serial.println("WARN: no se pudo sincronizar alumno del lote con Oracle");
+  } else {
+    Serial.println("DB_SYNC: alumno del lote sincronizado correctamente");
+  }
+
+  if (!sendAsistencia(createdAt, uid, name, account, materia, "captura")) {
+    Serial.println("WARN: no se pudo sincronizar asistencia del lote");
+  } else {
+    Serial.println("DB_SYNC: asistencia del lote sincronizada correctamente");
+  }
+}
+
 // -------------------- Page --------------------
 void capture_lote_page() {
-  // Optional return_to param (from students page)
   String return_to = "/students";
   if (server.hasArg("return_to")) {
-    String rt = server.arg("return_to"); rt.trim();
+    String rt = server.arg("return_to");
+    rt.trim();
     if (rt.length() && rt[0] == '/') return_to = rt;
   }
 
-  // Clear capture queue file at page load (fresh start)
   clearCaptureQueueFile();
 
   captureMode = true;
@@ -168,7 +191,6 @@ void capture_lote_page() {
 
   String scheduleBaseMat = computeScheduleBaseMat();
 
-  // Prepare server-side options for global select if needed
   String coursesOptionsHtml = "";
   if (scheduleBaseMat.length() == 0) {
     auto courses = loadCourses();
@@ -187,15 +209,12 @@ void capture_lote_page() {
   html += "<div style='display:flex;gap:12px;align-items:flex-start;'>";
   html += "<div style='width:300px;display:flex;flex-direction:column;gap:8px;'>";
 
-  // Borrar última (amarillo)
   html += "<form method='POST' action='/capture_remove_last' style='display:inline;margin-bottom:6px;'><button class='btn btn-yellow' type='submit'>Borrar última</button></form>";
 
-  // Cancel (POST /cancel_capture)
   html += "<form method='POST' action='/cancel_capture' style='display:inline;margin-bottom:6px;' onsubmit='return confirm(\"Cancelar y limpiar cola? Esto borrará los UIDs en la cola.\")'>";
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   html += "<button class='btn btn-red' type='submit'>Cancelar / Limpiar Cola</button></form>";
 
-  // Terminar y Guardar
   html += "<form id='finishForm' method='POST' action='/capture_finish' style='display:inline;margin-top:6px;' onsubmit='return confirm(\"Terminar y guardar las entradas para los UIDs en la cola?\")'>";
   html += "<input type='hidden' name='return_to' value='" + return_to + "'>";
   if (scheduleBaseMat.length() > 0) {
@@ -208,7 +227,7 @@ void capture_lote_page() {
   }
   html += "</form>";
 
-  html += "</div>"; // left column
+  html += "</div>";
 
   html += "<div style='flex:1;min-width:340px;'>";
   if (scheduleBaseMat.length() == 0) {
@@ -229,7 +248,6 @@ void capture_lote_page() {
 
   html += "</div></div>" + htmlFooter();
 
-  // Client JS (mejorado: banner de maestro auto-hide 5s, eliminar por UID)
   String scheduleFlag = scheduleBaseMat.length() ? "true" : "false";
 
   html += R"rawliteral(
@@ -246,7 +264,6 @@ void capture_lote_page() {
       if (finishBtn) finishBtn.disabled = (!selectedMateria || selectedMateria.trim() == '');
     }
 
-    // Elimina una UID concreta de la cola (POST)
     function removeUid(uid) {
       if (!uid) return;
       fetch('/capture_remove_uid', {
@@ -254,12 +271,10 @@ void capture_lote_page() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'uid=' + encodeURIComponent(uid)
       }).then(function(r){
-        // for responsiveness, re-poll quickly
         setTimeout(pollQueue, 250);
       }).catch(function(){ setTimeout(pollQueue, 500); });
     }
 
-    // Poll loop
     var teacherBannerTimer = null;
     function pollQueue() {
       fetch('/capture_batch_poll')
@@ -269,12 +284,8 @@ void capture_lote_page() {
           if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
 
           var bc = document.getElementById('banners_container');
-
-          // Mantener un único banner de bloqueo por maestro con id para controlar su tiempo
-          // Limpiar todos los mensajes previos EXCEPTO el banner de maestro si aún activo (lo manejamos abajo)
           bc.innerHTML = '';
 
-          // Mensaje informativo amarillo durante self-register
           if (j.awaiting) {
             var y = document.createElement('div');
             y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
@@ -283,7 +294,6 @@ void capture_lote_page() {
             bc.appendChild(y);
           }
 
-          // Mensaje rojo sincronizado con display cuando hay tarjeta incorrecta
           if (j.wrong_card) {
             var red = document.createElement('div');
             red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
@@ -292,9 +302,7 @@ void capture_lote_page() {
             bc.appendChild(red);
           }
 
-          // Banner para tarjetas de maestro rechazadas: mostrar solo una vez por evento y quitar a los 5s
           if (j.teacher_blocked) {
-            // si no existe banner, crearlo; si existe, resetear el timer
             var existing = document.getElementById('teacher_blocked_banner');
             if (!existing) {
               var tb = document.createElement('div');
@@ -304,11 +312,9 @@ void capture_lote_page() {
               tb.textContent = j.teacher_blocked_message || 'Tarjeta de maestro rechazada';
               bc.appendChild(tb);
             } else {
-              // si ya estaba, re-agregar a contenedor para mantener orden de banners
               bc.appendChild(existing);
             }
 
-            // resetear timer
             if (teacherBannerTimer) clearTimeout(teacherBannerTimer);
             teacherBannerTimer = setTimeout(function(){
               var el = document.getElementById('teacher_blocked_banner');
@@ -316,13 +322,11 @@ void capture_lote_page() {
               teacherBannerTimer = null;
             }, 5000);
           } else {
-            // si el servidor ya no reporta teacher_blocked, eliminar banner en cliente si existe
             var el = document.getElementById('teacher_blocked_banner');
             if (el && el.parentNode) el.parentNode.removeChild(el);
             if (teacherBannerTimer) { clearTimeout(teacherBannerTimer); teacherBannerTimer = null; }
           }
 
-          // Construir la tabla con botón Eliminar por cada fila
           var list = document.getElementById('queue_list');
           if (!j.uids || j.uids.length==0) {
             list.innerHTML = 'No hay UIDs capturadas aún.';
@@ -365,7 +369,6 @@ void capture_lote_page() {
             else finishBtn.classList.add('btn-green');
           }
         }).catch(e=>{
-          // ignore errors silently, try again later
         });
       setTimeout(pollQueue, 900);
     }
@@ -391,12 +394,9 @@ void capture_lote_batchPollGET() {
 
   String scheduleBaseMat = computeScheduleBaseMat();
 
-  // First: proactively remove any teachers that might be in queue (defensive)
   std::vector<String> removedTeachers = filterOutTeachersFromList(u);
   if (!removedTeachers.empty()) {
-    // write cleaned queue back
     writeCaptureQueue(u);
-    // create notifications and log for removed teachers
     for (auto &t : removedTeachers) {
       String recDenied = "\"" + nowISO() + "\"," + "\"" + t + "\"," + "\"MAESTRO_OMITIDO_EN_COLA\"";
       appendLineToFile(DENIED_FILE, recDenied);
@@ -411,32 +411,28 @@ void capture_lote_batchPollGET() {
     }
   }
 
-  // Variables de estado
   static unsigned long wrongCardStartTime = 0;
   static unsigned long lastShowWrongRedMs = 0;
-  static unsigned long teacherBlockedTime = 0; // marca cuándo empezó el bloqueo por maestro
+  static unsigned long teacherBlockedTime = 0;
 
   bool wrongCard = false;
   bool teacherBlocked = false;
   String teacherBlockedMessage = "";
 
-  // BLOQUEO TOTAL INMEDIATO - VERIFICACIÓN ANTES DE CUALQUIER PROCESAMIENTO
   if (captureUID.length() > 0) {
-    // VERIFICACIÓN MÁS TEMPRANA POSIBLE: ¿Es maestro? - BLOQUEO TOTAL
     if (uidExistsInTeachers(captureUID)) {
-      // Si no hay bloqueo activo o ya expiró, registrar y notificar; si ya está activo, no duplicar.
       if (teacherBlockedTime == 0 || (millis() - teacherBlockedTime) > 5000UL) {
-        teacherBlockedTime = millis(); // iniciar periodo de bloqueo de 5s
-        // Log denied (para trazabilidad)
+        teacherBlockedTime = millis();
         String recDenied = "\"" + nowISO() + "\"," + "\"" + captureUID + "\"," + "\"MAESTRO_BLOQUEADO_LOTE\"";
         appendLineToFile(DENIED_FILE, recDenied);
 
-        // Notificación (solo una vez por bloqueo)
         String teacherName = "";
         File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
         if (ft) {
           while (ft.available()) {
-            String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+            String l = ft.readStringUntil('\n');
+            l.trim();
+            if (!l.length()) continue;
             auto c = parseQuotedCSVLine(l);
             if (c.size() >= 2 && c[0] == captureUID) {
               teacherName = c[1];
@@ -452,20 +448,13 @@ void capture_lote_batchPollGET() {
         addNotification(captureUID, String(""), String(""), notificationMsg);
       }
 
-      // Indicar bloqueo (se mantendrá true por 5s en la respuesta JSON)
       teacherBlocked = true;
       teacherBlockedMessage = "Esta tarjeta está registrada como maestro. No puede registrarse en captura por lote.";
-
-      // IMPORTANTE: NO limpiamos captureUID aquí. Lo dejamos para que el dashboard lo vea.
-      // Tampoco mostramos aquí un mensaje en el display para evitar duplicados — el rfid_handler
-      // normalmente muestra el mensaje local. El dashboard cliente mostrará su banner.
       goto send_response;
     }
   }
 
-  // SOLO SI NO ES MAESTRO, CONTINUAR CON EL PROCESAMIENTO NORMAL
   if (captureUID.length() > 0 && !uidExistsInTeachers(captureUID)) {
-    // Verificar si estamos en modo self-register
     if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
       if (captureUID != currentSelfRegUID) {
         wrongCard = true;
@@ -481,7 +470,6 @@ void capture_lote_batchPollGET() {
         captureAccount = "";
         captureDetectedAt = 0;
       } else {
-        // Tarjeta correcta para self-register
         if (appendUidToCaptureQueue(captureUID)) {
           captureUID = "";
           captureName = "";
@@ -489,10 +477,7 @@ void capture_lote_batchPollGET() {
           captureDetectedAt = 0;
         }
       }
-    }
-    // Procesamiento normal (sin self-register activo)
-    else if (!awaitingSelfRegister) {
-      // Agregar a la cola
+    } else if (!awaitingSelfRegister) {
       if (appendUidToCaptureQueue(captureUID)) {
         captureUID = "";
         captureName = "";
@@ -502,18 +487,15 @@ void capture_lote_batchPollGET() {
     }
   }
 
-  // Control de tiempos para mensajes
   if (wrongCardStartTime > 0 && (millis() - wrongCardStartTime) < 2500) {
     wrongCard = true;
   } else {
     wrongCardStartTime = 0;
   }
 
-  // Mantener teacherBlocked true mientras estemos dentro de 5000ms desde teacherBlockedTime
   if (teacherBlockedTime > 0 && (millis() - teacherBlockedTime) < 5000UL) {
     teacherBlocked = true;
   } else {
-    // expiro el periodo -> reset
     teacherBlockedTime = 0;
   }
 
@@ -522,20 +504,16 @@ void capture_lote_batchPollGET() {
   }
 
 send_response:
-  // Leer la cola actualizada (después de posibles limpiezas)
   u = readCaptureQueue();
 
-  // Construir respuesta JSON (NO incluir maestros)
   String j = "{\"uids\":[";
   bool first = true;
   for (size_t i = 0; i < u.size(); ++i) {
     String uid = u[i];
 
-    // VERIFICACIÓN EXTRA: No incluir maestros en la respuesta JSON
     if (uidExistsInTeachers(uid)) {
-      // (Defensiva) Si aún hay maestros, quitarlos definitivamente de la cola y loggear
       appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"MAESTRO_OMITIDO_RESPUESTA\""));
-      continue; // Saltar maestros
+      continue;
     }
 
     String rec = findAnyUserByUID(uid);
@@ -560,28 +538,25 @@ send_response:
   }
   j += "],";
   j += "\"awaiting\":" + String(awaitingSelfRegister ? "true" : "false") + ",";
+  j += "\"awaiting_uid\":\"" + jsonEscape(currentSelfRegUID) + "\",";
   j += "\"card_triggered\":" + String(cardTriggered ? "true" : "false") + ",";
   j += "\"wrong_card\":" + String(wrongCard ? "true" : "false") + ",";
-
-  // BLOQUEO DE MAESTROS
   j += "\"teacher_blocked\":" + String(teacherBlocked ? "true" : "false") + ",";
   if (teacherBlocked) {
     j += "\"teacher_blocked_message\":\"" + jsonEscape(teacherBlockedMessage) + "\"";
   } else {
     j += "\"teacher_blocked_message\":\"\"";
   }
-
   j += "}";
 
   server.send(200, "application/json", j);
 }
 
-// Pause/resume unchanged
 void capture_lote_pausePOST() {
   if (captureBatchMode && captureMode) {
     captureMode = false;
     #ifdef USE_DISPLAY
-    showCaptureMode(true,true);
+    showCaptureMode(true, true);
     #endif
     server.sendHeader("Location", "/capture_batch");
     server.send(303, "text/plain", "paused");
@@ -590,7 +565,7 @@ void capture_lote_pausePOST() {
   if (captureBatchMode && !captureMode) {
     captureMode = true;
     #ifdef USE_DISPLAY
-    showCaptureMode(true,false);
+    showCaptureMode(true, false);
     #endif
     server.sendHeader("Location", "/capture_batch");
     server.send(303, "text/plain", "resumed");
@@ -599,7 +574,7 @@ void capture_lote_pausePOST() {
   captureMode = true;
   captureBatchMode = true;
   #ifdef USE_DISPLAY
-  showCaptureMode(true,false);
+  showCaptureMode(true, false);
   #endif
   server.sendHeader("Location", "/capture_batch");
   server.send(303, "text/plain", "started");
@@ -620,7 +595,6 @@ void capture_lote_removeLastPOST() {
   server.send(303, "text/plain", "removed last");
 }
 
-// NEW: Remove specific UID from queue (first occurrence)
 void capture_lote_removeUidPOST() {
   if (!server.hasArg("uid")) {
     server.sendHeader("Location", "/capture_batch");
@@ -658,17 +632,17 @@ void capture_lote_generateLinksPOST() {
     return;
   }
 
-  // Filtrar maestros proactivamente: no generar links para ellos
   std::vector<String> teacherList;
   for (int i = (int)lines.size() - 1; i >= 0; --i) {
     String uid = lines[i];
     if (uidExistsInTeachers(uid)) {
-      // obtener nombre si está en teachers file
       String teacherName = "";
       File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
       if (ft) {
         while (ft.available()) {
-          String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          String l = ft.readStringUntil('\n');
+          l.trim();
+          if (!l.length()) continue;
           auto c = parseQuotedCSVLine(l);
           if (c.size() >= 2 && c[0] == uid) { teacherName = c[1]; break; }
         }
@@ -676,12 +650,10 @@ void capture_lote_generateLinksPOST() {
       }
       teacherList.push_back(uid + (teacherName.length() ? String(" - ") + teacherName : ""));
       lines.erase(lines.begin() + i);
-      // log
       appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"MAESTRO_OMITIDO_GENERAR_LINKS\""));
     }
   }
 
-  // Si quedaron vacíos (porque sólo había maestros), limpiar cola y mostrar mensaje
   if (lines.size() == 0) {
     clearCaptureQueueFile();
     String html = htmlHeader("Error - No se generaron links");
@@ -694,10 +666,10 @@ void capture_lote_generateLinksPOST() {
 
   std::vector<String> urls;
   for (auto &ln : lines) {
-    String uid = ln; uid.trim();
+    String uid = ln;
+    uid.trim();
     if (uid.length() == 0) continue;
 
-    // (Extra) Prevención redundante: saltar cualquier maestro aunque ya filtramos
     if (uidExistsInTeachers(uid)) {
       continue;
     }
@@ -716,10 +688,8 @@ void capture_lote_generateLinksPOST() {
     urls.push_back(String("/self_register?token=") + s.token);
   }
 
-  // Limpiar la cola después de generar links (y después de haber eliminado maestros)
   clearCaptureQueueFile();
 
-  // Si no se generaron URLs por otro motivo (defensivo)
   if (urls.size() == 0) {
     String html = htmlHeader("Error - No se generaron links");
     html += "<div class='card'><h2>No se generaron links</h2>";
@@ -736,7 +706,6 @@ void capture_lote_generateLinksPOST() {
   for (auto &u : urls) html += "<li><a href='" + u + "'>" + u + "</a></li>";
   html += "</ul>";
 
-  // Mostrar aviso si hubo maestros omitidos
   if (teacherList.size() > 0) {
     html += "<div style='margin-top:12px;padding:10px;background:#fff3cd;border:1px solid #ffeaa7;border-radius:6px;'>";
     html += "<strong>Se omitieron las siguientes tarjetas (maestros):</strong><ul>";
@@ -748,13 +717,13 @@ void capture_lote_generateLinksPOST() {
   server.send(200, "text/html", html);
 }
 
-// Finish batch: BLOQUEO TOTAL DE MAESTROS
 void capture_lote_finishPOST() {
   auto q = readCaptureQueue();
   if (q.size() == 0) {
-    captureMode = false; captureBatchMode = false;
+    captureMode = false;
+    captureBatchMode = false;
     #ifdef USE_DISPLAY
-    showCaptureMode(false,false);
+    showCaptureMode(false, false);
     #endif
     String rt = server.hasArg("return_to") ? server.arg("return_to") : String("/capture_batch");
     server.sendHeader("Location", rt);
@@ -762,10 +731,10 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  // Determine chosen materia: if supplied use it; else try schedule
   String chosenMateria;
   if (server.hasArg("materia")) {
-    chosenMateria = server.arg("materia"); chosenMateria.trim();
+    chosenMateria = server.arg("materia");
+    chosenMateria.trim();
   }
   if (chosenMateria.length() == 0) {
     chosenMateria = computeScheduleBaseMat();
@@ -778,30 +747,27 @@ void capture_lote_finishPOST() {
     return;
   }
 
-  // Vectores para el informe final
-  std::vector<String> successList;    // Registros exitosos
-  std::vector<String> duplicateList;  // Ya estaban registrados en la materia
-  // Nota: no mostramos maestros ni nuevos usuarios en el informe final según tu petición
+  std::vector<String> successList;
+  std::vector<String> duplicateList;
 
-  // Process queue: for each UID, append ATT and ensure USERS_FILE has a row for chosenMateria
   for (auto &uid : q) {
     uid.trim();
     if (uid.length() == 0) continue;
 
-    // BLOQUEO TOTAL: Si UID pertenece a un maestro, NO PROCESAR
     if (uidExistsInTeachers(uid)) {
       String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_BLOQUEADO_FINISH\"";
       appendLineToFile(DENIED_FILE, recDenied);
       continue;
     }
 
-    // VERIFICAR SI EL ALUMNO YA ESTÁ REGISTRADO EN ESTA MATERIA
     if (studentExistsInMateria(uid, chosenMateria)) {
       String studentName = "";
       File fu = SPIFFS.open(USERS_FILE, FILE_READ);
       if (fu) {
         while (fu.available()) {
-          String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+          String l = fu.readStringUntil('\n');
+          l.trim();
+          if (!l.length()) continue;
           auto c = parseQuotedCSVLine(l);
           if (c.size() >= 2 && c[0] == uid) {
             studentName = c[1];
@@ -814,7 +780,6 @@ void capture_lote_finishPOST() {
       continue;
     }
 
-    // find first user row (if any)
     String rec = findAnyUserByUID(uid);
 
     if (rec.length() > 0) {
@@ -822,21 +787,19 @@ void capture_lote_finishPOST() {
       String name = (c.size() > 1 ? c[1] : "");
       String account = (c.size() > 2 ? c[2] : "");
 
-      // Añadir fila en USERS_FILE para esta materia
       String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
       appendLineToFile(USERS_FILE, userRow);
 
       successList.push_back(uid + " - " + (name.length() ? name : "Sin nombre"));
 
-      // append attendance
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
       appendLineToFile(ATT_FILE, att);
+
+      syncBatchAlumnoToOracle(uid, name, account, chosenMateria, nowISO());
     } else {
-      // user not registered: create user row with empty name/account and chosenMateria
       String userRow = "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
       appendLineToFile(USERS_FILE, userRow);
 
-      // contar como registro exitoso (aunque sin nombre/cuenta)
       successList.push_back(uid + " - Sin nombre");
 
       String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
@@ -847,13 +810,16 @@ void capture_lote_finishPOST() {
   }
 
   clearCaptureQueueFile();
-  captureMode = false; captureBatchMode = false;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+  captureMode = false;
+  captureBatchMode = false;
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
   #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
+  showCaptureMode(false, false);
   #endif
 
-  // Mostrar informe final (solo exitosos y duplicados) — aspecto mejorado
   String html = htmlHeader("Informe de Captura por Lote");
   html += "<div class='card' style='max-width:900px;margin:0 auto;'>";
   html += "<h2 style='margin-top:0;'>Informe de Captura por Lote</h2>";
@@ -869,7 +835,6 @@ void capture_lote_finishPOST() {
   html += "</div>";
   html += "</div>";
 
-  // detalles duplicados
   if (duplicateList.size() > 0) {
     html += "<div style='margin-top:16px;padding:12px;background:#fff3cd;border-radius:8px;border:1px solid #ffeaa7;'>";
     html += "<h4 style='margin-top:0;color:#856404;'>Alumnos ya registrados en esta materia</h4>";
@@ -882,7 +847,6 @@ void capture_lote_finishPOST() {
     html += "</div>";
   }
 
-  // detalles exitosos (resumen comprimido)
   if (successList.size() > 0) {
     html += "<div style='margin-top:16px;padding:12px;background:#e6ffed;border-radius:8px;border:1px solid #c7f0d4;'>";
     html += "<h4 style='margin-top:0;color:#0a7020;'>Registros guardados </h4>";
@@ -892,7 +856,7 @@ void capture_lote_finishPOST() {
       if (shown++ >= 10) break;
       html += "<li>" + htmlEscape(ok) + "</li>";
     }
-    if (successList.size() > 10) html += "<li>... y " + String(successList.size()-10) + " más</li>";
+    if (successList.size() > 10) html += "<li>... y " + String(successList.size() - 10) + " más</li>";
     html += "</ul>";
     html += "</div>";
   }
@@ -907,19 +871,15 @@ void capture_lote_finishPOST() {
   server.send(200, "text/html", html);
 }
 
-// CANCEL handler: limpiar cola y limpiar estado de captura y self-register para evitar tarjeta "pegada"
 void capture_lote_cancelPOST() {
-  // store old waiting UID, then clear sessions that reference it
   String oldWaitingUID = currentSelfRegUID;
 
-  // limpiar la cola y estado de captura
   clearCaptureQueueFile();
   captureUID = "";
   captureName = "";
   captureAccount = "";
   captureDetectedAt = 0;
 
-  // limpiar flags de self-register y remover sessions pendientes del UID
   if (oldWaitingUID.length()) {
     for (int i = (int)selfRegSessions.size() - 1; i >= 0; --i) {
       if (selfRegSessions[i].uid == oldWaitingUID) {
@@ -932,14 +892,12 @@ void capture_lote_cancelPOST() {
   awaitingSinceMs = 0;
   currentSelfRegToken = "";
 
-  // regresar a modo normal (sin captura)
   captureMode = false;
   captureBatchMode = false;
   #ifdef USE_DISPLAY
-  showCaptureMode(false,false);
+  showCaptureMode(false, false);
   #endif
 
-  // respetar return_to si viene
   String rt = "/students";
   if (server.hasArg("return_to")) rt = server.arg("return_to");
   server.sendHeader("Location", rt.length() ? rt : String("/students"));

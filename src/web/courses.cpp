@@ -4,6 +4,8 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
+#include "db_sync.h"
+
 #include <SPIFFS.h>
 #include <vector>
 #include <algorithm>
@@ -52,8 +54,18 @@ static String jsonEscape(const String &s) {
 }
 
 /*
-  Nota: loadCourses() y writeCourses() NO se definen aquí; están en files_utils.cpp
+  Nota: loadCourses() y writeCourses() NO se definen aquí;
+  están en files_utils.cpp
 */
+
+// ---------- Sync helper ----------
+static void syncMateriaToOracle(const String &materia, const String &profesor, const String &createdAt) {
+  if (!sendMateriaRegistro(materia, profesor, createdAt)) {
+    Serial.println("WARN: no se pudo sincronizar materia con Oracle");
+  } else {
+    Serial.println("DB_SYNC: materia sincronizada correctamente");
+  }
+}
 
 // ---------- Helper: contar cursos con nombre dado ----------
 static int countCoursesWithName(const String &materia) {
@@ -122,7 +134,7 @@ static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
   return out;
 }
 
-// Export: wrapper visible desde otros .cpp (corrige errores de enlace/IntelliSense)
+// Export: wrapper visible desde otros .cpp
 std::vector<String> getProfessorsForMateria(const String &materia) {
   return getProfessorsForMateriaLocal(materia);
 }
@@ -131,15 +143,18 @@ std::vector<String> getProfessorsForMateria(const String &materia) {
 static std::vector<String> loadRegisteredTeachersNamesLocal() {
   std::vector<String> out;
   if (!SPIFFS.exists(TEACHERS_FILE)) return out;
+
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (!f) return out;
-  // saltar header si existe
+
   if (f.available()) {
     String header = f.readStringUntil('\n');
     (void)header;
   }
+
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
+    String l = f.readStringUntil('\n');
+    l.trim();
     if (l.length() == 0) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 2) {
@@ -153,7 +168,7 @@ static std::vector<String> loadRegisteredTeachersNamesLocal() {
   return out;
 }
 
-// Export wrapper for the teacher names list (if other modules expect it)
+// Export wrapper
 std::vector<String> loadRegisteredTeachersNames() {
   return loadRegisteredTeachersNamesLocal();
 }
@@ -196,11 +211,8 @@ void handleMaterias() {
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
-      // Botones sin iconos; horario con azul claro para que no se pierda
       html += "<a class='btn btn-green' href='/materias/edit?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "'>Editar</a> ";
       html += "<a class='btn' href='/materias_new_schedule?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='background:#5dade2;color:#fff;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>Horarios</a> ";
-      // enviar return_to para que la página de students pueda mostrar 'Volver' al listado de materias
-      // además pasamos hide_capture=1 para indicar que desde aquí queremos ocultar los botones de captura en el sub-menu de estudiantes
       html += "<a class='btn btn-purple' href='/students?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "&return_to=/materias&hide_capture=1' style='background:#6dd3d0;color:#000;padding:6px 10px;border-radius:6px;text-decoration:none;margin-left:6px;'>Administrar Estudiantes</a> ";
       html += "<a class='btn btn-orange' href='/materia_history?materia=" + urlEncode(c.materia) + "&profesor=" + urlEncode(c.profesor) + "' style='margin-left:6px;'>Historial</a> ";
       html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Eliminar materia y sus horarios/usuarios? Esta acción es irreversible.\");'>"
@@ -285,11 +297,15 @@ void handleMateriasAddPOST() {
     return;
   }
 
-  // Añadir course
   auto courses = loadCourses();
-  Course nc; nc.materia = mat; nc.profesor = prof; nc.created_at = nowISO();
+  Course nc;
+  nc.materia = mat;
+  nc.profesor = prof;
+  nc.created_at = nowISO();
   courses.push_back(nc);
   writeCourses(courses);
+
+  syncMateriaToOracle(nc.materia, nc.profesor, nc.created_at);
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
@@ -463,10 +479,8 @@ void handleMateriasEditGET() {
   }
   if (idx == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
-  // obtener lista de profesores registrados para mostrar en select
   auto teachers = loadRegisteredTeachersNamesLocal();
 
-  // estilo parecido a capture_individual: tarjeta limpia, inputs amplios
   String html = htmlHeader("Editar Materia");
   html += R"rawliteral(
 <style>
@@ -554,7 +568,8 @@ void handleMateriasEditPOST() {
   File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   std::vector<String> slines;
   if (f) {
-    String header = f.readStringUntil('\n'); slines.push_back(header);
+    String header = f.readStringUntil('\n');
+    slines.push_back(header);
     while (f.available()) {
       String l = f.readStringUntil('\n'); l.trim();
       if (!l.length()) continue;
@@ -596,10 +611,7 @@ void handleMateriasEditPOST() {
         String uid = c[0], name = c[1], acc = c[2], mm = c[3];
         String created = (c.size() > 4 ? c[4] : "");
         if (mm == oldMat && countCoursesWithName(oldMat) == 1) mm = mat;
-        String umat, uprof;
-        if (splitCourseKey(mm, umat, uprof)) {
-          if (mm == oldKey) mm = newKey;
-        }
+        if (mm == oldKey) mm = newKey;
         ulines.push_back("\"" + uid + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + created + "\"");
       } else ulines.push_back(l);
     }
@@ -671,7 +683,6 @@ void handleMateriasDeletePOST() {
 }
 
 // --- Endpoint JSON para obtener profesores por materia ---
-// Responde siempre 200 con JSON {"profesores": [...]}, vacío si no hay materia o no se encuentran
 void handleProfesoresForMateriaGET() {
   String mat = "";
   if (server.hasArg("materia")) {
@@ -703,6 +714,5 @@ void registerCoursesHandlers() {
   server.on("/materias_edit", HTTP_POST, handleMateriasEditPOST);
   server.on("/materias_delete", HTTP_POST, handleMateriasDeletePOST);
 
-  // nuevo endpoint JSON
   server.on("/profesores_for", HTTP_GET, handleProfesoresForMateriaGET);
 }

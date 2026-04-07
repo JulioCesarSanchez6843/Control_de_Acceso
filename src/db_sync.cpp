@@ -26,7 +26,6 @@ static String nowISO() {
 // Ping al servidor
 // --------------------------------------------------
 bool pingServer() {
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("DB_SYNC: sin WiFi, pingServer() = false");
     return false;
@@ -58,7 +57,6 @@ bool pingServer() {
 }
 
 
-
 // --------------------------------------------------
 // Enviar asistencia
 // --------------------------------------------------
@@ -70,7 +68,6 @@ bool sendAsistencia(
     String materia,
     String mode
 ) {
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("DB_SYNC: sin WiFi, no se puede enviar asistencia");
     return false;
@@ -92,7 +89,6 @@ bool sendAsistencia(
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
-
   doc["timestamp"] = timestamp;
   doc["rfid_uid"] = rfid_uid;
   doc["name"] = name;
@@ -107,7 +103,6 @@ bool sendAsistencia(
   Serial.println(json);
 
   int httpCode = http.POST(json);
-
   String response = http.getString();
 
   Serial.printf("DB_SYNC asistencia HTTP code: %d\n", httpCode);
@@ -120,7 +115,6 @@ bool sendAsistencia(
 }
 
 
-
 // --------------------------------------------------
 // Registrar alumno en servidor
 // --------------------------------------------------
@@ -131,7 +125,6 @@ bool sendAlumnoRegistro(
     String materia,
     String created_at
 ) {
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("DB_SYNC: sin WiFi para registrar alumno");
     return false;
@@ -157,7 +150,6 @@ bool sendAlumnoRegistro(
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
-
   doc["rfid_uid"] = uid;
   doc["name"] = nombre;
   doc["account"] = cuenta;
@@ -171,7 +163,6 @@ bool sendAlumnoRegistro(
   Serial.println(json);
 
   int httpCode = http.POST(json);
-
   String response = http.getString();
 
   Serial.printf("Alumno registro HTTP code: %d\n", httpCode);
@@ -180,9 +171,17 @@ bool sendAlumnoRegistro(
 
   http.end();
 
-  return (httpCode == 200 || httpCode == 409);
-}
+  if (httpCode == 200) {
+    return true;
+  }
 
+  if (httpCode == 409) {
+    Serial.println("DB_SYNC: alumno duplicado en Oracle (409 Conflict)");
+    return false;
+  }
+
+  return false;
+}
 
 
 // --------------------------------------------------
@@ -194,7 +193,6 @@ bool sendProfesorRegistro(
     String cuenta,
     String created_at
 ) {
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("DB_SYNC: sin WiFi para registrar profesor");
     return false;
@@ -220,7 +218,6 @@ bool sendProfesorRegistro(
   http.addHeader("Content-Type", "application/json");
 
   StaticJsonDocument<256> doc;
-
   doc["rfid_uid"] = uid;
   doc["name"] = nombre;
   doc["account"] = cuenta;
@@ -233,7 +230,6 @@ bool sendProfesorRegistro(
   Serial.println(json);
 
   int httpCode = http.POST(json);
-
   String response = http.getString();
 
   Serial.printf("Profesor registro HTTP code: %d\n", httpCode);
@@ -242,5 +238,80 @@ bool sendProfesorRegistro(
 
   http.end();
 
-  return (httpCode == 200 || httpCode == 409);
+  if (httpCode == 200) {
+    return true;
+  }
+
+  if (httpCode == 409) {
+    Serial.println("DB_SYNC: profesor duplicado en Oracle (409 Conflict)");
+    return false;
+  }
+
+  return false;
+}
+
+
+// --------------------------------------------------
+// Registrar materia/curso en servidor
+// POST /materia  -> tabla materias
+// --------------------------------------------------
+bool sendMateriaRegistro(
+    String materia,
+    String profesor,
+    String created_at
+) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("DB_SYNC: sin WiFi para registrar materia");
+    return false;
+  }
+
+  if (created_at.length() == 0) {
+    created_at = nowISO();
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+
+  String url = String(SERVER_URL) + "/materia";
+
+  Serial.print("DB_SYNC POST -> ");
+  Serial.println(url);
+
+  if (!http.begin(client, url)) {
+    Serial.println("DB_SYNC: http.begin() falló materia");
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+
+  StaticJsonDocument<256> doc;
+  doc["materia"] = materia;
+  doc["profesor"] = profesor;
+  doc["created_at"] = created_at;
+
+  String json;
+  serializeJson(doc, json);
+
+  Serial.print("DB_SYNC JSON materia: ");
+  Serial.println(json);
+
+  int httpCode = http.POST(json);
+  String response = http.getString();
+
+  Serial.printf("Materia registro HTTP code: %d\n", httpCode);
+  Serial.print("Materia respuesta: ");
+  Serial.println(response);
+
+  http.end();
+
+  if (httpCode == 200) {
+    return true;
+  }
+
+  if (httpCode == 409) {
+    Serial.println("DB_SYNC: materia duplicada en Oracle (409 Conflict)");
+    return false;
+  }
+
+  return false;
 }
