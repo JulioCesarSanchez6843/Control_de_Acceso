@@ -9,6 +9,7 @@
 #include <SPIFFS.h>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 
 // ---------- Helpers locales ----------
 static const char *COURSE_KEY_SEP = "||";
@@ -58,12 +59,33 @@ static String jsonEscape(const String &s) {
   están en files_utils.cpp
 */
 
-// ---------- Sync helper ----------
-static void syncMateriaToOracle(const String &materia, const String &profesor, const String &createdAt) {
+// ---------- Sync helpers Oracle ----------
+static void syncMateriaCreateToOracle(const String &materia, const String &profesor, const String &createdAt) {
   if (!sendMateriaRegistro(materia, profesor, createdAt)) {
-    Serial.println("WARN: no se pudo sincronizar materia con Oracle");
+    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (CREATE)");
   } else {
-    Serial.println("DB_SYNC: materia sincronizada correctamente");
+    Serial.println("DB_SYNC: materia sincronizada correctamente (CREATE)");
+  }
+}
+
+static void syncMateriaUpdateToOracle(
+    const String &oldMateria,
+    const String &newMateria,
+    const String &profesor,
+    const String &createdAt
+) {
+  if (!updateMateriaByName(oldMateria, newMateria, profesor, createdAt)) {
+    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (UPDATE)");
+  } else {
+    Serial.println("DB_SYNC: materia sincronizada correctamente (UPDATE)");
+  }
+}
+
+static void syncMateriaDeleteToOracle(const String &materia, bool cascade = true) {
+  if (!deleteMateriaByName(materia, cascade)) {
+    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (DELETE)");
+  } else {
+    Serial.println("DB_SYNC: materia sincronizada correctamente (DELETE)");
   }
 }
 
@@ -305,7 +327,7 @@ void handleMateriasAddPOST() {
   courses.push_back(nc);
   writeCourses(courses);
 
-  syncMateriaToOracle(nc.materia, nc.profesor, nc.created_at);
+  syncMateriaCreateToOracle(nc.materia, nc.profesor, nc.created_at);
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
@@ -418,7 +440,12 @@ void handleMateriasNewScheduleAddPOST() {
 
   String courseKey = makeCourseKey(mat, prof);
   String err;
-  addScheduleSlotSafeLocalKey(courseKey, day, start, end, &err);
+  if (!addScheduleSlotSafeLocalKey(courseKey, day, start, end, &err)) {
+    Serial.print("WARN: no se pudo agregar horario local: ");
+    Serial.println(err);
+  } else {
+    Serial.println("Horario agregado localmente");
+  }
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof));
   server.send(303, "text/plain", "Agregado");
@@ -559,9 +586,13 @@ void handleMateriasEditPOST() {
 
   String oldMat = courses[origIndex].materia;
   String oldProf = courses[origIndex].profesor;
+  String oldCreated = courses[origIndex].created_at;
+
   courses[origIndex].materia = mat;
   courses[origIndex].profesor = prof;
   writeCourses(courses);
+
+  syncMateriaUpdateToOracle(oldMat, mat, prof, oldCreated);
 
   String oldKey = makeCourseKey(oldMat, oldProf);
   String newKey = makeCourseKey(mat, prof);
@@ -635,6 +666,8 @@ void handleMateriasDeletePOST() {
     if (!(c.materia == mat && c.profesor == prof)) newCourses.push_back(c);
   }
   writeCourses(newCourses);
+
+  syncMateriaDeleteToOracle(mat, true);
 
   String targetKey = makeCourseKey(mat, prof);
 
