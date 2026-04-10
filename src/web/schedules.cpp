@@ -6,7 +6,10 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
+#include "db_sync.h"
+
 #include <SPIFFS.h>
+#include <ArduinoJson.h>
 #include <vector>
 
 // ---------- utilitarios locales ----------
@@ -74,6 +77,80 @@ static bool slotOccupiedSched(const String &day, const String &start, String *ow
     }
   }
   return false;
+}
+
+// ---------- Oracle sync helpers ----------
+static void syncHorarioCreateToOracle(
+    const String &materia,
+    const String &profesor,
+    const String &day,
+    const String &start,
+    const String &end
+) {
+  if (!sendHorarioRegistro(materia, profesor, day, start, end, nowISO())) {
+    Serial.println("WARN: no se pudo sincronizar horario con Oracle (CREATE)");
+  } else {
+    Serial.println("DB_SYNC: horario sincronizado correctamente (CREATE)");
+  }
+}
+
+static void syncHorarioDeleteToOracle(
+    const String &materia,
+    const String &day,
+    const String &start,
+    const String &profesor = String()
+) {
+  String json = listHorarios(materia);
+  if (!json.length()) {
+    Serial.println("WARN: no se pudo consultar horarios en Oracle para borrar");
+    return;
+  }
+
+  DynamicJsonDocument doc(8192);
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.print("WARN: error parseando JSON de horarios Oracle: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  if (!doc.is<JsonArray>()) {
+    Serial.println("WARN: /horarios no devolvió un arreglo JSON");
+    return;
+  }
+
+  bool found = false;
+  bool allOk = true;
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    String mat = obj["materia"] | "";
+    String d = obj["dia"] | "";
+    String s = obj["hora_inicio"] | "";
+    String prof = obj["profesor"] | "";
+    int id = obj["id"] | -1;
+
+    if (mat == materia && d == day && s == start) {
+      if (profesor.length() == 0 || prof == profesor) {
+        found = true;
+        if (id > 0) {
+          if (!deleteHorarioById(id)) {
+            Serial.print("WARN: no se pudo borrar horario en Oracle id=");
+            Serial.println(id);
+            allOk = false;
+          } else {
+            Serial.print("DB_SYNC: horario eliminado en Oracle id=");
+            Serial.println(id);
+          }
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    Serial.println("DB_SYNC: no había horario coincidente en Oracle para borrar");
+  } else if (!allOk) {
+    Serial.println("WARN: eliminación Oracle de horario incompleta");
+  }
 }
 
 // ---------- Vistas ----------
@@ -428,6 +505,10 @@ void handleSchedulesAddSlot() {
   if (profesor.length() > 0) ownerKey = materia + String("||") + profesor;
 
   addScheduleSlot(ownerKey, day, start, end);
+
+  // Sincronizar con Oracle
+  syncHorarioCreateToOracle(materia, profesor, day, start, end);
+
   server.sendHeader("Location", "/schedules/edit");
   server.send(303, "text/plain", "Agregado");
 }
@@ -469,6 +550,10 @@ void handleSchedulesDel() {
   }
   f.close();
   writeAllLines(SCHEDULES_FILE, lines);
+
+  // Sincronizar borrado en Oracle
+  syncHorarioDeleteToOracle(mat, day, start, profesor);
+
   server.sendHeader("Location", "/schedules/edit");
   server.send(303, "text/plain", "Borrado");
 }
@@ -548,6 +633,10 @@ void handleSchedulesForMateriaAddPOST() {
   }
 
   addScheduleSlot(materia, day, start, end);
+
+  // Sincronizar con Oracle
+  syncHorarioCreateToOracle(materia, "", day, start, end);
+
   server.sendHeader("Location", "/schedules_for?materia=" + urlEncodeLocal(materia));
   server.send(303, "text/plain", "Agregado");
 }
@@ -601,6 +690,10 @@ void handleSchedulesForMateriaDelPOST() {
   }
   f.close();
   writeAllLines(SCHEDULES_FILE, lines);
+
+  // Sincronizar borrado en Oracle
+  syncHorarioDeleteToOracle(mat, day, start);
+
   server.sendHeader("Location", "/schedules_for?materia=" + urlEncodeLocal(mat));
   server.send(303, "text/plain", "Borrado");
 }

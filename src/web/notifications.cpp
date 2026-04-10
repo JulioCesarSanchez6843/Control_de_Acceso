@@ -4,7 +4,10 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
+#include "db_sync.h"
+
 #include <SPIFFS.h>
+#include <ArduinoJson.h>
 #include <algorithm>
 #include <vector>
 #include <stdint.h>
@@ -34,6 +37,136 @@ static String notifKey(const String &ts, const String &uid, const String &note) 
 }
 
 // -------------------------------------------------
+// Oracle helpers
+// -------------------------------------------------
+struct OracleNotifRec {
+  int id = -1;
+  String ts;
+  String uid;
+  String name;
+  String account;
+  String note;
+  int leida = 0;
+};
+
+static bool loadOracleNotifications(std::vector<OracleNotifRec> &out) {
+  out.clear();
+
+  String body = listNotificaciones(false); // todas
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(32768);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear notificaciones Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) {
+    Serial.println("WARN: listNotificaciones() no devolvió un arreglo JSON");
+    return false;
+  }
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    OracleNotifRec r;
+    r.id = obj["id"] | -1;
+    r.ts = obj["fecha_hora"] | "";
+    r.uid = obj["rfid_uid"] | "";
+    r.name = obj["name"] | "";
+    r.account = obj["account"] | "";
+    r.note = obj["note"] | "";
+    r.leida = obj["leida"] | 0;
+    out.push_back(r);
+  }
+
+  return true;
+}
+
+static bool syncOracleDeleteNotification(const String &ts, const String &uid, const String &note) {
+  std::vector<OracleNotifRec> rows;
+  if (!loadOracleNotifications(rows)) {
+    Serial.println("WARN: no se pudieron cargar notificaciones Oracle para borrar");
+    return false;
+  }
+
+  bool found = false;
+  bool ok = true;
+
+  for (auto &r : rows) {
+    if (r.ts == ts && r.uid == uid && r.note == note && r.id > 0) {
+      found = true;
+      if (!deleteNotificacionById(r.id)) {
+        Serial.print("WARN: no se pudo borrar notificación Oracle id=");
+        Serial.println(r.id);
+        ok = false;
+      } else {
+        Serial.print("DB_SYNC: notificación Oracle eliminada id=");
+        Serial.println(r.id);
+      }
+    }
+  }
+
+  if (!found) {
+    Serial.println("DB_SYNC: no se encontró notificación coincidente en Oracle para borrar");
+  }
+
+  return ok;
+}
+
+static bool syncOracleMarkNotification(const String &ts, const String &uid, const String &note, bool readState) {
+  std::vector<OracleNotifRec> rows;
+  if (!loadOracleNotifications(rows)) {
+    Serial.println("WARN: no se pudieron cargar notificaciones Oracle para marcar/desmarcar");
+    return false;
+  }
+
+  bool found = false;
+  bool ok = true;
+
+  for (auto &r : rows) {
+    if (r.ts == ts && r.uid == uid && r.note == note && r.id > 0) {
+      found = true;
+      if (!updateNotificacionById(r.id, r.ts, r.uid, r.name, r.account, r.note, readState ? 1 : 0)) {
+        Serial.print("WARN: no se pudo actualizar notificación Oracle id=");
+        Serial.println(r.id);
+        ok = false;
+      } else {
+        Serial.print("DB_SYNC: notificación Oracle actualizada id=");
+        Serial.println(r.id);
+      }
+    }
+  }
+
+  if (!found) {
+    Serial.println("DB_SYNC: no se encontró notificación coincidente en Oracle para actualizar");
+  }
+
+  return ok;
+}
+
+static bool syncOracleClearNotifications() {
+  std::vector<OracleNotifRec> rows;
+  if (!loadOracleNotifications(rows)) {
+    Serial.println("WARN: no se pudieron cargar notificaciones Oracle para borrar todas");
+    return false;
+  }
+
+  bool ok = true;
+  for (auto &r : rows) {
+    if (r.id > 0) {
+      if (!deleteNotificacionById(r.id)) {
+        Serial.print("WARN: no se pudo borrar notificación Oracle id=");
+        Serial.println(r.id);
+        ok = false;
+      }
+    }
+  }
+
+  return ok;
+}
+
+// -------------------------------------------------
 // Robust read/write helpers for NOTIF_READ_FILE_LOCAL
 // -------------------------------------------------
 static std::vector<String> readAllReadKeys() {
@@ -55,7 +188,9 @@ static bool atomicReplaceFileWithLines(const char *destPath, const std::vector<S
   if (!tf) return false;
   for (auto &ln : lines) tf.println(ln);
   tf.close();
+
   if (SPIFFS.exists(destPath)) SPIFFS.remove(destPath);
+
   bool ok = SPIFFS.rename(String(NOTIF_READ_TMP_FILE), String(destPath));
   if (!ok) {
     File f = SPIFFS.open(destPath, FILE_WRITE);
@@ -71,7 +206,9 @@ static bool atomicReplaceFileWithLines(const char *destPath, const std::vector<S
   return true;
 }
 
-static bool saveReadKeys(const std::vector<String> &v) { return atomicReplaceFileWithLines(NOTIF_READ_FILE_LOCAL, v); }
+static bool saveReadKeys(const std::vector<String> &v) {
+  return atomicReplaceFileWithLines(NOTIF_READ_FILE_LOCAL, v);
+}
 
 static void markNotifReadLocal(const String &key) {
   auto v = readAllReadKeys();
@@ -99,6 +236,7 @@ static void cleanupReadKeys() {
     String note = c[4];
     valid.push_back(notifKey(ts, uid, note));
   }
+
   auto old = readAllReadKeys();
   std::vector<String> out; out.reserve(old.size());
   for (auto &k : old) {
@@ -144,9 +282,11 @@ static String base64Encode(const String &in) {
   return out;
 }
 
-// Detecta el tipo de notificación según el texto (más heurística)
+// Detecta el tipo de notificación según el texto
 static String detectNotificationType(const String &note) {
-  String n = note; n.toLowerCase();
+  String n = note;
+  n.toLowerCase();
+
   if (n.indexOf("tarjeta") >= 0 && (n.indexOf("no registrada") >= 0 || n.indexOf("no registrado") >= 0 || n.indexOf("desconocida") >= 0)) {
     return String("Tarjeta desconocida");
   }
@@ -161,19 +301,31 @@ static String detectNotificationType(const String &note) {
   return String("Otro");
 }
 
-// Heurística ligera para extraer materia/profesor desde la nota (si existe)
+// Heurística ligera para extraer materia/profesor desde la nota
 static String extractFieldFromNote(const String &note, const String &keysCSV) {
   String tmp = keysCSV;
   std::vector<String> keys;
+
   while (tmp.length()) {
     int c = tmp.indexOf(',');
-    if (c < 0) { String k = tmp; k.trim(); if (k.length()) keys.push_back(k); break; }
-    String k = tmp.substring(0, c); k.trim(); if (k.length()) keys.push_back(k);
-    tmp = tmp.substring(c+1);
+    if (c < 0) {
+      String k = tmp;
+      k.trim();
+      if (k.length()) keys.push_back(k);
+      break;
+    }
+    String k = tmp.substring(0, c);
+    k.trim();
+    if (k.length()) keys.push_back(k);
+    tmp = tmp.substring(c + 1);
   }
-  String low = note; low.toLowerCase();
+
+  String low = note;
+  low.toLowerCase();
+
   for (auto &k : keys) {
-    String lk = k; lk.toLowerCase();
+    String lk = k;
+    lk.toLowerCase();
     int pos = low.indexOf(lk);
     if (pos >= 0) {
       int start = pos + lk.length();
@@ -196,17 +348,14 @@ static String extractFieldFromNote(const String &note, const String &keysCSV) {
 static String generateNotificationsHTML(bool showUnreadOnly, const String &pageTitle) {
   String html = "";
 
-  // Leer notificaciones (una sola vez)
   auto nots = readNotifications(500);
   if (nots.size() > 1) std::reverse(nots.begin(), nots.end());
 
-  // Leer las claves leídas UNA vez (evita múltiples accesos a SPIFFS)
   auto readKeysVec = readAllReadKeys();
 
   size_t unreadCount = 0;
   size_t readCount = 0;
 
-  // Lista filtrada que vamos a mostrar
   std::vector<String> filteredNotifications;
   std::vector<bool> isReadStatus;
   std::vector<String> keys;
@@ -222,7 +371,8 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
 
     bool isRead = (std::find(readKeysVec.begin(), readKeysVec.end(), key) != readKeysVec.end());
 
-    if (isRead) readCount++; else unreadCount++;
+    if (isRead) readCount++;
+    else unreadCount++;
 
     if ((showUnreadOnly && !isRead) || (!showUnreadOnly && isRead)) {
       filteredNotifications.push_back(ln);
@@ -232,11 +382,9 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     }
   }
 
-  // Header + controles
   if (showUnreadOnly) {
     html += "<h2>Notificaciones No Leídas <span id='unread_badge' style='background:#ef4444;color:#fff;padding:6px 10px;border-radius:999px;font-weight:800;font-size:0.95em;'>" + String(unreadCount) + "</span></h2>";
   } else {
-    // Agregué un badge azul para las notificaciones leídas
     html += "<h2>Notificaciones Leídas <span id='read_badge' style='background:#1d4ed8;color:#fff;padding:6px 10px;border-radius:999px;font-weight:800;font-size:0.95em;'>" + String(readCount) + "</span></h2>";
   }
 
@@ -246,16 +394,12 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
   html += "<form method='POST' action='/notifications_clear' onsubmit='return confirm(\"Borrar todas las notificaciones? Esta acción es irreversible.\");' style='display:inline'>";
   html += "<input class='btn btn-red' type='submit' value='🗑️ Borrar Todas'></form>";
   html += "<a class='btn btn-blue' href='/'>Inicio</a>";
-  
-  // Contenedor para mensaje de estado - JUSTO ANTES del botón de navegación
   html += "<div style='margin-left:auto;display:flex;align-items:center;gap:8px;'>";
   html += "<span id='status_message' style='display:none;background:#10b981;color:white;padding:6px 12px;border-radius:6px;font-weight:600;font-size:0.9em;'></span>";
-  
   if (showUnreadOnly) html += "<a class='btn btn-blue' href='/notifications_read'>Ver Leídas (" + String(readCount) + ")</a>";
   else html += "<a class='btn btn-blue' href='/notifications'>Ver No Leídas (" + String(unreadCount) + ")</a>";
   html += "</div></div>";
 
-  // filtros
   html += "<div class='filters' style='margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>";
   html += "<input id='nf_materia' placeholder='Filtrar por materia' style='min-width:160px'>";
   html += "<input id='nf_prof' placeholder='Filtrar por profesor' style='min-width:160px'>";
@@ -288,7 +432,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     </style>
   )rawliteral";
 
-  // Lista de notificaciones
   html += "<div id='notif_list' class='notif-list'>";
   if (filteredNotifications.empty()) {
     html += (showUnreadOnly ? "<p>No hay notificaciones no leídas.</p>" : "<p>No hay notificaciones leídas.</p>");
@@ -299,25 +442,25 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       String key = keys[i];
       String rawNote = rawNotes[i];
       auto c = parseQuotedCSVLine(ln);
-      String ts = (c.size()>0?c[0]:"");
-      String uid = (c.size()>1?c[1]:"");
-      String name = (c.size()>2?c[2]:"");
-      String acc = (c.size()>3?c[3]:"");
+      String ts = (c.size() > 0 ? c[0] : "");
+      String uid = (c.size() > 1 ? c[1] : "");
+      String name = (c.size() > 2 ? c[2] : "");
+      String acc = (c.size() > 3 ? c[3] : "");
       String note = rawNote;
       String tipo = detectNotificationType(note);
       String materiaFromNote = extractFieldFromNote(note, "Materia,Materia:,materia");
       String profFromNote = extractFieldFromNote(note, "Profesor,Profesor:,Maestro,Maestro:,Teacher,Teacher:");
 
-      String bg="#fff", badgeBg="#E2E8F0", badgeColor="#0f172a";
+      String bg = "#fff", badgeBg = "#E2E8F0", badgeColor = "#0f172a";
       if (isRead) {
         bg = "#FAFAFA"; badgeBg = "#E2E8F0"; badgeColor = "#0f172a";
-        if (tipo.indexOf("Alerta")==0 || tipo=="Tarjeta desconocida") bg="#fff7f7";
-        else if (tipo.indexOf("Informativa (Alumno)") == 0) bg="#fffeef";
-        else if (tipo.indexOf("Informativa (Maestro)") == 0) bg="#f6fff6";
+        if (tipo.indexOf("Alerta")==0 || tipo=="Tarjeta desconocida") bg = "#fff7f7";
+        else if (tipo.indexOf("Informativa (Alumno)") == 0) bg = "#fffeef";
+        else if (tipo.indexOf("Informativa (Maestro)") == 0) bg = "#f6fff6";
       } else {
-        if (tipo.indexOf("Alerta")==0 || tipo=="Tarjeta desconocida") { bg="#fff4f4"; badgeBg="#ffcccc"; badgeColor="#7a1f1f"; }
-        else if (tipo.indexOf("Informativa (Alumno)") == 0) { bg="#fffef0"; badgeBg="#fff3bf"; badgeColor="#664d03"; }
-        else if (tipo.indexOf("Informativa (Maestro)") == 0) { bg="#f0fff0"; badgeBg="#c7f9d6"; badgeColor="#065f46"; }
+        if (tipo.indexOf("Alerta")==0 || tipo=="Tarjeta desconocida") { bg = "#fff4f4"; badgeBg = "#ffcccc"; badgeColor = "#7a1f1f"; }
+        else if (tipo.indexOf("Informativa (Alumno)") == 0) { bg = "#fffef0"; badgeBg = "#fff3bf"; badgeColor = "#664d03"; }
+        else if (tipo.indexOf("Informativa (Maestro)") == 0) { bg = "#f0fff0"; badgeBg = "#c7f9d6"; badgeColor = "#065f46"; }
       }
 
       String noteEsc = htmlEscape(note);
@@ -329,7 +472,11 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       String keyEsc = htmlEscape(key);
       String noteB64 = base64Encode(note);
 
-      html += "<div class='notif-item' style='background:" + bg + ";' data-idx='" + String(i) + "' data-ts='" + tsEsc + "' data-uid='" + uidEsc + "' data-name='" + nameEsc + "' data-note-html='" + noteEsc + "' data-type='" + tipoEsc + "' data-key='" + keyEsc + "' data-isread='" + (isRead ? "1" : "0") + "'>";
+      html += "<div class='notif-item' style='background:" + bg + ";' data-idx='" + String(i) + "' data-ts='" + tsEsc + "' data-uid='" + uidEsc + "' data-name='" + nameEsc + "' data-note-html='" + noteEsc + "' data-type='" + tipoEsc + "' data-key='" + keyEsc + "' data-isread='" + (isRead ? "1" : "0") + "'";
+      if (materiaFromNote.length()) html += " data-materia='" + htmlEscape(materiaFromNote) + "'";
+      if (profFromNote.length()) html += " data-prof='" + htmlEscape(profFromNote) + "'";
+      html += ">";
+
       html += "<div class='notif-header'>";
       html += "<div style='display:flex;flex-direction:column;gap:6px;'><span class='notif-type' style='background:" + badgeBg + ";color:" + badgeColor + ";'>" + tipo + "</span></div>";
       html += "<div style='display:flex;align-items:center;gap:8px;'>";
@@ -346,7 +493,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       html += "<div class='notif-meta'>" + meta + "</div>";
       html += "<div class='notif-note'>" + (noteEsc.length() ? noteEsc : "<i>(sin detalles)</i>") + "</div>";
 
-      // Datos ocultos
       html += "<div id='notif_uid_" + String(i) + "' style='display:none'>" + uidEsc + "</div>";
       html += "<div id='notif_ts_" + String(i) + "' style='display:none'>" + tsEsc + "</div>";
       html += "<div id='notif_name_" + String(i) + "' style='display:none'>" + nameEsc + "</div>";
@@ -358,9 +504,8 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       html += "</div>";
     }
   }
-  html += "</div>"; // end list
+  html += "</div>";
 
-  // Modal
   html += R"rawliteral(
     <div id="modal_back" class="modal-backdrop" role="dialog" aria-modal="true" style="display:none">
       <div class="modal-card" role="document" aria-labelledby="modal_type" aria-describedby="modal_body">
@@ -384,13 +529,11 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     </div>
   )rawliteral";
 
-  // JavaScript
   html += R"rawliteral(
     <script>
       var currentIdx = -1;
       var currentNotificationData = null;
 
-      // Delegación de eventos
       document.addEventListener('DOMContentLoaded', function() {
         var list = document.getElementById('notif_list');
         if (list) {
@@ -405,7 +548,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
               markInline(parseInt(idx), markAsRead, e);
               return;
             }
-            
+
             var item = e.target.closest('.notif-item');
             if (!item) return;
             var idx = item.getAttribute('data-idx');
@@ -449,11 +592,8 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       function showStatusMessage(message, type) {
         var msgEl = document.getElementById('status_message');
         if (!msgEl) return;
-        
         msgEl.textContent = message;
         msgEl.style.display = 'inline-block';
-        
-        // Configurar color según tipo
         if (type === 'success') {
           msgEl.style.backgroundColor = '#10b981';
           msgEl.style.color = 'white';
@@ -464,11 +604,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           msgEl.style.backgroundColor = '#f59e0b';
           msgEl.style.color = 'white';
         }
-        
-        // Ocultar después de 3 segundos
-        setTimeout(function() {
-          msgEl.style.display = 'none';
-        }, 3000);
+        setTimeout(function() { msgEl.style.display = 'none'; }, 3000);
       }
 
       function markInline(idx, markAsRead, event){
@@ -489,13 +625,8 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           if (xhr.status === 200) {
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (item) {
-              // Eliminar el elemento de la lista
               if (item.parentNode) item.parentNode.removeChild(item);
-              
-              // Actualizar contadores
               updateCounts();
-              
-              // Mostrar mensaje según el tipo de acción
               if (markAsRead) {
                 if (window.location.pathname === '/notifications') {
                   showStatusMessage('Notificación marcada como leída', 'success');
@@ -535,8 +666,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         var acc  = accEl ? (accEl.textContent || accEl.innerText || '') : '';
         var isRead = isReadEl ? (isReadEl.textContent === '1') : false;
         currentNotificationData = { idx: idx, ts: ts, uid: uid, note: note, name: name, acc: acc, isRead: isRead };
-
-        // Mostrar modal inmediatamente
         showModal();
       }
 
@@ -584,7 +713,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           else profile_base = '/students_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
           profileEl.href = profile_base;
           var hist = '/history';
-          var params=[];
+          var params = [];
           if (currentNotificationData.uid) params.push('uid=' + encodeURIComponent(currentNotificationData.uid));
           if (currentNotificationData.ts && currentNotificationData.ts.length>=10) params.push('date=' + encodeURIComponent(currentNotificationData.ts.substring(0,10)));
           if (params.length) hist += '?' + params.join('&');
@@ -603,14 +732,13 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         document.addEventListener('keydown', handleEscKey);
       }
 
-      function handleEscKey(e) { 
-        if (e.key === 'Escape') closeModal(); 
+      function handleEscKey(e) {
+        if (e.key === 'Escape') closeModal();
       }
 
       function closeModal() {
         document.getElementById('modal_back').style.display='none';
-        
-        // Si estamos en /notifications y la notificación no estaba leída, marcarla automáticamente
+
         if (window.location.pathname === '/notifications' && currentNotificationData && !currentNotificationData.isRead) {
           var idx = currentNotificationData.idx;
           var encEl = document.getElementById('notif_note_enc_' + idx);
@@ -621,7 +749,6 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
           xhr.onload = function() {
             if (xhr.status === 200) {
-              // Actualizar UI
               var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
               if (item && item.parentNode) {
                 item.parentNode.removeChild(item);
@@ -634,13 +761,13 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
           };
           xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
         }
-        
+
         currentIdx = -1;
         currentNotificationData = null;
         document.removeEventListener('keydown', handleEscKey);
       }
 
-      function markCurrentNotification(){
+      function markCurrentNotification() {
         if (!currentNotificationData) return;
         var idx = currentNotificationData.idx;
         var encEl = document.getElementById('notif_note_enc_' + idx);
@@ -651,22 +778,19 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
-            // Actualizar UI
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (item && item.parentNode) {
               item.parentNode.removeChild(item);
             }
             updateCounts();
-            // Cerrar modal
             document.getElementById('modal_back').style.display='none';
-            
-            // Mostrar mensaje de estado
+
             if (window.location.pathname === '/notifications') {
               showStatusMessage('Notificación marcada como leída', 'success');
             } else {
               showStatusMessage('Notificación actualizada', 'info');
             }
-            
+
             currentIdx = -1;
             currentNotificationData = null;
             document.removeEventListener('keydown', handleEscKey);
@@ -677,7 +801,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
 
-      function unmarkCurrentNotification(){
+      function unmarkCurrentNotification() {
         if (!currentNotificationData) return;
         var idx = currentNotificationData.idx;
         var encEl = document.getElementById('notif_note_enc_' + idx);
@@ -688,22 +812,19 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
-            // Actualizar UI
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (item && item.parentNode) {
               item.parentNode.removeChild(item);
             }
             updateCounts();
-            // Cerrar modal
             document.getElementById('modal_back').style.display='none';
-            
-            // Mostrar mensaje de estado
+
             if (window.location.pathname === '/notifications_read') {
               showStatusMessage('Notificación movida a no leídas', 'info');
             } else {
               showStatusMessage('Notificación actualizada', 'info');
             }
-            
+
             currentIdx = -1;
             currentNotificationData = null;
             document.removeEventListener('keydown', handleEscKey);
@@ -714,7 +835,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.send('action=unmark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
 
-      function deleteCurrentNotification(){
+      function deleteCurrentNotification() {
         if (!currentNotificationData) return;
         if (!confirm('¿Eliminar esta notificación?')) return;
         var idx = currentNotificationData.idx;
@@ -741,33 +862,30 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         xhr.send('ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
       }
 
-      // cerrar modal al hacer click fuera
       (function() {
         var mb = document.getElementById('modal_back');
-        if (mb) mb.addEventListener('click', function(e) { 
-          if (e.target.id === 'modal_back') closeModal(); 
+        if (mb) mb.addEventListener('click', function(e) {
+          if (e.target.id === 'modal_back') closeModal();
         });
       })();
 
-      function updateCounts(){
+      function updateCounts() {
         var unreadVisible = 0;
         var readVisible = 0;
         var items = document.querySelectorAll('#notif_list .notif-item');
-        for (var i=0;i<items.length;i++){
+        for (var i = 0; i < items.length; i++) {
           var it = items[i];
           if (it.style.display === 'none') continue;
           var isRead = it.getAttribute('data-isread') === '1';
           if (isRead) readVisible++; else unreadVisible++;
         }
-        // Actualizar badge de no leídas (solo en página de no leídas)
+
         var hUnread = document.querySelector('#unread_badge');
         if (hUnread) hUnread.textContent = String(unreadVisible);
-        
-        // Actualizar badge de leídas (solo en página de leídas)
+
         var hRead = document.querySelector('#read_badge');
         if (hRead) hRead.textContent = String(readVisible);
-        
-        // Actualizar enlaces de switch
+
         var switchLink = document.querySelector('a.btn-blue[href="/notifications_read"]');
         if (switchLink && window.location.pathname === '/notifications') {
           switchLink.textContent = 'Ver Leídas (' + readVisible + ')';
@@ -802,10 +920,15 @@ void handleNotificationsReadPage() {
   server.send(200, "text/html", html);
 }
 
-// POST /notifications_clear -> borrar archivo
+// POST /notifications_clear -> borrar archivo + Oracle
 void handleNotificationsClearPOST() {
   clearNotifications();
   if (SPIFFS.exists(NOTIF_READ_FILE_LOCAL)) SPIFFS.remove(NOTIF_READ_FILE_LOCAL);
+
+  if (!syncOracleClearNotifications()) {
+    Serial.println("WARN: no se pudo sincronizar el borrado total de notificaciones en Oracle");
+  }
+
   server.sendHeader("Location", "/notifications");
   server.send(303, "text/plain", "Notificaciones borradas");
 }
@@ -816,6 +939,7 @@ void handleNotificationsDeletePOST() {
     server.send(400, "text/plain", "faltan parametros");
     return;
   }
+
   String ts = server.arg("ts");
   String uid = server.arg("uid");
   String note = server.arg("note");
@@ -827,22 +951,37 @@ void handleNotificationsDeletePOST() {
 
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   std::vector<String> lines;
-  if (!f) { server.send(500, "text/plain", "no file"); return; }
+  if (!f) {
+    server.send(500, "text/plain", "no file");
+    return;
+  }
+
   bool firstLineHandled = false;
   while (f.available()) {
     String l = f.readStringUntil('\n');
-    if (!firstLineHandled) { firstLineHandled = true; lines.push_back(l); continue; }
-    l.trim(); if (!l.length()) continue;
+    if (!firstLineHandled) {
+      firstLineHandled = true;
+      lines.push_back(l);
+      continue;
+    }
+    l.trim();
+    if (!l.length()) continue;
+
     auto c = parseQuotedCSVLine(l);
-    String lts = (c.size()>0?c[0]:"");
-    String luid = (c.size()>1?c[1]:"");
-    String lnote = (c.size()>4?c[4]:"");
+    String lts = (c.size() > 0 ? c[0] : "");
+    String luid = (c.size() > 1 ? c[1] : "");
+    String lnote = (c.size() > 4 ? c[4] : "");
     if (lts == ts && luid == uid && lnote == note) continue;
     lines.push_back(l);
   }
   f.close();
 
   writeAllLines(NOTIF_FILE, lines);
+
+  if (!syncOracleDeleteNotification(ts, uid, note)) {
+    Serial.println("WARN: no se pudo sincronizar el borrado de la notificación en Oracle");
+  }
+
   cleanupReadKeys();
   server.send(200, "text/plain", "deleted");
 }
@@ -853,6 +992,7 @@ void handleNotificationsMarkPOST() {
     server.send(400, "application/json", "{\"error\":\"missing\"}");
     return;
   }
+
   String action = server.arg("action");
   String ts = server.arg("ts");
   String uid = server.arg("uid");
@@ -860,15 +1000,19 @@ void handleNotificationsMarkPOST() {
   String key = notifKey(ts, uid, note);
 
   bool nowRead = false;
-  if (action == "mark") { 
-    markNotifReadLocal(key); 
-    nowRead = true; 
-  } else if (action == "unmark") { 
-    unmarkNotifReadLocal(key); 
-    nowRead = false; 
+  if (action == "mark") {
+    markNotifReadLocal(key);
+    nowRead = true;
+  } else if (action == "unmark") {
+    unmarkNotifReadLocal(key);
+    nowRead = false;
   } else {
     server.send(400, "application/json", "{\"error\":\"unknown action\"}");
     return;
+  }
+
+  if (!syncOracleMarkNotification(ts, uid, note, nowRead)) {
+    Serial.println("WARN: no se pudo sincronizar el cambio de leído/no leído en Oracle");
   }
 
   String j = "{\"status\":\"ok\",\"read\":";

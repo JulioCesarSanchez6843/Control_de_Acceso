@@ -4,7 +4,12 @@
 #include "files_utils.h"
 #include "config.h"
 #include "globals.h"
+#include "db_sync.h"
+
 #include <SPIFFS.h>
+#include <ArduinoJson.h>
+#include <algorithm>
+#include <vector>
 
 // Pequeña función de escape HTML para evitar inyección y mostrar valores en inputs
 static String htmlEscape(const String &s) {
@@ -39,111 +44,311 @@ static String urlEncodeLocal(const String &str) {
   return ret;
 }
 
-// Muestra página con historial de accesos y filtros; ahora solo: materia, profesor, alumno, fecha (date picker)
-// Acepta adicionalmente 'uid' en query string para filtrar por UID directamente.
+static String csvField(const String &v) {
+  String out = v;
+  out.replace("\"", "\"\"");
+  return "\"" + out + "\"";
+}
+
+static String toLowerCopy(String s) {
+  s.toLowerCase();
+  return s;
+}
+
+struct HistoryRec {
+  String ts;
+  String uid;
+  String name;
+  String account;
+  String materia;
+  String mode;
+  int id = -1;
+  bool fromOracle = false;
+};
+
+static String makeHistoryKey(const HistoryRec &r) {
+  return r.ts + "|" + r.uid + "|" + r.name + "|" + r.account + "|" + r.materia + "|" + r.mode;
+}
+
+static bool recordMatchesProfessor(const String &materia, const String &profFilter) {
+  if (!profFilter.length()) return true;
+
+  String profFilterLc = profFilter;
+  profFilterLc.toLowerCase();
+  profFilterLc.trim();
+
+  auto courses = loadCourses();
+  for (auto &co : courses) {
+    String cm = co.materia;
+    String prof = co.profesor;
+    cm.trim();
+    prof.toLowerCase();
+    prof.trim();
+
+    if (cm == materia && prof.indexOf(profFilterLc) != -1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool loadLocalAttendance(std::vector<HistoryRec> &out) {
+  if (!SPIFFS.exists(ATT_FILE)) return false;
+
+  File f = SPIFFS.open(ATT_FILE, FILE_READ);
+  if (!f) return false;
+
+  bool firstLine = true;
+  while (f.available()) {
+    String l = f.readStringUntil('\n');
+    if (firstLine) {
+      firstLine = false;
+      continue;
+    }
+    l.trim();
+    if (!l.length()) continue;
+
+    auto c = parseQuotedCSVLine(l);
+    HistoryRec r;
+    r.ts = (c.size() > 0 ? c[0] : "");
+    r.uid = (c.size() > 1 ? c[1] : "");
+    r.name = (c.size() > 2 ? c[2] : "");
+    r.account = (c.size() > 3 ? c[3] : "");
+    r.materia = (c.size() > 4 ? c[4] : "");
+    r.mode = (c.size() > 5 ? c[5] : "");
+    r.fromOracle = false;
+    out.push_back(r);
+  }
+  f.close();
+  return true;
+}
+
+static bool loadOracleAttendance(std::vector<HistoryRec> &out, const String &uidFilter, const String &materiaFilter) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  String body = listAsistencias(uidFilter, materiaFilter);
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(65536);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear asistencias Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) {
+    Serial.println("WARN: listAsistencias() no devolvió arreglo JSON");
+    return false;
+  }
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    HistoryRec r;
+    r.id = obj["id"] | -1;
+    r.ts = obj["fecha_hora"] | "";
+    r.uid = obj["rfid_uid"] | "";
+    r.name = obj["name"] | "";
+    r.account = obj["account"] | "";
+    r.materia = obj["materia"] | "";
+    r.mode = obj["tipo"] | "";
+    r.fromOracle = true;
+    out.push_back(r);
+  }
+
+  return true;
+}
+
+static void dedupPush(std::vector<HistoryRec> &out, std::vector<String> &keys, const HistoryRec &rec) {
+  String key = makeHistoryKey(rec);
+  for (auto &k : keys) {
+    if (k == key) return;
+  }
+  keys.push_back(key);
+  out.push_back(rec);
+}
+
+static std::vector<HistoryRec> collectMergedAttendance(const String &uidFilter, const String &materiaFilter) {
+  std::vector<HistoryRec> merged;
+  std::vector<String> keys;
+
+  std::vector<HistoryRec> oracleRows;
+  if (loadOracleAttendance(oracleRows, uidFilter, materiaFilter)) {
+    for (auto &r : oracleRows) dedupPush(merged, keys, r);
+  }
+
+  std::vector<HistoryRec> localRows;
+  if (loadLocalAttendance(localRows)) {
+    for (auto &r : localRows) {
+      if (uidFilter.length()) {
+        String uidTrim = r.uid;
+        uidTrim.trim();
+        if (uidTrim != uidFilter) continue;
+      }
+      if (materiaFilter.length()) {
+        String matTrim = r.materia;
+        matTrim.trim();
+        String mfTrim = materiaFilter;
+        mfTrim.trim();
+        if (matTrim != mfTrim) continue;
+      }
+      dedupPush(merged, keys, r);
+    }
+  }
+
+  std::sort(merged.begin(), merged.end(), [](const HistoryRec &a, const HistoryRec &b) {
+    return a.ts > b.ts;
+  });
+
+  return merged;
+}
+
+static std::vector<HistoryRec> applyHistoryFilters(
+    const std::vector<HistoryRec> &in,
+    const String &dateFilter,
+    const String &profFilter,
+    const String &nameFilter
+) {
+  std::vector<HistoryRec> out;
+  String nameFilterLc = nameFilter;
+  nameFilterLc.toLowerCase();
+  nameFilterLc.trim();
+
+  for (auto &r : in) {
+    if (dateFilter.length()) {
+      if (r.ts.indexOf(dateFilter) != 0) continue;
+    }
+
+    if (nameFilter.length()) {
+      String nameLc = r.name;
+      nameLc.toLowerCase();
+      if (nameLc.indexOf(nameFilterLc) == -1) continue;
+    }
+
+    if (profFilter.length()) {
+      if (!recordMatchesProfessor(r.materia, profFilter)) continue;
+    }
+
+    out.push_back(r);
+  }
+
+  return out;
+}
+
+static String buildHistoryTableRows(const std::vector<HistoryRec> &rows) {
+  String html;
+  for (auto &r : rows) {
+    html += "<tr>";
+    html += "<td>" + htmlEscape(r.ts) + "</td>";
+    html += "<td>" + htmlEscape(r.name) + "</td>";
+    html += "<td>" + htmlEscape(r.account) + "</td>";
+    html += "<td>" + htmlEscape(r.materia) + "</td>";
+    html += "<td>" + htmlEscape(r.mode) + "</td>";
+    html += "</tr>";
+  }
+  return html;
+}
+
+static String buildHistoryCSV(const std::vector<HistoryRec> &rows) {
+  String out = "\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"\r\n";
+  for (auto &r : rows) {
+    out += csvField(r.ts) + ",";
+    out += csvField(r.uid) + ",";
+    out += csvField(r.name) + ",";
+    out += csvField(r.account) + ",";
+    out += csvField(r.materia) + ",";
+    out += csvField(r.mode) + "\r\n";
+  }
+  return out;
+}
+
+static bool materiaExistsAnywhere(const String &materia) {
+  if (courseExists(materia)) return true;
+
+  if (WiFi.status() == WL_CONNECTED) {
+    String body = getMateriaByName(materia);
+    if (body.length()) return true;
+  }
+
+  return false;
+}
+
+static bool clearOracleAttendanceAll() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  String body = listAsistencias();
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(65536);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err || !doc.is<JsonArray>()) return false;
+
+  bool allOk = true;
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    int id = obj["id"] | -1;
+    if (id > 0) {
+      if (!deleteAsistenciaById(id)) {
+        allOk = false;
+      }
+    }
+  }
+  return allOk;
+}
+
+static void clearLocalAttendanceFile() {
+  std::vector<String> lines;
+  lines.push_back(String("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\""));
+  writeAllLines(ATT_FILE, lines);
+}
+
+// Muestra página con historial de accesos y filtros
 void handleHistoryPage() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
-  String profFilter   = server.hasArg("profesor") ? server.arg("profesor") : String();
-  String nameFilter   = server.hasArg("nombre") ? server.arg("nombre") : String();
-  String dateFilter   = server.hasArg("date") ? server.arg("date") : String(); // YYYY-MM-DD exacto
-  String uidFilter    = server.hasArg("uid") ? server.arg("uid") : String(); // nuevo: filtrar por uid
+  String profFilter    = server.hasArg("profesor") ? server.arg("profesor") : String();
+  String nameFilter    = server.hasArg("nombre") ? server.arg("nombre") : String();
+  String dateFilter    = server.hasArg("date") ? server.arg("date") : String();
+  String uidFilter     = server.hasArg("uid") ? server.arg("uid") : String();
+
+  std::vector<HistoryRec> rows = collectMergedAttendance(uidFilter, materiaFilter);
+  rows = applyHistoryFilters(rows, dateFilter, profFilter, nameFilter);
 
   String html = htmlHeader("Historial de Accesos");
   html += "<div class='card'><h2>Historial de Accesos</h2>";
 
-  html += "<p class='small'>Esta pestaña muestra el historial completo de accesos y capturas de tarjetas. Use filtros para localizar rápidamente eventos (materia, profesor, alumno o fecha).</p>";
+  html += "<p class='small'>Esta pestaña muestra el historial completo de accesos y capturas de tarjetas. Los datos se leen desde Oracle y, si hace falta, desde el respaldo local.</p>";
 
-  // Filtros (cliente) - rellenamos inputs con valores recibidos (escape)
   html += "<div class='filters'>";
   html += "<input id='hf_materia' placeholder='Filtrar por materia' value='" + htmlEscape(materiaFilter) + "'>";
   html += "<input id='hf_prof' placeholder='Filtrar por nombre de profesor' value='" + htmlEscape(profFilter) + "'>";
   html += "<input id='hf_name' placeholder='Filtrar por nombre de alumno' value='" + htmlEscape(nameFilter) + "'>";
-  // date picker (cliente)
   html += "<input id='hf_date' type='date' value='" + htmlEscape(dateFilter) + "'>";
   html += "<button class='search-btn btn btn-blue' onclick='applyHistoryFilters()'>Buscar</button>";
   html += "<button class='search-btn btn btn-green' onclick='clearHistoryFilters()'>Limpiar</button>";
   html += "</div>";
 
-  // Acciones: descargar CSV (manteniendo filtros básicos) / borrar historial / volver
   html += "<p style='margin-top:8px'>";
   String csvLink = "/history.csv";
   bool hasParam = false;
   if (materiaFilter.length()) { csvLink += (hasParam ? "&" : "?") + String("materia=") + urlEncodeLocal(materiaFilter); hasParam = true; }
   if (dateFilter.length())    { csvLink += (hasParam ? "&" : "?") + String("ts=") + urlEncodeLocal(dateFilter); hasParam = true; }
   if (uidFilter.length())     { csvLink += (hasParam ? "&" : "?") + String("uid=") + urlEncodeLocal(uidFilter); hasParam = true; }
+  if (profFilter.length())    { csvLink += (hasParam ? "&" : "?") + String("profesor=") + urlEncodeLocal(profFilter); hasParam = true; }
+  if (nameFilter.length())    { csvLink += (hasParam ? "&" : "?") + String("nombre=") + urlEncodeLocal(nameFilter); hasParam = true; }
+
   html += "<a class='btn btn-green' href='" + csvLink + "'>📥 Descargar (filtrado)</a> ";
   html += "<form style='display:inline' method='POST' action='/history_clear' onsubmit='return confirm(\"Borrar todo el historial? Esta acción es irreversible.\")'>"
           "<input class='btn btn-red' type='submit' value='🗑️ Borrar Historial'></form> ";
   html += "<a class='btn btn-blue' href='/'>Inicio</a></p>";
 
-  // Abrir archivo de attendance
-  if (!SPIFFS.exists(ATT_FILE)) {
+  if (rows.empty()) {
     html += "<p>No hay historial.</p>";
-    html += htmlFooter();
-    server.send(200,"text/html",html);
-    return;
+  } else {
+    html += "<table id='history_table'><tr><th>Timestamp</th><th>Nombre</th><th>Cuenta</th><th>Materia</th><th>Modo</th></tr>";
+    html += buildHistoryTableRows(rows);
+    html += "</table>";
   }
 
-  File f = SPIFFS.open(ATT_FILE, FILE_READ);
-  if (!f) {
-    html += "<p>No se pudo abrir archivo de historial.</p>";
-    html += htmlFooter();
-    server.send(200,"text/html",html);
-    return;
-  }
-
-  // Tabla con registros
-  String header = f.readStringUntil('\n');
-  html += "<table id='history_table'><tr><th>Timestamp</th><th>Nombre</th><th>Cuenta</th><th>Materia</th><th>Modo</th></tr>";
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    String ts   = (c.size()>0?c[0]:"");
-    String uid  = (c.size()>1?c[1]:"");
-    String name = (c.size()>2?c[2]:"");
-    String acc  = (c.size()>3?c[3]:"");
-    String mat  = (c.size()>4?c[4]:"");
-    String mode = (c.size()>5?c[5]:"");
-
-    // Aplicar filtros del servidor (si vienen por query string)
-    if (uidFilter.length()) {
-      String utrim = uid; utrim.trim();
-      if (utrim != uidFilter) continue;
-    }
-    if (materiaFilter.length()) {
-      String matTrim = mat; matTrim.trim();
-      String mfTrim = materiaFilter; mfTrim.trim();
-      if (matTrim != mfTrim) continue;
-    }
-    if (dateFilter.length()) {
-      if (ts.indexOf(dateFilter) != 0) continue;
-    }
-    if (profFilter.length()) {
-      bool okProf=false;
-      auto courses = loadCourses();
-      String profFilterLc = profFilter; profFilterLc.toLowerCase(); profFilterLc.trim();
-      for (auto &co : courses) {
-        String cm = co.materia; cm.trim();
-        if (cm == mat) {
-          String profLc = co.profesor; profLc.toLowerCase(); profLc.trim();
-          if (profLc.indexOf(profFilterLc) != -1) { okProf=true; break; }
-        }
-      }
-      if (!okProf) continue;
-    }
-    if (nameFilter.length()) {
-      String nameLc = name; nameLc.toLowerCase();
-      String nf = nameFilter; nf.toLowerCase();
-      if (nameLc.indexOf(nf) == -1) continue;
-    }
-
-    html += "<tr><td>" + ts + "</td><td>" + name + "</td><td>" + acc + "</td><td>" + mat + "</td><td>" + mode + "</td></tr>";
-  }
-  f.close();
-  html += "</table>";
-
-  // Scripts cliente para filtrar la tabla sin recargar (incluye filtro por profesor usando courses)
   html += R"rawliteral(
     <script>
       function applyHistoryFilters(){
@@ -162,7 +367,6 @@ void handleHistoryPage() {
           if(fn.length && name.indexOf(fn)===-1) ok=false;
           if(fdate.length && ts.indexOf(fdate)===-1) ok=false;
           if(fp.length){
-            // approximate client-side: check if materia or name contains professor filter text
             if (mat.indexOf(fp)===-1 && name.indexOf(fp)===-1) ok=false;
           }
           row.style.display = ok ? '' : 'none';
@@ -179,7 +383,7 @@ void handleHistoryPage() {
   )rawliteral";
 
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }
 
 // /history.csv (GET) - Genera y envía CSV filtrado opcionalmente por materia y/o ts (fecha prefix) y/o uid
@@ -187,82 +391,75 @@ void handleHistoryCSV() {
   String materiaFilter = server.hasArg("materia") ? server.arg("materia") : String();
   String tsFilter      = server.hasArg("ts") ? server.arg("ts") : String();
   String uidFilter     = server.hasArg("uid") ? server.arg("uid") : String();
+  String profFilter    = server.hasArg("profesor") ? server.arg("profesor") : String();
+  String nameFilter    = server.hasArg("nombre") ? server.arg("nombre") : String();
 
-  if (!SPIFFS.exists(ATT_FILE)) { server.send(404,"text/plain","no history"); return; }
-  File f = SPIFFS.open(ATT_FILE, FILE_READ);
-  String out = "\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"\r\n";
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    String ts = (c.size()>0?c[0]:"");
-    String uid = (c.size()>1?c[1]:"");
-    String mat = (c.size()>4?c[4]:"");
+  std::vector<HistoryRec> rows = collectMergedAttendance(uidFilter, materiaFilter);
+  rows = applyHistoryFilters(rows, tsFilter, profFilter, nameFilter);
 
-    if (uidFilter.length()) {
-      String utrim = uid; utrim.trim();
-      if (utrim != uidFilter) continue;
-    }
-    if (materiaFilter.length()) {
-      String matTrim = mat; matTrim.trim();
-      String mfTrim = materiaFilter; mfTrim.trim();
-      if (matTrim != mfTrim) continue;
-    }
-    if (tsFilter.length()) {
-      if (ts.indexOf(tsFilter) != 0) continue;
-    }
-    out += l + "\r\n";
-  }
-  f.close();
-  server.sendHeader("Content-Disposition","attachment; filename=history.csv");
-  server.send(200,"text/csv",out);
+  String out = buildHistoryCSV(rows);
+  server.sendHeader("Content-Disposition", "attachment; filename=history.csv");
+  server.send(200, "text/csv", out);
 }
 
-// /history_clear (POST) - Borra (resetea) el archivo de attendance dejando solo la cabecera.
+// /history_clear (POST) - Borra Oracle y el respaldo local
 void handleHistoryClearPOST() {
-  writeAllLines(ATT_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"")});
-  server.sendHeader("Location","/history");
-  server.send(303,"text/plain","Historial borrado");
+  bool oracleOk = clearOracleAttendanceAll();
+  if (!oracleOk) {
+    Serial.println("WARN: no se pudo borrar todo en Oracle (o no había conexión).");
+  }
+
+  clearLocalAttendanceFile();
+
+  server.sendHeader("Location", "/history");
+  server.send(303, "text/plain", "Historial borrado");
 }
 
 // /materia_history (GET) - Lista fechas con registros para una materia y permite descargar por día.
 void handleMateriaHistoryGET() {
-  if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
+  if (!server.hasArg("materia")) {
+    server.send(400, "text/plain", "materia required");
+    return;
+  }
+
   String materia = server.arg("materia");
   materia.trim();
-  if (!courseExists(materia)) { server.send(404,"text/plain","Materia no encontrada"); return; }
-  std::vector<String> dates;
-  if (!SPIFFS.exists(ATT_FILE)) { server.send(404,"text/plain","no history"); return; }
-  File f = SPIFFS.open(ATT_FILE, FILE_READ);
-  if (f) {
-    String header = f.readStringUntil('\n');
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size()>4 && c[4]==materia) {
-        String ts = c[0];
-        if (ts.length() >= 10) {
-          String day = ts.substring(0,10); // YYYY-MM-DD
-          bool found=false;
-          for (auto &d : dates) if (d==day) { found=true; break; }
-          if (!found) dates.push_back(day);
-        }
-      }
-    }
-    f.close();
+
+  if (!materiaExistsAnywhere(materia)) {
+    server.send(404, "text/plain", "Materia no encontrada");
+    return;
   }
+
+  std::vector<HistoryRec> rows = collectMergedAttendance(String(), materia);
+  std::vector<String> dates;
+
+  for (auto &r : rows) {
+    if (r.ts.length() >= 10) {
+      String day = r.ts.substring(0, 10);
+      bool found = false;
+      for (auto &d : dates) {
+        if (d == day) { found = true; break; }
+      }
+      if (!found) dates.push_back(day);
+    }
+  }
+
   String html = htmlHeader(("Historial por días - " + materia).c_str());
-  html += "<div class='card'><h2>Historial por días - " + materia + "</h2>";
-  html += "<p class='small'>Seleccione un día para descargar la lista de asistencia de esa materia.</p>";
-  if (dates.size()==0) html += "<p>No hay registros para esta materia.</p>";
-  else {
+  html += "<div class='card'><h2>Historial por días - " + htmlEscape(materia) + "</h2>";
+  html += "<p class='small'>Seleccione un día para descargar la lista de asistencia de esa materia. Los datos se obtienen desde Oracle y el respaldo local.</p>";
+
+  if (dates.size() == 0) {
+    html += "<p>No hay registros para esta materia.</p>";
+  } else {
     html += "<ul>";
     for (auto &d : dates) {
-      html += "<li>" + d + " <a class='btn btn-blue' href='/history.csv?materia=" + urlEncodeLocal(materia) + "&ts=" + urlEncodeLocal(d) + "'>⬇️ Descargar CSV</a></li>";
+      html += "<li>" + htmlEscape(d) + " <a class='btn btn-blue' href='/history.csv?materia=" + urlEncodeLocal(materia) + "&ts=" + urlEncodeLocal(d) + "'>⬇️ Descargar CSV</a></li>";
     }
     html += "</ul>";
   }
+
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
+  html += "</div>";
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }

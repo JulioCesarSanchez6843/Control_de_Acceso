@@ -3,11 +3,13 @@
 #include <WiFi.h>
 #include <FS.h>
 #include <SPIFFS.h>
+#include <ArduinoJson.h>
 
 #include "web/web_common.h"
 #include "globals.h"
 #include "config.h"
-#include "files_utils.h"   // necesario para parseQuotedCSVLine()
+#include "files_utils.h"
+#include "db_sync.h"
 #include <vector>
 
 // ---------------------------
@@ -24,35 +26,58 @@ static uint32_t fnv1a_local(const String &s) {
 }
 
 static String notifKeyLocal(const String &ts, const String &uid, const String &note) {
-  // Use full content (ts|uid|note) hashed to produce a compact, stable key.
   String raw = ts + "|" + uid + "|" + note;
   uint32_t h = fnv1a_local(raw);
-  // hex string (lowercase)
   String out = String(h, HEX);
   out.toLowerCase();
   return out;
 }
 
-// Cuenta solo las notificaciones NO LEÍDAS (buscando coincidencias con /.notif_read)
-int unreadNotifCount() {
+// --------------------------------------------------
+// Contador de notificaciones no leídas desde Oracle
+// --------------------------------------------------
+static int unreadNotifCountOracle() {
+  if (WiFi.status() != WL_CONNECTED) return -1;
+
+  String body = listNotificaciones(true); // solo no leídas
+  if (!body.length()) return -1;
+
+  DynamicJsonDocument doc(16384);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear notificaciones Oracle: ");
+    Serial.println(err.c_str());
+    return -1;
+  }
+
+  if (!doc.is<JsonArray>()) return -1;
+  return doc.as<JsonArray>().size();
+}
+
+// --------------------------------------------------
+// Contador local en SPIFFS (respaldo offline)
+// --------------------------------------------------
+static int unreadNotifCountLocal() {
   const char *readFile = "/.notif_read";
   if (!SPIFFS.exists(NOTIF_FILE)) return 0;
 
-  // 1) leer notificaciones y construir keys usando el mismo método que notifications.cpp
   std::vector<String> notifKeys;
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   if (!f) return 0;
+
   bool firstLine = true;
   while (f.available()) {
     String l = f.readStringUntil('\n');
-    if (firstLine) { firstLine = false; continue; } // saltar header
+    if (firstLine) {
+      firstLine = false;
+      continue;
+    }
     l.trim();
     if (!l.length()) continue;
     auto cols = parseQuotedCSVLine(l);
-    String ts = (cols.size()>0?cols[0]:"");
-    String uid = (cols.size()>1?cols[1]:"");
-    String note = (cols.size()>4?cols[4]:"");
-    // Usar EXACTAMENTE el mismo método que notifications.cpp
+    String ts = (cols.size() > 0 ? cols[0] : "");
+    String uid = (cols.size() > 1 ? cols[1] : "");
+    String note = (cols.size() > 4 ? cols[4] : "");
     String key = notifKeyLocal(ts, uid, note);
     notifKeys.push_back(key);
   }
@@ -61,27 +86,26 @@ int unreadNotifCount() {
   int total = (int)notifKeys.size();
   if (total == 0) return 0;
 
-  // 2) si no existe archivo de leídos, todo es no-leído
   if (!SPIFFS.exists(readFile)) return total;
 
-  // 3) leer claves leídas
   File rf = SPIFFS.open(readFile, FILE_READ);
   if (!rf) return total;
+
   std::vector<String> readKeys;
   while (rf.available()) {
-    String l = rf.readStringUntil('\n'); l.trim();
+    String l = rf.readStringUntil('\n');
+    l.trim();
     if (l.length()) readKeys.push_back(l);
   }
   rf.close();
 
-  // 4) contar NOTIFICACIONES NO LEÍDAS (las que NO están en readKeys)
   int unread = 0;
   for (auto &k : notifKeys) {
     bool found = false;
     for (auto &rk : readKeys) {
-      if (k == rk) { 
-        found = true; 
-        break; 
+      if (k == rk) {
+        found = true;
+        break;
       }
     }
     if (!found) unread++;
@@ -90,10 +114,18 @@ int unreadNotifCount() {
   return unread;
 }
 
+// Cuenta notificaciones no leídas usando Oracle si está disponible,
+// y si no, usa el respaldo local en SPIFFS.
+int unreadNotifCount() {
+  int oracleCount = unreadNotifCountOracle();
+  if (oracleCount >= 0) return oracleCount;
+  return unreadNotifCountLocal();
+}
+
 // ==================== CABECERA HTML GLOBAL ====================
 // Construye la cabecera HTML común.
 String htmlHeader(const char* title) {
-  int nCount = unreadNotifCount(); // <-- muestra SOLO no leídas
+  int nCount = unreadNotifCount(); // muestra SOLO no leídas
   String h = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
   h += "<title>"; h += title; h += "</title>";
 
@@ -469,31 +501,31 @@ String htmlHeader(const char* title) {
     .grid { grid-template-columns: 1fr; }
     footer { height: 64px; }
     .page-content { padding-bottom: 96px; }
-    
+
     .hero-title {
       font-size: 2.5em;
     }
-    
+
     .hero-subtitle {
       font-size: 1.1em;
     }
-    
+
     .capture-modes {
       grid-template-columns: 1fr;
     }
-    
+
     .modules-grid {
       grid-template-columns: 1fr;
     }
-    
+
     .btn-group {
       flex-direction: column;
     }
-    
+
     .section-title {
       font-size: 2em;
     }
-    
+
     .mode-explanation {
       grid-template-columns: 1fr;
     }
@@ -504,20 +536,20 @@ String htmlHeader(const char* title) {
       flex-direction: column;
       gap: 12px;
     }
-    
+
     .nav {
       justify-content: center;
     }
-    
+
     .hero-title {
       font-size: 2em;
     }
-    
+
     .mode-group,
     .module-card {
       padding: 20px;
     }
-    
+
     .system-modes {
       padding: 20px;
     }
@@ -532,7 +564,7 @@ String htmlHeader(const char* title) {
   h += "<div class='topbar'><div style='display:flex;gap:12px;align-items:center'>";
   h += "<div class='title' onclick='location.href=\"/\"'>Control de Acceso - Laboratorio</div>";
   h += "<a class='notif' href='/notifications' title='Notificaciones No Leídas'>🔔";
-  if (nCount>0) h += "<span class='count'>" + String(nCount) + "</span>";
+  if (nCount > 0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
   // Menú de navegación principal (se eliminó botón Capturar del nav)
@@ -562,54 +594,50 @@ String htmlFooter() {
 // ==================== PÁGINA PRINCIPAL (INICIO) - MEJORADA ====================
 void handleRoot() {
   captureMode = false;
-  captureUID = ""; captureName = ""; captureAccount = ""; captureDetectedAt = 0;
+  captureUID = "";
+  captureName = "";
+  captureAccount = "";
+  captureDetectedAt = 0;
 
-  // Cambié el título de la página para que coincida con encabezado
   String html = htmlHeader("Inicio - Control de Acceso - Laboratorio");
 
-  // Hero Section (título alineado a encabezado)
+  // Hero Section
   html += "<section class='hero-section'>";
   html += "<h1 class='hero-title'>Control de Acceso - Laboratorio</h1>";
   html += "<p class='hero-subtitle'>Sistema automatizado de gestión y control de acceso para laboratorios mediante tecnología RFID. Garantiza seguridad, control de asistencia y gestión eficiente de estudiantes y personal académico mediante un control preciso basado en horarios y permisos específicos.</p>";
   html += "</section>";
 
-  // Sección de Modos de Operación del Sistema
   html += "<div class='section-container'>";
   html += "<div class='system-modes'>";
   html += "<h3>Modos de Operación del Sistema</h3>";
   html += "<p>El sistema opera en dos modos principales que trabajan de forma integrada para garantizar la seguridad y eficiencia del laboratorio:</p>";
-  
+
   html += "<div class='mode-explanation'>";
-  
-  // Modo Captura
+
   html += "<div class='mode-item capture'>";
   html += "<h4>Modo Captura</h4>";
   html += "<p>Dedicado al registro y gestión de usuarios en el sistema. Permite la captura individual de estudiantes y maestros, así como la captura masiva por lotes mediante códigos QR. En este modo se configuran las tarjetas RFID, se asignan permisos y se vinculan los usuarios con sus materias correspondientes.</p>";
   html += "</div>";
-  
-  // Modo Verificación
+
   html += "<div class='mode-item verification'>";
   html += "<h4>Modo Verificación</h4>";
   html += "<p>Gestiona el control de acceso en tiempo real según los horarios establecidos. Verifica automáticamente los permisos de cada usuario, valida si está dentro de su horario autorizado y registra cada acceso al laboratorio. Opera de forma continua para garantizar la seguridad del espacio.</p>";
   html += "</div>";
-  
-  html += "</div>"; // cierre mode-explanation
-  
-  html += "</div>"; // cierre system-modes
 
-  // Sección de Modos de Captura
+  html += "</div>";
+  html += "</div>";
+
   html += "<h2 class='section-title'>Sistema de Captura de Usuarios</h2>";
   html += "<p class='section-description'>El sistema cuenta con métodos de captura especializados para cada tipo de usuario, garantizando un registro seguro y eficiente de toda la comunidad académica.</p>";
-  
+
   html += "<div class='capture-modes'>";
-  
-  // Captura para Estudiantes
+
   html += "<div class='mode-group'>";
   html += "<h3 class='mode-group-title'>Captura de Estudiantes</h3>";
   html += "<p class='mode-description'>Sistema especializado para el registro de estudiantes con dos modalidades de captura adaptadas a diferentes necesidades.</p>";
-  
+
   html += "<div class='mode-options'>";
-  
+
   html += "<div class='mode-option'>";
   html += "<h4>Captura Individual</h4>";
   html += "<p>Registro personalizado de estudiantes uno por uno. Ideal para altas individuales, reemplazo de tarjetas o corrección de datos específicos.</p>";
@@ -622,7 +650,7 @@ void handleRoot() {
   html += "<a class='btn-module green' href='/capture_individual'>Iniciar Captura Individual</a>";
   html += "</div>";
   html += "</div>";
-  
+
   html += "<div class='mode-option'>";
   html += "<h4>Captura por Lote con QR</h4>";
   html += "<p>Sistema masivo para registrar grupos completos de estudiantes. Genera códigos QR para auto-registro, perfecto para inicio de semestre o grupos grandes.</p>";
@@ -635,18 +663,16 @@ void handleRoot() {
   html += "<a class='btn-module purple' href='/capture_batch'>Iniciar Captura por Lote</a>";
   html += "</div>";
   html += "</div>";
-  
-  html += "</div>"; // cierre mode-options
-  
-  html += "</div>"; // cierre mode-group estudiantes
-  
-  // Captura para Maestros
+
+  html += "</div>";
+  html += "</div>";
+
   html += "<div class='mode-group teachers'>";
   html += "<h3 class='mode-group-title'>Captura de Maestros</h3>";
   html += "<p class='mode-description'>Sistema especializado para el registro del personal docente con permisos extendidos y gestión de materias asignadas.</p>";
-  
+
   html += "<div class='mode-options'>";
-  
+
   html += "<div class='mode-option'>";
   html += "<h4>Captura Individual de Maestros</h4>";
   html += "<p>Registro personalizado de maestros con asignación de materias y permisos especiales. Control total sobre el acceso al laboratorio y gestión de horarios flexibles.</p>";
@@ -659,20 +685,17 @@ void handleRoot() {
   html += "<a class='btn-module orange' href='/teachers_all'>Gestionar Maestros</a>";
   html += "</div>";
   html += "</div>";
-  
-  html += "</div>"; // cierre mode-options
-  
-  html += "</div>"; // cierre mode-group maestros
-  
-  html += "</div>"; // cierre capture-modes
 
-  // Sección de Módulos del Sistema
+  html += "</div>";
+  html += "</div>";
+
+  html += "</div>";
+
   html += "<h2 class='section-title'>Módulos del Sistema de Gestión</h2>";
   html += "<p class='section-description'>Sistema integral que cubre todos los aspectos necesarios para la administración eficiente del acceso al laboratorio y la gestión académica.</p>";
-  
+
   html += "<div class='modules-grid'>";
-  
-  // Módulo Materias
+
   html += "<div class='module-card materias'>";
   html += "<h3>Gestión de Materias</h3>";
   html += "<p>Administra materias, horarios y asignaciones de profesores/estudiantes.</p>";
@@ -683,8 +706,7 @@ void handleRoot() {
   html += "</ul>";
   html += "<a class='btn-module' href='/materias'>Administrar Materias</a>";
   html += "</div>";
-  
-  // Módulo Estudiantes
+
   html += "<div class='module-card estudiantes'>";
   html += "<h3>Gestión de Estudiantes</h3>";
   html += "<p>Registro y vinculación de tarjetas RFID, asignación a materias y seguimiento.</p>";
@@ -695,8 +717,7 @@ void handleRoot() {
   html += "</ul>";
   html += "<a class='btn-module' href='/students_all'>Gestionar Estudiantes</a>";
   html += "</div>";
-  
-  // Módulo Maestros
+
   html += "<div class='module-card maestros'>";
   html += "<h3>Gestión de Maestros</h3>";
   html += "<p>Administración del personal docente y permisos especiales.</p>";
@@ -707,8 +728,7 @@ void handleRoot() {
   html += "</ul>";
   html += "<a class='btn-module' href='/teachers_all'>Gestionar Maestros</a>";
   html += "</div>";
-  
-  // Módulo Horarios
+
   html += "<div class='module-card horarios'>";
   html += "<h3>Gestión de Horarios</h3>";
   html += "<p>Configura franjas horarias y administra conflictos.</p>";
@@ -719,8 +739,7 @@ void handleRoot() {
   html += "</ul>";
   html += "<a class='btn-module' href='/schedules'>Gestionar Horarios</a>";
   html += "</div>";
-  
-  // Módulo Historial
+
   html += "<div class='module-card historial'>";
   html += "<h3>Historial de Accesos</h3>";
   html += "<p>Consulta y exporta registros de acceso.</p>";
@@ -731,8 +750,7 @@ void handleRoot() {
   html += "</ul>";
   html += "<a class='btn-module' href='/history'>Consultar Historial</a>";
   html += "</div>";
-  
-  // Módulo Notificaciones (resumido para encajar con los demás)
+
   html += "<div class='module-card sistema'>";
   html += "<h3>Notificaciones</h3>";
   html += "<p>Revisa alertas y eventos generados por el sistema durante la verificación RFID.</p>";
@@ -744,13 +762,12 @@ void handleRoot() {
   html += "<p class='small'>No leídas: " + String(unreadNotifCount()) + "</p>";
   html += "<a class='btn-module' href='/notifications'>Ver Notificaciones</a>";
   html += "</div>";
-  
-  html += "</div>"; // cierre modules-grid
-  
-  html += "</div>"; // cierre section-container
+
+  html += "</div>";
+  html += "</div>";
 
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }
 
 // ==================== ESTADO DEL DISPOSITIVO ====================
@@ -758,25 +775,29 @@ void handleRoot() {
 void handleStatus() {
   size_t total = SPIFFS.totalBytes();
   size_t used = SPIFFS.usedBytes();
-  float pct = (total>0) ? (used * 100.0f) / (float)total : 0;
+  float pct = (total > 0) ? (used * 100.0f) / (float)total : 0;
 
   String html = htmlHeader("Estado ESP32");
   html += "<div class='card'><h2>Estado del Dispositivo</h2>";
   html += "<p><b>IP:</b> " + WiFi.localIP().toString() + "</p>";
-  html += "<p><b>Tiempo activo:</b> " + String(millis()/1000) + " segundos</p>";
+  html += "<p><b>Tiempo activo:</b> " + String(millis() / 1000) + " segundos</p>";
   html += "<p><b>Memoria RAM libre:</b> " + String(ESP.getFreeHeap()) + " bytes</p>";
-  html += "<p><b>Almacenamiento SPIFFS:</b> " + String(used) + " / " + String(total) + " bytes (" + String(pct,1) + "%)</p>";
+  html += "<p><b>Almacenamiento SPIFFS:</b> " + String(used) + " / " + String(total) + " bytes (" + String(pct, 1) + "%)</p>";
 
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   int usersCount = 0;
   if (fu) {
     fu.readStringUntil('\n');
-    while (fu.available()) { String l = fu.readStringUntil('\n'); l.trim(); if (l.length()) usersCount++; }
+    while (fu.available()) {
+      String l = fu.readStringUntil('\n');
+      l.trim();
+      if (l.length()) usersCount++;
+    }
     fu.close();
   }
   html += "<p><b>Usuarios registrados:</b> " + String(usersCount) + "</p>";
   html += "<div style='margin-top:10px'><a class='btn btn-blue' href='/users.csv'>Descargar Usuarios</a> "
           "<a class='btn btn-blue' href='/'>Volver</a></div></div>";
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }

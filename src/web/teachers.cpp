@@ -9,6 +9,8 @@
 #include "globals.h"
 #include "web_common.h"
 #include "files_utils.h"
+#include "db_sync.h"
+#include <ArduinoJson.h>
 
 // Pequeña función de escape HTML
 static String htmlEscape(const String &s) {
@@ -75,7 +77,7 @@ static std::vector<String> getProfessorsForMateriaCombined(const String &materia
     for (auto &x : out) if (x == p) { f = true; break; }
     if (!f) out.push_back(p);
   }
-  auto fromFile = teachersForMateriaFile(materia); // usa la función centralizada
+  auto fromFile = teachersForMateriaFile(materia);
   for (auto &ln : fromFile) {
     auto c = parseQuotedCSVLine(ln);
     if (c.size() >= 2) {
@@ -116,6 +118,85 @@ static bool findMetaByName(const std::vector<MetaRec> &meta, const String &name,
     if (m.name == name) { out = m; return true; }
   }
   return false;
+}
+
+// -------------------------------
+// Oracle sync helpers
+// -------------------------------
+struct OraclePMRec {
+  int id = -1;
+  String uid;
+  String materia;
+  String created_at;
+};
+
+static bool loadOracleProfesorMateria(std::vector<OraclePMRec> &out) {
+  out.clear();
+
+  String json = listProfesorMateria();
+  if (!json.length()) return false;
+
+  DynamicJsonDocument doc(32768);
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear JSON de profesor_materia Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) return false;
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    OraclePMRec r;
+    r.id = obj["id"] | -1;
+    r.uid = obj["rfid_uid"] | "";
+    r.materia = obj["materia"] | "";
+    r.created_at = obj["created_at"] | "";
+    out.push_back(r);
+  }
+
+  return true;
+}
+
+static bool syncTeacherRemoveCourseOracle(const String &uid, const String &materia) {
+  std::vector<OraclePMRec> rows;
+  if (!loadOracleProfesorMateria(rows)) {
+    Serial.println("WARN: no se pudo leer profesor_materia en Oracle");
+    return false;
+  }
+
+  bool found = false;
+  bool ok = true;
+
+  for (auto &r : rows) {
+    if (r.uid == uid && r.materia == materia && r.id > 0) {
+      found = true;
+      if (!deleteProfesorMateriaById(r.id)) {
+        Serial.print("WARN: no se pudo borrar profesor_materia id=");
+        Serial.println(r.id);
+        ok = false;
+      } else {
+        Serial.print("DB_SYNC: profesor_materia eliminado id=");
+        Serial.println(r.id);
+      }
+    }
+  }
+
+  if (!found) {
+    Serial.println("DB_SYNC: no había relación profesor-materia coincidente en Oracle");
+  }
+
+  return ok;
+}
+
+static bool syncTeacherDeleteOracle(const String &uid) {
+  if (!deleteProfesorByUid(uid, true)) {
+    Serial.println("WARN: no se pudo eliminar profesor en Oracle con cascade=true");
+    return false;
+  }
+
+  Serial.println("DB_SYNC: profesor eliminado en Oracle con cascade=true");
+  return true;
 }
 
 // -------------------------------
@@ -186,20 +267,23 @@ void handleTeachersAll() {
 
   html += "<div class='filters'><input id='ta_name' placeholder='Filtrar Nombre'><input id='ta_acc' placeholder='Filtrar Cuenta'><input id='ta_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllTeacherFilters()'>Limpiar</button></div>";
 
-  // Build list combining TEACHERS_FILE rows and courses
   std::vector<MetaRec> recs = buildTeacherMetaList();
 
-  // Ensure any professors in courses that are not in recs get added
   auto courses = loadCourses();
   for (auto &c : courses) {
     bool found = false;
     for (auto &r : recs) {
       if (r.name == c.profesor) {
-        found = true; break;
+        found = true;
+        break;
       }
     }
     if (!found) {
-      MetaRec r; r.uid = ""; r.name = c.profesor; r.acc = "-"; r.created = nowISO();
+      MetaRec r;
+      r.uid = "";
+      r.name = c.profesor;
+      r.acc = "-";
+      r.created = nowISO();
       recs.push_back(r);
     }
   }
@@ -212,8 +296,8 @@ void handleTeachersAll() {
       for (auto &r : recs) {
         if (r.uid == searchUid) {
           foundAny = true;
-          // compute materias for this teacher
           std::vector<String> mats;
+
           File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
           if (f) {
             String header = f.readStringUntil('\n'); (void)header;
@@ -235,6 +319,7 @@ void handleTeachersAll() {
             }
             f.close();
           }
+
           for (auto &c : courses) if (c.profesor == r.name) {
             bool fnd = false;
             for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
@@ -242,7 +327,13 @@ void handleTeachersAll() {
           }
 
           String matsStr = "-";
-          if (mats.size()) { matsStr = ""; for (size_t i=0;i<mats.size();++i){ if (i) matsStr += "; "; matsStr += mats[i]; } }
+          if (mats.size()) {
+            matsStr = "";
+            for (size_t i = 0; i < mats.size(); ++i) {
+              if (i) matsStr += "; ";
+              matsStr += mats[i];
+            }
+          }
 
           html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
           html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
@@ -263,11 +354,9 @@ void handleTeachersAll() {
     } else {
       html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
 
-      // For each rec, compute materias: from TEACHERS_FILE and from courses where name==profesor
       for (auto &r : recs) {
-        // collect materias
         std::vector<String> mats;
-        // from TEACHERS_FILE rows
+
         File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
         if (f) {
           String header = f.readStringUntil('\n'); (void)header;
@@ -278,8 +367,7 @@ void handleTeachersAll() {
               String uid = c[0];
               String name = (c.size() > 1 ? c[1] : "");
               String mat  = (c.size() > 3 ? c[3] : "");
-              // match by uid if available, otherwise by name
-              if ((r.uid.length() && uid == r.uid) || (r.uid.length()==0 && name == r.name)) {
+              if ((r.uid.length() && uid == r.uid) || (r.uid.length() == 0 && name == r.name)) {
                 if (mat.length()) {
                   bool fnd = false;
                   for (auto &m : mats) if (m == mat) { fnd = true; break; }
@@ -290,7 +378,7 @@ void handleTeachersAll() {
           }
           f.close();
         }
-        // also add materias from courses where profesor == name
+
         for (auto &c : courses) if (c.profesor == r.name) {
           bool fnd = false;
           for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
@@ -300,7 +388,7 @@ void handleTeachersAll() {
         String matsStr = "-";
         if (mats.size()) {
           matsStr = "";
-          for (size_t i=0;i<mats.size();++i) {
+          for (size_t i = 0; i < mats.size(); ++i) {
             if (i) matsStr += "; ";
             matsStr += mats[i];
           }
@@ -334,14 +422,22 @@ void handleTeachersAll() {
 
 void handleTeacherRemoveCourse() {
   if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
-  String uid = server.arg("uid"); String materia = server.arg("materia");
+  String uid = server.arg("uid");
+  String materia = server.arg("materia");
+
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (!f) { server.send(500,"text/plain","no file"); return; }
-  std::vector<String> lines; String header = f.readStringUntil('\n'); lines.push_back(header);
+
+  std::vector<String> lines;
+  String header = f.readStringUntil('\n');
+  lines.push_back(header);
+
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    String l = f.readStringUntil('\n');
+    l.trim();
+    if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size()>=4) {
+    if (c.size() >= 4) {
       String rowUid = c[0];
       String rowMat = c[3];
       if (rowUid == uid && rowMat == materia) continue;
@@ -350,6 +446,11 @@ void handleTeacherRemoveCourse() {
   }
   f.close();
   writeAllLines(TEACHERS_FILE, lines);
+
+  if (!syncTeacherRemoveCourseOracle(uid, materia)) {
+    Serial.println("WARN: no se pudo sincronizar la eliminación de maestro de la materia en Oracle");
+  }
+
   server.sendHeader("Location","/teachers?materia=" + urlEncodeLocal(materia));
   server.send(303,"text/plain","Removed");
 }
@@ -358,13 +459,13 @@ void handleTeacherDelete() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
   String uid = server.arg("uid");
 
-  // 1) Find teacher name (if any) and collect materias taught by that teacher (from courses)
   String teacherName = "";
   File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   if (ft) {
     String header = ft.readStringUntil('\n'); (void)header;
     while (ft.available()) {
-      String l = ft.readStringUntil('\n'); l.trim();
+      String l = ft.readStringUntil('\n');
+      l.trim();
       if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 2 && c[0] == uid) {
@@ -375,7 +476,6 @@ void handleTeacherDelete() {
     ft.close();
   }
 
-  // Build list of materias that will be removed because professor==teacherName
   std::vector<Course> courses = loadCourses();
   std::vector<String> materiasToRemove;
   for (auto &c : courses) {
@@ -386,17 +486,19 @@ void handleTeacherDelete() {
     }
   }
 
-  // 2) Remove TEACHERS_FILE rows with that uid
   File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
   std::vector<String> newTeacherLines;
   if (f) {
-    String header = f.readStringUntil('\n'); newTeacherLines.push_back(header);
+    String header = f.readStringUntil('\n');
+    newTeacherLines.push_back(header);
     while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+      String l = f.readStringUntil('\n');
+      l.trim();
+      if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 1) {
         String rowUid = c[0];
-        if (rowUid == uid) continue; // skip this teacher
+        if (rowUid == uid) continue;
       }
       newTeacherLines.push_back(l);
     }
@@ -404,7 +506,6 @@ void handleTeacherDelete() {
     writeAllLines(TEACHERS_FILE, newTeacherLines);
   }
 
-  // 3) Remove courses where profesor == teacherName
   if (teacherName.length()) {
     std::vector<Course> newCourses;
     for (auto &c : courses) {
@@ -414,13 +515,14 @@ void handleTeacherDelete() {
     writeCourses(newCourses);
   }
 
-  // 4) Clean SCHEDULES_FILE: remove schedules that belong to removed course keys or materias that no longer exist
   File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
   std::vector<String> slines;
   if (fs) {
-    String header = fs.readStringUntil('\n'); slines.push_back(header);
+    String header = fs.readStringUntil('\n');
+    slines.push_back(header);
     while (fs.available()) {
-      String l = fs.readStringUntil('\n'); l.trim();
+      String l = fs.readStringUntil('\n');
+      l.trim();
       if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
@@ -445,13 +547,14 @@ void handleTeacherDelete() {
     writeAllLines(SCHEDULES_FILE, slines);
   }
 
-  // 5) Clean USERS_FILE: if a materia got fully removed (no courses remain for it), remove users with that materia
   File fu = SPIFFS.open(USERS_FILE, FILE_READ);
   std::vector<String> ulines;
   if (fu) {
-    String uheader = fu.readStringUntil('\n'); ulines.push_back(uheader);
+    String uheader = fu.readStringUntil('\n');
+    ulines.push_back(uheader);
     while (fu.available()) {
-      String l = fu.readStringUntil('\n'); l.trim();
+      String l = fu.readStringUntil('\n');
+      l.trim();
       if (!l.length()) continue;
       auto c = parseQuotedCSVLine(l);
       if (c.size() >= 4) {
@@ -468,13 +571,17 @@ void handleTeacherDelete() {
         }
         if (removeUser) {
           addNotification(uid_u, name, acc, String("Cuenta eliminada: materia removida al borrar maestro ") + teacherName);
-          continue; // skip this user row
+          continue;
         }
         ulines.push_back("\"" + uid_u + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + (c.size()>4?c[4]:"") + "\"");
       } else ulines.push_back(l);
     }
     fu.close();
     writeAllLines(USERS_FILE, ulines);
+  }
+
+  if (!syncTeacherDeleteOracle(uid)) {
+    Serial.println("WARN: no se pudo sincronizar la eliminación total del maestro en Oracle");
   }
 
   server.sendHeader("Location","/teachers_all");

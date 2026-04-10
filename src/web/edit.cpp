@@ -11,6 +11,9 @@
 #include "edit.h"
 #include "courses.h"    // loadCourses(), writeCourses()
 #include "schedules.h"  // SCHEDULES_FILE (si lo usas) - opcional, solo para consistencia
+#include "db_sync.h"    // Oracle sync
+
+#include <ArduinoJson.h>
 
 // ---------------- utilidades locales ----------------
 static String htmlEscapeLocal(const String &s) {
@@ -73,6 +76,95 @@ static std::pair<String,String> findByAccountLocal(const String &account) {
   }
 
   return std::make_pair(String(""), String(""));
+}
+
+// ---------------- Oracle helpers ----------------
+static String readOracleAlumnosJson() {
+  String body = listAlumnos();
+  return body;
+}
+
+static bool oracleDeleteAlumnoRowsByUid(const String &uid) {
+  String body = readOracleAlumnosJson();
+  if (!body.length()) {
+    Serial.println("WARN: no se pudo leer /alumnos desde Oracle para limpiar filas previas");
+    return false;
+  }
+
+  DynamicJsonDocument doc(body.length() * 2 + 1024);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando JSON de alumnos Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  JsonArray arr = doc.as<JsonArray>();
+  bool ok = true;
+  for (JsonObject obj : arr) {
+    String rowUid = obj["rfid_uid"] | "";
+    int id = obj["id"] | -1;
+    if (rowUid == uid && id > 0) {
+      if (!deleteAlumnoById(id)) {
+        Serial.print("WARN: no se pudo borrar alumno Oracle id=");
+        Serial.println(id);
+        ok = false;
+      } else {
+        Serial.print("DB_SYNC: alumno Oracle eliminado id=");
+        Serial.println(id);
+      }
+    }
+  }
+
+  return ok;
+}
+
+static bool oracleSyncUserRows(
+    const String &uid,
+    const String &name,
+    const String &account,
+    const std::vector<String> &materias,
+    const String &createdAt
+) {
+  bool ok = true;
+
+  // Limpia todas las filas previas de este UID en Oracle
+  if (!oracleDeleteAlumnoRowsByUid(uid)) {
+    Serial.println("WARN: no se pudieron limpiar las filas previas del alumno en Oracle");
+    ok = false;
+  }
+
+  // Inserta las filas actuales
+  for (auto &mat : materias) {
+    if (mat.length() == 0) continue;
+    if (!sendAlumnoRegistro(uid, name, account, mat, createdAt)) {
+      Serial.print("WARN: no se pudo sincronizar alumno con Oracle para materia: ");
+      Serial.println(mat);
+      ok = false;
+    } else {
+      Serial.print("DB_SYNC: alumno sincronizado correctamente para materia: ");
+      Serial.println(mat);
+    }
+  }
+
+  return ok;
+}
+
+static bool syncTeacherToOracle(const String &uid, const String &name, const String &account, const String &createdAt) {
+  // Primero intentamos actualizar; si no existe todavía, lo creamos.
+  if (updateProfesorByUid(uid, uid, name, account, createdAt)) {
+    Serial.println("DB_SYNC: profesor sincronizado correctamente (UPDATE)");
+    return true;
+  }
+
+  Serial.println("WARN: updateProfesorByUid falló, intentando crear profesor en Oracle");
+  if (sendProfesorRegistro(uid, name, account, createdAt)) {
+    Serial.println("DB_SYNC: profesor sincronizado correctamente (CREATE)");
+    return true;
+  }
+
+  Serial.println("WARN: no se pudo sincronizar profesor con Oracle");
+  return false;
 }
 
 // ---------------- render / lógica compartida ----------------
@@ -641,6 +733,22 @@ static void processEditPostAndRedirect(const String &redirect_to) {
 
     if (!writeAllLines(USERS_FILE, lines)) { server.send(500, "text/plain", "Error guardando usuarios"); return; }
 
+    // Sincronizar con Oracle: borrar filas anteriores del UID e insertar las nuevas
+    std::vector<String> materiaList;
+    for (auto &mp : materias) {
+      bool exists = false;
+      for (auto &m : materiaList) {
+        if (m == mp.first) { exists = true; break; }
+      }
+      if (!exists) materiaList.push_back(mp.first);
+    }
+
+    if (!oracleSyncUserRows(uid, name, account, materiaList, created)) {
+      Serial.println("WARN: sincronización Oracle de alumno no completa");
+    } else {
+      Serial.println("DB_SYNC: alumno sincronizado correctamente con Oracle");
+    }
+
     server.sendHeader("Location", return_to);
     server.send(303, "text/plain", "Updated");
     return;
@@ -672,6 +780,27 @@ static void processEditPostAndRedirect(const String &redirect_to) {
 
     if (!updated) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
     if (!writeAllLines(targetFile, lines)) { server.send(500, "text/plain", "Error guardando"); return; }
+
+    // Sincronizar maestro a Oracle
+    String created = nowISO();
+    File ft = SPIFFS.open(targetFile, FILE_READ);
+    if (ft) {
+      String h = ft.readStringUntil('\n'); (void)h;
+      while (ft.available()) {
+        String l = ft.readStringUntil('\n'); l.trim();
+        if (!l.length()) continue;
+        auto c = parseQuotedCSVLine(l);
+        if (c.size() >= 1 && c[0] == uid) {
+          if (c.size() > 4 && c[4].length()) created = c[4];
+          break;
+        }
+      }
+      ft.close();
+    }
+
+    if (!syncTeacherToOracle(uid, name, account, created)) {
+      Serial.println("WARN: sincronización Oracle de profesor no completa");
+    }
 
     // Propagar renombre si es necesario
     if (oldName.length() && oldName != name) {

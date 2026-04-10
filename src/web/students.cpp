@@ -9,6 +9,8 @@
 #include "globals.h"
 #include "web_common.h"
 #include "files_utils.h"
+#include "db_sync.h"
+#include <ArduinoJson.h>
 
 // Pequeña función de escape HTML usada localmente
 static String htmlEscape(const String &s) {
@@ -43,19 +45,182 @@ static String urlEncode(const String &str) {
   return ret;
 }
 
+// ============================================================
+// Helpers Oracle
+// ============================================================
+
+struct OracleAlumnoRec {
+  int id = -1;
+  String uid;
+  String name;
+  String account;
+  String materia;
+  String created_at;
+};
+
+static bool loadOracleAlumnos(std::vector<OracleAlumnoRec> &out) {
+  out.clear();
+
+  String json = listAlumnos();
+  if (!json.length()) {
+    Serial.println("WARN: listAlumnos() devolvió vacío");
+    return false;
+  }
+
+  DynamicJsonDocument doc(32768);
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear JSON de alumnos Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) {
+    Serial.println("WARN: /alumnos no devolvió un arreglo JSON");
+    return false;
+  }
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    OracleAlumnoRec r;
+    r.id = obj["id"] | -1;
+    r.uid = obj["rfid_uid"] | "";
+    r.name = obj["name"] | "";
+    r.account = obj["account"] | "";
+    r.materia = obj["materia"] | "";
+    r.created_at = obj["created_at"] | "";
+    out.push_back(r);
+  }
+
+  return true;
+}
+
+static bool oracleDeleteStudentRowsByUID(const String &uid) {
+  std::vector<OracleAlumnoRec> rows;
+  if (!loadOracleAlumnos(rows)) {
+    Serial.println("WARN: no se pudieron leer alumnos Oracle para borrar por UID");
+    return false;
+  }
+
+  bool any = false;
+  bool ok = true;
+
+  for (auto &r : rows) {
+    if (r.uid == uid && r.id > 0) {
+      any = true;
+      if (!deleteAlumnoById(r.id)) {
+        Serial.print("WARN: no se pudo borrar alumno Oracle id=");
+        Serial.println(r.id);
+        ok = false;
+      } else {
+        Serial.print("DB_SYNC: alumno Oracle eliminado id=");
+        Serial.println(r.id);
+      }
+    }
+  }
+
+  if (!any) {
+    Serial.println("DB_SYNC: no había filas Oracle para ese UID");
+  }
+
+  return ok;
+}
+
+static bool oracleRemoveStudentCourse(
+    const String &uid,
+    const String &materia,
+    const String &fallbackName,
+    const String &fallbackAccount,
+    const String &fallbackCreatedAt
+) {
+  std::vector<OracleAlumnoRec> rows;
+  if (!loadOracleAlumnos(rows)) {
+    Serial.println("WARN: no se pudieron leer alumnos Oracle para quitar materia");
+    return false;
+  }
+
+  std::vector<OracleAlumnoRec> matches;
+  for (auto &r : rows) {
+    if (r.uid == uid) matches.push_back(r);
+  }
+
+  if (matches.size() == 0) {
+    Serial.println("DB_SYNC: no se encontró el UID en Oracle para quitar materia");
+    return true;
+  }
+
+  OracleAlumnoRec exact;
+  bool hasExact = false;
+  for (auto &r : matches) {
+    if (r.materia == materia) {
+      exact = r;
+      hasExact = true;
+      break;
+    }
+  }
+
+  // Si hay más de una fila para ese UID, eliminamos solo la materia correspondiente.
+  // Si solo queda una, la convertimos en registro sin materia (como hace SPIFFS).
+  if (matches.size() > 1) {
+    if (!hasExact) {
+      Serial.println("WARN: no se encontró coincidencia exacta de materia en Oracle; borrando primera fila del UID");
+      OracleAlumnoRec target = matches[0];
+      if (target.id > 0) {
+        if (!deleteAlumnoById(target.id)) {
+          Serial.println("WARN: no se pudo borrar la fila de Oracle");
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (exact.id > 0) {
+      if (!deleteAlumnoById(exact.id)) {
+        Serial.println("WARN: no se pudo borrar la materia del alumno en Oracle");
+        return false;
+      }
+      Serial.println("DB_SYNC: materia eliminada del alumno en Oracle");
+    }
+    return true;
+  }
+
+  // Si solo hay una fila para ese UID, la quitamos y la reinsertamos vacía de materia
+  OracleAlumnoRec row = matches[0];
+  if (row.id > 0) {
+    if (!deleteAlumnoById(row.id)) {
+      Serial.println("WARN: no se pudo borrar la única fila Oracle del alumno");
+      return false;
+    }
+    Serial.println("DB_SYNC: fila Oracle del alumno eliminada para reinsertar sin materia");
+  }
+
+  String name = fallbackName.length() ? fallbackName : row.name;
+  String account = fallbackAccount.length() ? fallbackAccount : row.account;
+  String created = fallbackCreatedAt.length() ? fallbackCreatedAt : row.created_at;
+  if (created.length() == 0) created = nowISO();
+
+  // Reinsertar sin materia
+  if (!sendAlumnoRegistro(uid, name, account, String(), created)) {
+    Serial.println("WARN: no se pudo reinsertar alumno en Oracle sin materia");
+    return false;
+  }
+
+  Serial.println("DB_SYNC: alumno reinsertado en Oracle sin materia");
+  return true;
+}
+
+// ============================================================
 // GET /students?materia=...
+// ============================================================
 void handleStudentsForMateria() {
   if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
   String materia = server.arg("materia");
   String profesor = server.hasArg("profesor") ? server.arg("profesor") : String();
-  // return_to: optional (where "Volver" should point). If absent, we'll show /materias.
   String return_to = server.hasArg("return_to") ? server.arg("return_to") : String();
   bool hideCaptureButtons = server.hasArg("hide_capture") && server.arg("hide_capture") == "1";
 
   String html = htmlHeader(("Alumnos - " + materia).c_str());
   html += "<div class='card'><h2>Alumnos - " + materia + "</h2>";
 
-  // Right-side capture buttons (capturar individual y lote) -> SOLO si hideCaptureButtons == false
   String rt = String("/students?materia=") + urlEncode(materia);
   if (profesor.length()) rt += "&profesor=" + urlEncode(profesor);
   if (!hideCaptureButtons) {
@@ -64,11 +229,9 @@ void handleStudentsForMateria() {
     html += "<a class='btn btn-blue' href='/capture_batch?return_to=" + urlEncode(rt) + "'>Capturar lote</a>";
     html += "</div>";
   } else {
-    // mantén el espacio para que el layout no salte
     html += "<div style='height:8px;margin-bottom:8px;'></div>";
   }
 
-  // Filtros cliente: Nombre y Cuenta
   html += "<div class='filters'><input id='sf_name' placeholder='Filtrar Nombre'><input id='sf_acc' placeholder='Filtrar Cuenta'><button class='search-btn btn btn-blue' onclick='applyStudentFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearStudentFilters()'>Limpiar</button></div>";
 
   auto users = usersForMateria(materia);
@@ -86,7 +249,6 @@ void handleStudentsForMateria() {
       html += "<tr><td>" + name + "</td><td>" + acc + "</td><td>" + created + "</td>";
 
       html += "<td>";
-      // Form para ELIMINAR SOLO LA MATERIA del alumno
       html += "<form method='POST' action='/student_remove_course' style='display:inline' onsubmit='return confirm(\"Eliminar este alumno de la materia?\");'>";
       html += "<input type='hidden' name='uid' value='" + uid + "'>";
       html += "<input type='hidden' name='materia' value='" + materia + "'>";
@@ -105,28 +267,26 @@ void handleStudentsForMateria() {
             "</script>";
   }
 
-  // Botones inferiores: Volver (usa return_to si existe) y Inicio
   String backTarget = return_to.length() ? return_to : String("/materias");
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='" + backTarget + "'>Volver</a> <a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
   server.send(200,"text/html",html);
 }
 
+// ============================================================
 // GET /students_all
+// ============================================================
 void handleStudentsAll() {
-  // support optional search_uid param to show only a student (used by notifications modal)
   String searchUid = server.hasArg("search_uid") ? server.arg("search_uid") : String();
 
   String html = htmlHeader("Alumnos - Todos");
   html += "<div class='card'><h2>Todos los alumnos</h2>";
 
-  // Buttons on top: capture all / etc
   html += "<div style='display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;'>";
   html += "<a class='btn btn-blue' href='/capture_individual?return_to=/students_all&target=students'>Capturar individual</a>";
   html += "<a class='btn btn-blue' href='/capture_batch?return_to=/students_all'>Capturar lote</a>";
   html += "</div>";
 
-  // Filtros cliente
   html += "<div class='filters'><input id='sa_name' placeholder='Filtrar Nombre'><input id='sa_acc' placeholder='Filtrar Cuenta'><input id='sa_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllStudentFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllStudentFilters()'>Limpiar</button></div>";
 
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
@@ -141,25 +301,40 @@ void handleStudentsAll() {
     String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 3) {
-      String uid = c[0]; String name = c[1]; String acc = c[2]; String mat = (c.size() > 3 ? c[3] : ""); String created = (c.size() > 4 ? c[4] : nowISO());
-      int idx=-1; for (int i=0;i<(int)uids.size();i++) if (uids[i]==uid) { idx=i; break; }
-      if (idx==-1) { uids.push_back(uid); SRec r; r.name=name; r.acc=acc; r.created = created; r.uid = uid; if (mat.length()) r.mats.push_back(mat); recs.push_back(r); }
-      else { if (mat.length()) recs[idx].mats.push_back(mat); }
+      String uid = c[0];
+      String name = c[1];
+      String acc = c[2];
+      String mat = (c.size() > 3 ? c[3] : "");
+      String created = (c.size() > 4 ? c[4] : nowISO());
+
+      int idx = -1;
+      for (int i = 0; i < (int)uids.size(); i++) if (uids[i] == uid) { idx = i; break; }
+
+      if (idx == -1) {
+        uids.push_back(uid);
+        SRec r;
+        r.name = name;
+        r.acc = acc;
+        r.created = created;
+        r.uid = uid;
+        if (mat.length()) r.mats.push_back(mat);
+        recs.push_back(r);
+      } else {
+        if (mat.length()) recs[idx].mats.push_back(mat);
+      }
     }
   }
   f.close();
 
-  // If searchUid provided, only show matching records
   if (searchUid.length()) {
     bool foundAny = false;
     for (size_t i = 0; i < recs.size(); ++i) {
       if (recs[i].uid == searchUid) {
-        // render single record
         SRec &r = recs[i];
         html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
-        String mats="";
-        for (size_t j=0;j<r.mats.size();++j) { if (j) mats += "; "; mats += r.mats[j]; }
-        if (mats.length()==0) mats = "-";
+        String mats = "";
+        for (size_t j = 0; j < r.mats.size(); ++j) { if (j) mats += "; "; mats += r.mats[j]; }
+        if (mats.length() == 0) mats = "-";
         html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
         html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncode(r.uid) + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
         html += "<form method='POST' action='/student_delete' style='display:inline' onsubmit='return confirm(\"Eliminar totalmente este alumno?\");'>";
@@ -175,14 +350,14 @@ void handleStudentsAll() {
       html += "<p>No se encontró alumno con UID " + htmlEscape(searchUid) + ".</p>";
     }
   } else {
-    if (uids.size()==0) html += "<p>No hay alumnos registrados.</p>";
+    if (uids.size() == 0) html += "<p>No hay alumnos registrados.</p>";
     else {
       html += "<table id='students_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
-      for (int i=0;i<(int)uids.size();i++) {
+      for (int i = 0; i < (int)uids.size(); i++) {
         SRec &r = recs[i];
-        String mats="";
-        for (int j=0;j<(int)r.mats.size();j++) { if (j) mats += "; "; mats += r.mats[j]; }
-        if (mats.length()==0) mats = "-";
+        String mats = "";
+        for (int j = 0; j < (int)r.mats.size(); j++) { if (j) mats += "; "; mats += r.mats[j]; }
+        if (mats.length() == 0) mats = "-";
         html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + mats + "</td><td>" + r.created + "</td><td>";
 
         html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncode(r.uid) + "&return_to=" + urlEncode(String("/students_all")) + "'>✏️ Editar</a> ";
@@ -208,35 +383,56 @@ void handleStudentsAll() {
   server.send(200,"text/html",html);
 }
 
+// ============================================================
 // POST /student_remove_course
+// ============================================================
 void handleStudentRemoveCourse() {
   if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
+
   String uid = server.arg("uid");
   String materia = server.arg("materia");
   String profesor = server.hasArg("profesor") ? server.arg("profesor") : String();
   String return_to = server.hasArg("return_to") ? server.arg("return_to") : String();
   bool hideCapture = server.hasArg("hide_capture") && server.arg("hide_capture") == "1";
 
-  // Abrir archivo y leer todas las líneas (sin header)
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) { server.send(500,"text/plain","no file"); return; }
 
   String header = f.readStringUntil('\n');
   std::vector<String> origLines;
+  String removedName = "";
+  String removedAcc = "";
+  String removedCreated = "";
+
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    String l = f.readStringUntil('\n'); l.trim();
+    if (!l.length()) continue;
+
+    auto c = parseQuotedCSVLine(l);
+    if (c.size() >= 4 && c[0] == uid) {
+      String localMat = c[3];
+      String match1 = materia;
+      String match2 = "";
+      if (profesor.length()) match2 = materia + String("||") + profesor;
+
+      bool isTarget = (localMat == match1) || (match2.length() && localMat == match2);
+      if (isTarget && removedName.length() == 0) {
+        removedName = (c.size() > 1 ? c[1] : "");
+        removedAcc = (c.size() > 2 ? c[2] : "");
+        removedCreated = (c.size() > 4 ? c[4] : nowISO());
+      }
+    }
+
     origLines.push_back(l);
   }
   f.close();
 
-  // Contar cuántas líneas existen para este uid (puede haber varias - diferentes materias)
   int uidCount = 0;
   for (auto &l : origLines) {
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 1 && c[0] == uid) uidCount++;
   }
 
-  // Construir cadenas de comparación: materia simple y posible clave materia||profesor
   String match1 = materia;
   String match2 = "";
   if (profesor.length()) match2 = materia + String("||") + profesor;
@@ -247,25 +443,24 @@ void handleStudentRemoveCourse() {
   for (auto &l : origLines) {
     auto c = parseQuotedCSVLine(l);
     if (c.size() >= 4 && c[0] == uid && (c[3] == match1 || (match2.length() && c[3] == match2))) {
-      // Es la línea que vincula este uid con la materia que queremos quitar.
       if (uidCount > 1) {
-        // hay otras líneas para el mismo uid -> ELIMINAR esta línea (quitar solo esa materia)
-        // (no push)
         continue;
       } else {
-        // es la única línea del uid -> conservamos el alumno pero dejamos el campo materia vacío
         String created = (c.size() > 4 ? c[4] : "");
         outLines.push_back("\"" + c[0] + "\"," + "\"" + c[1] + "\"," + "\"" + c[2] + "\"," + "\"\"" + "," + "\"" + created + "\"");
         continue;
       }
     }
-    // linea no afectada -> preservar
     outLines.push_back(l);
   }
 
   writeAllLines(USERS_FILE, outLines);
 
-  // construir redirect a la misma lista de estudiantes (preservando return_to, profesor y hide_capture)
+  // Sincronización Oracle
+  if (!oracleRemoveStudentCourse(uid, materia, removedName, removedAcc, removedCreated)) {
+    Serial.println("WARN: no se pudo sincronizar la eliminación de materia del alumno en Oracle");
+  }
+
   String redirect = String("/students?materia=") + urlEncode(materia);
   if (profesor.length()) redirect += "&profesor=" + urlEncode(profesor);
   if (return_to.length()) redirect += "&return_to=" + urlEncode(return_to);
@@ -275,21 +470,36 @@ void handleStudentRemoveCourse() {
   server.send(303,"text/plain","Removed");
 }
 
+// ============================================================
 // POST /student_delete
+// ============================================================
 void handleStudentDelete() {
   if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
+
   String uid = server.arg("uid");
   File f = SPIFFS.open(USERS_FILE, FILE_READ);
   if (!f) { server.send(500,"text/plain","no file"); return; }
-  std::vector<String> lines; String header = f.readStringUntil('\n'); lines.push_back(header);
+
+  std::vector<String> lines;
+  String header = f.readStringUntil('\n');
+  lines.push_back(header);
+
   while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
+    String l = f.readStringUntil('\n'); l.trim();
+    if (!l.length()) continue;
     auto c = parseQuotedCSVLine(l);
-    if (c.size()>=1 && c[0]==uid) continue;
+    if (c.size() >= 1 && c[0] == uid) continue;
     lines.push_back(l);
   }
   f.close();
+
   writeAllLines(USERS_FILE, lines);
+
+  // Sincronización Oracle
+  if (!oracleDeleteStudentRowsByUID(uid)) {
+    Serial.println("WARN: no se pudo borrar completamente el alumno en Oracle");
+  }
+
   server.sendHeader("Location","/students_all");
   server.send(303,"text/plain","Deleted");
 }

@@ -7,7 +7,9 @@
 #include <algorithm>
 #include "display.h"
 #include "web_common.h"
+#include "db_sync.h"
 #include <ctype.h>
+#include <ArduinoJson.h>
 
 static String makeRandomToken() {
   uint32_t r = (uint32_t)esp_random();
@@ -53,6 +55,82 @@ static void cleanupExpiredSessions() {
   }
 }
 
+static bool oracleTeacherExistsByUID(const String &uid) {
+  String body = listProfesores();
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(body.length() * 2 + 2048);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear lista de profesores Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) return false;
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    String rowUid = obj["rfid_uid"] | "";
+    if (rowUid == uid) return true;
+  }
+
+  return false;
+}
+
+static bool oracleAlumnoExistsByUID(const String &uid) {
+  String body = listAlumnos();
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(body.length() * 2 + 4096);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear lista de alumnos Oracle: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  if (!doc.is<JsonArray>()) return false;
+
+  for (JsonObject obj : doc.as<JsonArray>()) {
+    String rowUid = obj["rfid_uid"] | "";
+    if (rowUid == uid) return true;
+  }
+
+  return false;
+}
+
+static bool syncSelfRegisterToOracle(const String &uid, const String &name, const String &account, const String &createdAt) {
+  bool ok = true;
+
+  if (!oracleAlumnoExistsByUID(uid)) {
+    if (!sendAlumnoRegistro(uid, name, account, String(), createdAt)) {
+      Serial.println("WARN: no se pudo sincronizar el alumno con Oracle");
+      ok = false;
+    } else {
+      Serial.println("DB_SYNC: alumno sincronizado correctamente con Oracle");
+    }
+  } else {
+    Serial.println("DB_SYNC: alumno ya existe en Oracle, se omite CREATE");
+  }
+
+  if (!sendAsistencia(nowISO(), uid, name, account, String(), "captura_self")) {
+    Serial.println("WARN: no se pudo sincronizar la asistencia del auto-registro con Oracle");
+    ok = false;
+  } else {
+    Serial.println("DB_SYNC: asistencia del auto-registro sincronizada correctamente");
+  }
+
+  String note = "Auto-registro completado. Usuario: " + name + " (" + account + ") - Materia pendiente de asignar";
+  if (!sendNotificacionRegistro(nowISO(), uid, name, account, note)) {
+    Serial.println("WARN: no se pudo sincronizar la notificación del auto-registro con Oracle");
+    ok = false;
+  } else {
+    Serial.println("DB_SYNC: notificación del auto-registro sincronizada correctamente");
+  }
+
+  return ok;
+}
+
 // ---------------- POST /self_register_start ----------------
 void handleSelfRegisterStartPOST() {
   cleanupExpiredSessions();
@@ -71,7 +149,11 @@ void handleSelfRegisterStartPOST() {
   // NEW: Reject if uid belongs to a teacher (defensive)
   String trow = findTeacherByUID(uid);
   if (trow.length() > 0) {
-    // don't create session or URL for teachers
+    server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid is teacher\"}");
+    return;
+  }
+
+  if (oracleTeacherExistsByUID(uid)) {
     server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid is teacher\"}");
     return;
   }
@@ -81,12 +163,17 @@ void handleSelfRegisterStartPOST() {
     return;
   }
 
+  if (oracleAlumnoExistsByUID(uid)) {
+    server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid already registered\"}");
+    return;
+  }
+
   SelfRegSession s;
   s.token = makeRandomToken();
   s.uid = uid;
   s.createdAtMs = millis();
   s.ttlMs = 5UL * 60UL * 1000UL;
-  s.materia = ""; // Ya no manejamos materia aquí
+  s.materia = "";
 
   selfRegSessions.push_back(s);
 
@@ -130,7 +217,6 @@ void handleSelfRegisterGET() {
   html += "<label>Cuenta (7 dígitos)</label>";
   html += "<input name='account' inputmode='numeric' pattern='[0-9]{7}' maxlength='7' minlength='7' placeholder='Ej: 2123456'>";
 
-  // Campo materia oculto - será asignado después por el administrador
   html += "<input type='hidden' name='materia' value=''>";
 
   html += "<div style='display:flex;gap:8px;'><button class='btn' type='submit' style='background:#10b981;color:#04201b'>Registrar</button></div>";
@@ -184,13 +270,24 @@ void handleSelfRegisterPost() {
     if (!isdigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
   }
 
+  if (oracleTeacherExistsByUID(uid)) {
+    removeSelfRegSessionByIndex(idx);
+    server.send(409, "text/plain", "UID is teacher");
+    return;
+  }
+
   if (findAnyUserByUID(uid).length() > 0) {
     removeSelfRegSessionByIndex(idx);
     server.send(409, "text/plain", "UID already registered");
     return;
   }
 
-  // Guardar usuario SIN materia - será asignada después por el administrador
+  if (oracleAlumnoExistsByUID(uid)) {
+    removeSelfRegSessionByIndex(idx);
+    server.send(409, "text/plain", "UID already registered");
+    return;
+  }
+
   String created = nowISO();
   String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"" + created + "\"";
   if (!appendLineToFile(USERS_FILE, line)) {
@@ -198,7 +295,6 @@ void handleSelfRegisterPost() {
     return;
   }
 
-  // Guardar attendance SIN materia por ahora
   String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"captura_self\"";
   if (!appendLineToFile(ATT_FILE, rec)) {
     server.send(500, "text/plain", "Error guardando attendance");
@@ -207,6 +303,10 @@ void handleSelfRegisterPost() {
 
   String note = "Auto-registro completado. Usuario: " + name + " (" + account + ") - Materia pendiente de asignar";
   addNotification(uid, name, account, note);
+
+  if (!syncSelfRegisterToOracle(uid, name, account, created)) {
+    Serial.println("WARN: sincronización Oracle del auto-registro no completa");
+  }
 
   removeSelfRegSessionByIndex(idx);
 
@@ -218,7 +318,6 @@ void handleSelfRegisterPost() {
     showWaitingMessage();
   }
 
-  // Página de confirmación MEJORADA con diseño atractivo
   String html;
   html.reserve(800);
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
