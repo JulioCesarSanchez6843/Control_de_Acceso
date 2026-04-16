@@ -11,6 +11,7 @@ void showAccessDenied(const String &reason, const String &uid);
 void showQRCodeOnDisplay(const String &url, int pixelBoxSize);
 
 // Self-register
+// ⚠️ El parámetro realmente NO se usa, pero lo dejamos consistente
 void showSelfRegisterBanner(const String &uid);
 
 // Captura

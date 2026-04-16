@@ -69,6 +69,7 @@ static bool requestHttp(
   WiFiClient client;
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setReuse(false);
 
   Serial.print("DB_SYNC ");
   Serial.print(method);

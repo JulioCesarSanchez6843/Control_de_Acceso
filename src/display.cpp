@@ -48,12 +48,12 @@ static bool g_tempMessageActive = false;
 // ---------------------------------------------------------
 static void drawCheckIcon(int cx, int cy, int r) {
   tft.fillCircle(cx, cy, r, ST77XX_GREEN);
-  int x1 = cx - r/2;
+  int x1 = cx - r / 2;
   int y1 = cy;
-  int x2 = cx - r/8;
-  int y2 = cy + r/3;
-  int x3 = cx + r/2;
-  int y3 = cy - r/4;
+  int x2 = cx - r / 8;
+  int y2 = cy + r / 3;
+  int x3 = cx + r / 2;
+  int y3 = cy - r / 4;
   for (int off = -1; off <= 1; ++off) {
     tft.drawLine(x1, y1 + off, x2, y2 + off, ST77XX_WHITE);
     tft.drawLine(x2, y2 + off, x3, y3 + off, ST77XX_WHITE);
@@ -69,56 +69,42 @@ static void drawCrossIcon(int cx, int cy, int r) {
   }
 }
 
-// Reloj de arena dibujado con dos triángulos unidos (estilo icono enviado)
+// Reloj de arena dibujado con dos triángulos unidos
 static void drawWaitIcon(int cx, int cy, int r) {
-  // r controla el "radio" aproximado; ajustamos puntos relativos
   uint16_t frameColor = ST77XX_WHITE;
-  uint16_t sandColor  = ST77XX_YELLOW;
-  uint16_t glassColor = ST77XX_BLUE; // opcional para relleno del vidrio si se quisiera
+  uint16_t sandColor = ST77XX_YELLOW;
 
-  // coordenadas principales
-  int topY = cy - r;       // línea superior del triángulo superior
-  int bottomY = cy + r;    // línea inferior del triángulo inferior
+  int topY = cy - r;
+  int bottomY = cy + r;
   int left = cx - r;
   int right = cx + r;
   int centerX = cx;
   int centerY = cy;
 
-  // limpiar área del icono (evita solapamientos)
   tft.fillRect(left - 2, topY - 2, (right - left) + 5, (bottomY - topY) + 5, ST77XX_BLACK);
 
-  // Dibujar líneas de marco superior e inferior (como en la imagen)
-  tft.drawLine(left, topY - 2, right, topY - 2, frameColor);     // barra superior
-  tft.drawLine(left, bottomY + 2, right, bottomY + 2, frameColor); // barra inferior
+  tft.drawLine(left, topY - 2, right, topY - 2, frameColor);
+  tft.drawLine(left, bottomY + 2, right, bottomY + 2, frameColor);
 
-  // Dibujar triángulos (contorno)
-  tft.drawTriangle(left, topY, right, topY, centerX, centerY, frameColor);     // triángulo superior (vértices: left-top, right-top, center)
-  tft.drawTriangle(left, bottomY, right, bottomY, centerX, centerY, frameColor); // triángulo inferior (vértices: left-bottom, right-bottom, center)
+  tft.drawTriangle(left, topY, right, topY, centerX, centerY, frameColor);
+  tft.drawTriangle(left, bottomY, right, bottomY, centerX, centerY, frameColor);
 
-  // Relleno "vidrio" opcional muy sutil (comentar si no se quiere)
-  // tft.fillTriangle(left+1, topY+1, right-1, topY+1, centerX, centerY-1, glassColor);
-  // tft.fillTriangle(left+1, bottomY-1, right-1, bottomY-1, centerX, centerY+1, glassColor);
+  int sandTopLeftX = cx - r / 3;
+  int sandTopRightX = cx + r / 3;
+  int sandTopY = topY + (r / 3);
+  tft.fillTriangle(sandTopLeftX, sandTopY, sandTopRightX, sandTopY, centerX, centerY - (r / 6), sandColor);
 
-  // Rellenar "arena" superior (pequeña porción en triángulo superior)
-  int sandTopLeftX = cx - r/3;
-  int sandTopRightX = cx + r/3;
-  int sandTopY = topY + (r/3);
-  tft.fillTriangle(sandTopLeftX, sandTopY, sandTopRightX, sandTopY, centerX, centerY - (r/6), sandColor);
-
-  // Rellenar "arena" acumulada abajo
-  int sandBotLeftX = cx - r/2;
-  int sandBotRightX = cx + r/2;
+  int sandBotLeftX = cx - r / 2;
+  int sandBotRightX = cx + r / 2;
   int sandBotY = bottomY;
-  tft.fillTriangle(sandBotLeftX, sandBotY, sandBotRightX, sandBotY, centerX, centerY + (r/2), sandColor);
+  tft.fillTriangle(sandBotLeftX, sandBotY, sandBotRightX, sandBotY, centerX, centerY + (r / 2), sandColor);
 
-  // Línea central fina que sugiere paso de arena
-  tft.drawFastVLine(centerX, centerY - (r/8), (r/4) + 1, frameColor);
+  tft.drawFastVLine(centerX, centerY - (r / 8), (r / 4) + 1, frameColor);
 }
 
-// --------------------------------------------------------------------------------
-// resto del archivo (sin cambios de lógica salvo posicionamiento del icono/UID)
-// --------------------------------------------------------------------------------
-
+// ---------------------------------------------------------
+// Texto centrado (única función con color por defecto)
+// ---------------------------------------------------------
 static void drawCenteredText(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
   tft.setTextSize(size);
   tft.setTextColor(color);
@@ -143,14 +129,14 @@ static void drawHeader() {
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 }
 
-// Dibuja mensaje rojo temporal
 static void drawTemporaryRedMessageNow(const String &msg) {
   int wpad = 8;
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  int16_t x1,y1; uint16_t w,h;
+  int16_t x1, y1;
+  uint16_t w, h;
   tft.getTextBounds(msg, 0, 0, &x1, &y1, &w, &h);
-  int boxW = w + 2*wpad;
+  int boxW = w + 2 * wpad;
   int boxH = h + 8;
   int left = (tft.width() - boxW) / 2;
   int top = (tft.height() - boxH) / 2;
@@ -162,6 +148,59 @@ static void drawTemporaryRedMessageNow(const String &msg) {
   tft.drawRect(left, top, boxW, boxH, ST77XX_WHITE);
   tft.setCursor(left + wpad, top + 4);
   tft.print(msg);
+}
+
+// ---------------------------------------------------------
+// Pantallas de arranque
+// ---------------------------------------------------------
+void showBootScreen(const String &title, const String &subtitle, uint16_t color) {
+  g_lastWasQR = false;
+  g_lastQRUrl = String();
+  g_lastQRSize = 0;
+  g_lastWasCapture = false;
+  g_lastCaptureBatch = false;
+  g_lastCaptureUID = String();
+
+  g_showTempMessage = false;
+  g_tempMessageActive = false;
+
+  tft.fillScreen(ST77XX_BLACK);
+  drawHeader();
+  clearContentArea();
+
+  int boxX = 10;
+  int boxY = 34;
+  int boxW = tft.width() - 20;
+  int boxH = 52;
+
+  tft.drawRoundRect(boxX, boxY, boxW, boxH, 6, color);
+  // CORRECCIÓN: Añadido el radio '6' a fillRoundRect
+  tft.fillRoundRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2, 6, ST77XX_BLACK);
+
+  drawCenteredText(title, boxY + 12, 1, color);
+  if (subtitle.length()) {
+    drawCenteredText(subtitle, boxY + 30, 1, ST77XX_WHITE);
+  }
+
+  int cx = tft.width() / 2;
+  int cy = boxY + boxH + 22;
+  drawWaitIcon(cx, cy, 10);
+}
+
+void showBootWifiConnecting() {
+  showBootScreen("Intentando conectar a WiFi", "pantalla: mensaje de espera (60 s)", ST77XX_CYAN);
+}
+
+void showBootServerConnecting() {
+  showBootScreen("Intentando conectar a Oracle", "conectando al servidor (60 s)", ST77XX_YELLOW);
+}
+
+void showBootConnected() {
+  showBootScreen("Conectado", "modo normal / DB como prioridad", ST77XX_GREEN);
+}
+
+void showBootErrorScreen() {
+  showBootScreen("Error de conexión", "pantalla roja, sin función", ST77XX_RED);
 }
 
 // ---------------------------------------------------------
@@ -292,18 +331,18 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
   tft.fillScreen(ST77XX_BLACK);
 
   int left = (tft.width() - totalPx) / 2;
-  int top  = (tft.height() - totalPx) / 2;
+  int top = (tft.height() - totalPx) / 2;
 
   const int pad = 3;
   int bgLeft = left - pad;
-  int bgTop  = top  - pad;
-  int bgW    = totalPx + 2 * pad;
-  int bgH    = totalPx + 2 * pad;
+  int bgTop = top - pad;
+  int bgW = totalPx + 2 * pad;
+  int bgH = totalPx + 2 * pad;
 
   if (bgLeft < 0) bgLeft = 0;
   if (bgTop < 0) bgTop = 0;
-  if (bgLeft + bgW > tft.width())  bgW = tft.width() - bgLeft;
-  if (bgTop  + bgH > tft.height()) bgH = tft.height() - bgTop;
+  if (bgLeft + bgW > tft.width()) bgW = tft.width() - bgLeft;
+  if (bgTop + bgH > tft.height()) bgH = tft.height() - bgTop;
 
   tft.fillRect(bgLeft, bgTop, bgW, bgH, ST77XX_WHITE);
 
@@ -311,7 +350,7 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
     for (int x = 0; x < s; ++x) {
       if (qr.getModule(x, y)) {
         int px = left + x * modulePx;
-        int py = top  + y * modulePx;
+        int py = top + y * modulePx;
         tft.fillRect(px, py, modulePx, modulePx, ST77XX_BLACK);
       }
     }
@@ -330,7 +369,7 @@ void showQRCodeOnDisplay(const String &url, int pixelBoxSize) {
 void showSelfRegisterBanner(const String &) {
   int h = 18;
   tft.fillRect(0, 0, tft.width(), h, ST77XX_BLACK);
-  tft.drawFastHLine(0, h-1, tft.width(), ST77XX_WHITE);
+  tft.drawFastHLine(0, h - 1, tft.width(), ST77XX_WHITE);
   drawCenteredText("Registrando nuevo usuario... No pasar tarjeta", 2, 1);
 }
 
@@ -363,12 +402,10 @@ void showCaptureInProgress(bool batch, const String &uid) {
   g_lastCaptureUID = uid;
   g_lastWasQR = false;
 
-  // Para BATCH mantenemos encabezado; para INDIVIDUAL quitamos encabezado para ganar espacio
   if (batch) {
     drawHeader();
     clearContentArea();
   } else {
-    // limpiar explícitamente el encabezado y el contenido para evitar solape
     tft.fillRect(0, 0, tft.width(), 22, ST77XX_BLACK);
     clearContentArea();
   }
@@ -380,34 +417,28 @@ void showCaptureInProgress(bool batch, const String &uid) {
     tft.setCursor(8, 70);
     tft.print("Cada UID se pondra en cola.");
   } else {
-    // Texto resumido para modo individual, ubicado más arriba para evitar solape
     drawCenteredText("MODO CAPTURA INDIVIDUAL", 28, 1);
     drawCenteredText("Espere al administrador", 44, 1);
 
-    // Ícono (reloj de arena de dos triángulos) en la posición entre texto y UID
     int cx = tft.width() / 2;
-    int icon_cy = (88 + (tft.height() - 52)) / 2; // posición entre texto y área de UID
-    int r = 12; // tamaño del icono
+    int icon_cy = (88 + (tft.height() - 52)) / 2;
+    int r = 12;
     drawWaitIcon(cx, icon_cy, r);
   }
 
-  // Mostrar UID en proceso (si se dio) en la parte más baja de la pantalla
   if (uid.length()) {
     String uu = uid;
     if (uu.length() > 16) uu = uu.substring(0, 16);
     if (uu.length() > 8) {
-      String r1 = uu.substring(0, uu.length()/2);
-      String r2 = uu.substring(uu.length()/2);
-      // dos líneas colocadas muy abajo
+      String r1 = uu.substring(0, uu.length() / 2);
+      String r2 = uu.substring(uu.length() / 2);
       drawCenteredText(r1, tft.height() - 18, 1);
       drawCenteredText(r2, tft.height() - 8, 1);
     } else {
-      // una línea colocada muy abajo
       drawCenteredText("UID: " + uu, tft.height() - 8, 1);
     }
   }
 
-  // Mantener animación "Esperando tarjeta..." solo para BATCH
   if (batch) {
     unsigned long m = millis();
     int dots = (m / 400) % 4;
@@ -447,7 +478,10 @@ void updateDisplay() {
       g_tempMessageActive = false;
 
       if (g_lastWasQR && g_lastQRUrl.length() > 0) {
-        showQRCodeOnDisplay(g_lastQRUrl, g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height())*52/100));
+        showQRCodeOnDisplay(
+          g_lastQRUrl,
+          g_lastQRSize > 0 ? g_lastQRSize : (std::min(tft.width(), tft.height()) * 52 / 100)
+        );
       } else if (g_lastWasCapture) {
         showCaptureInProgress(g_lastCaptureBatch, g_lastCaptureUID);
         showCaptureMode(g_lastCaptureBatch, false);
