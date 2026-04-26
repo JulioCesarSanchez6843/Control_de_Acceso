@@ -40,6 +40,11 @@ extern const char* CAPTURE_QUEUE_FILE;
 extern const char* TEACHERS_FILE; // archivo para maestros
 // -----------------------------------------------
 
+// ---------------- MODO DE OPERACIÓN ----------------
+// true = sin servidor, usar SPIFFS como fallback
+extern bool modoLocal;
+// ---------------------------------------------------
+
 // Timing constants
 extern const unsigned long DISPLAY_MS;
 extern const unsigned long POLL_INTERVAL;

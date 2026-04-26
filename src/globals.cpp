@@ -39,6 +39,9 @@ const char* COURSES_FILE       = "/courses.csv";
 const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv";
 const char* TEACHERS_FILE      = "/teachers.csv";
 
+// --- Modo de operación ---
+bool modoLocal = false;
+
 // --- Timings ---
 const unsigned long DISPLAY_MS = 4000UL;
 const unsigned long POLL_INTERVAL = 150UL;

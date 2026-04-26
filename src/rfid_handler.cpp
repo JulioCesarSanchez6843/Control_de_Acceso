@@ -168,20 +168,26 @@ static bool saveAttendanceSmart(
     const String &materia,
     const String &mode
 ) {
-  // Primero intenta servidor; si falla, cae a SPIFFS
-  bool sent = false;
-  if (WiFi.status() == WL_CONNECTED) {
-    sent = sendAsistencia(timestamp, uid, name, account, materia, mode);
+  // En modo online intenta Oracle primero.
+  // Solo si falla, guarda en SPIFFS.
+  if (!modoLocal) {
+    bool sent = sendAsistencia(timestamp, uid, name, account, materia, mode);
+
+    if (sent) {
+      Serial.printf("OK: asistencia enviada a Oracle UID=%s\n", uid.c_str());
+      return true;
+    }
+
+    Serial.println("Oracle fallo en runtime, guardando en SPIFFS");
+    String rec = csvLine6(timestamp, uid, name, account, materia, mode);
+    appendLineToFile(ATT_FILE, rec);
+    return false;
   }
 
-  if (sent) {
-    Serial.printf("OK: asistencia enviada a Oracle UID=%s\n", uid.c_str());
-    return true;
-  }
-
+  // Modo local: solo SPIFFS
   String rec = csvLine6(timestamp, uid, name, account, materia, mode);
   appendLineToFile(ATT_FILE, rec);
-  Serial.printf("PENDIENTE: asistencia guardada en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("LOCAL: asistencia guardada en SPIFFS UID=%s\n", uid.c_str());
   return false;
 }
 
@@ -190,19 +196,23 @@ static bool saveDeniedSmart(
     const String &uid,
     const String &note
 ) {
-  bool sent = false;
-  if (WiFi.status() == WL_CONNECTED) {
-    sent = sendAccesoDenegadoRegistro(timestamp, uid, note);
-  }
+  if (!modoLocal) {
+    bool sent = sendAccesoDenegadoRegistro(timestamp, uid, note);
 
-  if (sent) {
-    Serial.printf("OK: acceso denegado enviado a Oracle UID=%s\n", uid.c_str());
-    return true;
+    if (sent) {
+      Serial.printf("OK: acceso denegado enviado a Oracle UID=%s\n", uid.c_str());
+      return true;
+    }
+
+    Serial.println("Oracle fallo (denegado), guardando en SPIFFS");
+    String rec = csvLine3(timestamp, uid, note);
+    appendLineToFile(DENIED_FILE, rec);
+    return false;
   }
 
   String rec = csvLine3(timestamp, uid, note);
   appendLineToFile(DENIED_FILE, rec);
-  Serial.printf("PENDIENTE: acceso denegado guardado en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("LOCAL: acceso denegado guardado en SPIFFS UID=%s\n", uid.c_str());
   return false;
 }
 
@@ -213,19 +223,23 @@ static bool saveNotificationSmart(
     const String &account,
     const String &note
 ) {
-  bool sent = false;
-  if (WiFi.status() == WL_CONNECTED) {
-    sent = sendNotificacionRegistro(timestamp, uid, name, account, note);
-  }
+  if (!modoLocal) {
+    bool sent = sendNotificacionRegistro(timestamp, uid, name, account, note);
 
-  if (sent) {
-    Serial.printf("OK: notificacion enviada a Oracle UID=%s\n", uid.c_str());
-    return true;
+    if (sent) {
+      Serial.printf("OK: notificacion enviada a Oracle UID=%s\n", uid.c_str());
+      return true;
+    }
+
+    Serial.println("Oracle fallo (notif), guardando en SPIFFS");
+    String rec = csvLine5(timestamp, uid, name, account, note);
+    appendLineToFile(NOTIF_FILE, rec);
+    return false;
   }
 
   String rec = csvLine5(timestamp, uid, name, account, note);
   appendLineToFile(NOTIF_FILE, rec);
-  Serial.printf("PENDIENTE: notificacion guardada en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("LOCAL: notificacion guardada en SPIFFS UID=%s\n", uid.c_str());
   return false;
 }
 
@@ -388,7 +402,11 @@ static bool syncPendingNotificationsFile() {
   return writeAllLines(NOTIF_FILE, outLines);
 }
 
-static void syncPendingSpiffsIfPossible() {
+// ------------------------------------------------------------
+// Sincronización pública — llamada desde main.cpp en boot
+// y periódicamente desde rfidLoopHandler()
+// ------------------------------------------------------------
+void syncPendingToServer() {
   static unsigned long lastAttemptMs = 0;
   const unsigned long SYNC_CHECK_INTERVAL_MS = 15000UL;
 
@@ -411,7 +429,8 @@ static void syncPendingSpiffsIfPossible() {
   syncPendingNotificationsFile();
 
   if (!csvHasDataRows(ATT_FILE) && !csvHasDataRows(DENIED_FILE) && !csvHasDataRows(NOTIF_FILE)) {
-    Serial.println("SYNC: pendientes sincronizados correctamente.");
+    Serial.println("SYNC: todos los pendientes sincronizados correctamente.");
+    modoLocal = false; // reconectado y limpio: volver a modo online
   } else {
     Serial.println("SYNC: aun quedan pendientes en SPIFFS.");
   }
@@ -422,7 +441,7 @@ static void syncPendingSpiffsIfPossible() {
 // ------------------------------------------------------------
 void rfidLoopHandler() {
   // Intento de sincronizar pendientes en segundo plano
-  syncPendingSpiffsIfPossible();
+  syncPendingToServer(); // <-- CORREGIDO: antes llamaba syncPendingSpiffsIfPossible()
 
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial()) return;
@@ -587,12 +606,12 @@ void rfidLoopHandler() {
   }
 
   // Materia en horario actual
-  String scheduleOwner = currentScheduledMateria(); // puede ser "Materia" o "Materia||Profesor"
+  String scheduleOwner = currentScheduledMateria();
   String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner);
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 
-  // Detectar si owner incluye profesor (clave compuesta)
+  // Detectar si owner incluye profesor (clave compuesta "Materia||Profesor")
   String scheduleOwnerProf = "";
   bool scheduleOwnerHasProf = false;
   int soidx = scheduleOwner.indexOf("||");
@@ -651,7 +670,6 @@ void rfidLoopHandler() {
     } else {
       // NO HAY CLASE EN ESTE MOMENTO
       if (!userMats.empty()) {
-        // Permitir entrada pero registrar notificación informativa
         String chosenMat = userMats[0];
         String ts = nowISO();
         saveAttendanceSmart(ts, uid, name, account, chosenMat, "entrada");
@@ -662,7 +680,6 @@ void rfidLoopHandler() {
         puerta.write(0);
         ledOff();
       } else {
-        // Usuario sin materias asignadas -> denegar y notificar
         String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size() > 1 ? userRows[0][1] : "") : "");
         saveNotificationSmart(nowISO(), uid, "", "", note);
         saveDeniedSmart(nowISO(), uid, "SIN_MATERIA");
@@ -685,18 +702,14 @@ void rfidLoopHandler() {
     String tname = (cols.size() > 1 ? cols[1] : "");
     String tacc = (cols.size() > 2 ? cols[2] : "");
 
-    // Obtener las materias registradas para este maestro
     std::vector<String> tmats = teacherMatsForUID(uid);
 
     if (scheduleBaseMat.length() > 0) {
       String wantMat = normMat(scheduleBaseMat);
       String wantMatLower = lowerCopy(wantMat);
 
-      // Si el horario especifica profesor (clave compuesta "Materia||Profesor"),
-      // sólo permitir el acceso al profesor exacto que aparece en la clave.
       if (scheduleOwnerHasProf) {
         if (lowerCopy(tname) == lowerCopy(scheduleOwnerProf)) {
-          // Profesor es exactamente el asignado en el horario
           String ts = nowISO();
           saveAttendanceSmart(ts, uid, tname, tacc, wantMat, "entrada-teacher");
           puerta.write(90);
@@ -715,7 +728,6 @@ void rfidLoopHandler() {
           return;
         }
       } else {
-        // Horario no especifica profesor (sólo materia)
         bool hasCurrent = false;
         for (auto &m : tmats) {
           if (lowerCopy(m) == wantMatLower) { hasCurrent = true; break; }

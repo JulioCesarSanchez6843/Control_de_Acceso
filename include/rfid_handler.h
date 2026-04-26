@@ -6,4 +6,11 @@
 String uidBytesToString(byte *uid, byte len);
 String nowISO(); // obtiene timestamp local "YYYY-MM-DD HH:MM:SS"
 String currentScheduledMateria();
-void rfidLoopHandler(); // función que debe llamarse periódicamente para procesar tarjetas.
+
+// Procesamiento periódico de tarjetas RFID
+void rfidLoopHandler();
+
+// Sincroniza los registros pendientes en SPIFFS hacia Oracle/FastAPI
+void syncPendingToServer();
+
+void syncPendingToServerForce(); // solo para boot, sin throttle

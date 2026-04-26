@@ -33,6 +33,10 @@ static String notifKeyLocal(const String &ts, const String &uid, const String &n
   return out;
 }
 
+static String currentModeLabel() {
+  return modoLocal ? "MODO: LOCAL" : "MODO: ONLINE";
+}
+
 // --------------------------------------------------
 // Contador de notificaciones no leídas desde Oracle
 // --------------------------------------------------
@@ -162,8 +166,41 @@ String htmlHeader(const char* title) {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 12px;
     box-shadow: 0 6px 18px rgba(2,6,23,0.15);
+    flex-wrap: wrap;
   }
+
+  .topbar-left {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .topbar-center {
+    flex: 1 1 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-width: 180px;
+  }
+
+  .mode-badge {
+    background: #dc2626;
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-weight: 900;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    box-shadow: 0 4px 12px rgba(220,38,38,0.25);
+    user-select: none;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
   .title { font-weight:900; font-size:20px; cursor:pointer; }
   .nav { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 
@@ -181,7 +218,7 @@ String htmlHeader(const char* title) {
   th, td { padding:8px; border:1px solid #e6eef6; text-align:center; }
   th { background:#0ea5b7; color:#fff; }
   .small { font-size:14px; color:#475569; }
-  .notif { position:relative; display:inline-block; padding:6px 8px; border-radius:8px; background:#fff; color:#05345b; font-weight:700; margin-right:12px; }
+  .notif { position:relative; display:inline-block; padding:6px 8px; border-radius:8px; background:#fff; color:#05345b; font-weight:700; margin-right:12px; text-decoration:none; }
   .notif .count { position:absolute; top:-6px; right:-6px; background:#ef4444; color:#fff; border-radius:50%; padding:2px 6px; font-size:12px; }
 
   /* FIXED footer */
@@ -529,6 +566,16 @@ String htmlHeader(const char* title) {
     .mode-explanation {
       grid-template-columns: 1fr;
     }
+
+    .topbar {
+      justify-content: center;
+    }
+
+    .topbar-center {
+      order: 3;
+      width: 100%;
+      margin-top: 4px;
+    }
   }
 
   @media (max-width: 480px) {
@@ -560,12 +607,19 @@ String htmlHeader(const char* title) {
   h += "</head><body>";
   h += "<div class='container'>";
 
-  // Barra superior con título y notificaciones
-  h += "<div class='topbar'><div style='display:flex;gap:12px;align-items:center'>";
+  // Barra superior con título, estado y notificaciones
+  h += "<div class='topbar'>";
+
+  h += "<div class='topbar-left'>";
   h += "<div class='title' onclick='location.href=\"/\"'>Control de Acceso - Laboratorio</div>";
   h += "<a class='notif' href='/notifications' title='Notificaciones No Leídas'>🔔";
   if (nCount > 0) h += "<span class='count'>" + String(nCount) + "</span>";
-  h += "</a></div>";
+  h += "</a>";
+  h += "</div>";
+
+  h += "<div class='topbar-center'>";
+  h += "<div class='mode-badge'>" + currentModeLabel() + "</div>";
+  h += "</div>";
 
   // Menú de navegación principal (se eliminó botón Capturar del nav)
   h += "<div class='nav'>";

@@ -27,8 +27,8 @@
 // ============================================================
 static const unsigned long WIFI_TIMEOUT_MS   = 60UL * 1000UL;
 static const unsigned long SERVER_TIMEOUT_MS  = 60UL * 1000UL;
-static const unsigned long NTP_TIMEOUT_MS     = 30UL * 1000UL;
-static const unsigned long NTP_POLL_MS        = 500UL;
+static const unsigned long NTP_TIMEOUT_MS    = 30UL * 1000UL;
+static const unsigned long NTP_POLL_MS       = 500UL;
 
 // ============================================================
 // Utilidades de pantalla de arranque
@@ -292,8 +292,14 @@ void setup() {
 
   bool serverOnline = waitForServerWithTimeout(SERVER_TIMEOUT_MS);
   if (serverOnline) {
+    modoLocal = false;
     showBootScreen("Servidor conectado", "Modo ONLINE", ST77XX_GREEN);
+    delay(1500);
+
+    // Si quedaron registros pendientes del modo local anterior, sincronizar
+    syncPendingToServer();
   } else {
+    modoLocal = true;
     showBootScreen("Servidor no responde", "Iniciando modo LOCAL", ST77XX_YELLOW);
     delay(2500);
   }
