@@ -1,5 +1,6 @@
 #pragma once
 // Funciones relacionadas con lectura RFID y lógica de autorización.
+// Flujo 100% online: toda persistencia y consulta se hace vía backend/base de datos.
 
 #include <Arduino.h>
 
@@ -9,8 +10,3 @@ String currentScheduledMateria();
 
 // Procesamiento periódico de tarjetas RFID
 void rfidLoopHandler();
-
-// Sincroniza los registros pendientes en SPIFFS hacia Oracle/FastAPI
-void syncPendingToServer();
-
-void syncPendingToServerForce(); // solo para boot, sin throttle

@@ -1,316 +1,616 @@
-// src/files_utils.cpp
 #include "files_utils.h"
-#include "config.h"
-#include "globals.h"
-#include <SPIFFS.h>
-#include <algorithm>
+#include "db_sync.h"
 
-// --- Parseo CSV (líneas con campos entre comillas) ---
-std::vector<String> parseQuotedCSVLine(const String &line) {
-  std::vector<String> cols;
-  int i = 0;
-  int n = line.length();
-  while (i < n) {
-    // buscar comilla inicial
-    while (i < n && line[i] != '"') i++;
-    if (i >= n) break;
-    int start = i + 1;
-    int end = line.indexOf('"', start);
-    if (end == -1) {
-      // sin comilla de cierre -> tomar el resto
-      cols.push_back(line.substring(start));
-      break;
-    }
-    cols.push_back(line.substring(start, end));
-    i = end + 1;
-    if (i < n && line[i] == ',') i++;
-  }
-  return cols;
-}
+#include <ArduinoJson.h>
 
-// Añade una línea al final de un archivo. True si tiene éxito.
-bool appendLineToFile(const char *path, const String &line) {
-  File f = SPIFFS.open(path, FILE_APPEND);
-  if (!f) {
-    Serial.printf("ERR append %s\n", path);
+// ------------------------------------------------------------
+// Helpers JSON
+// ------------------------------------------------------------
+static bool parseResponseDoc(const String &payload, DynamicJsonDocument &doc) {
+  if (payload.length() == 0) return false;
+
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear JSON: ");
+    Serial.println(err.c_str());
     return false;
   }
-  f.println(line);
-  f.close();
   return true;
 }
 
-// Sobrescribe un archivo con todas las líneas dadas. True si tiene éxito.
-bool writeAllLines(const char *path, const std::vector<String> &lines) {
-  File f = SPIFFS.open(path, FILE_WRITE);
-  if (!f) {
-    Serial.printf("ERR writeAll %s\n", path);
-    return false;
+static JsonArrayConst extractArray(const JsonDocument &doc) {
+  if (doc.is<JsonArrayConst>()) {
+    return doc.as<JsonArrayConst>();
   }
-  for (const String &L : lines) f.println(L);
-  f.close();
-  return true;
+
+  if (doc.is<JsonObjectConst>()) {
+    JsonObjectConst obj = doc.as<JsonObjectConst>();
+
+    JsonArrayConst arr = obj["data"].as<JsonArrayConst>();
+    if (!arr.isNull()) return arr;
+
+    arr = obj["items"].as<JsonArrayConst>();
+    if (!arr.isNull()) return arr;
+
+    arr = obj["rows"].as<JsonArrayConst>();
+    if (!arr.isNull()) return arr;
+
+    arr = obj["result"].as<JsonArrayConst>();
+    if (!arr.isNull()) return arr;
+  }
+
+  return JsonArrayConst();
 }
 
-// Crea archivos CSV básicos si no existen (cabeceras).
-void initFiles() {
-  if (!SPIFFS.exists(USERS_FILE)) {
-    File f = SPIFFS.open(USERS_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"uid\",\"name\",\"account\",\"materia\",\"created_at\"");
-      f.close();
+static String pickString(JsonObjectConst obj, std::initializer_list<const char*> keys) {
+  for (const char* k : keys) {
+    if (obj.containsKey(k)) {
+      JsonVariantConst v = obj[k];
+      if (!v.isNull()) {
+        const char* s = v.as<const char*>();
+        if (s) return String(s);
+      }
     }
   }
-  if (!SPIFFS.exists(ATT_FILE)) {
-    File f = SPIFFS.open(ATT_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"materia\",\"mode\"");
-      f.close();
-    }
-  }
-  if (!SPIFFS.exists(DENIED_FILE)) {
-    File f = SPIFFS.open(DENIED_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"timestamp\",\"uid\",\"note\"");
-      f.close();
-    }
-  }
-  if (!SPIFFS.exists(SCHEDULES_FILE)) {
-    File f = SPIFFS.open(SCHEDULES_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"materia\",\"day\",\"start\",\"end\"");
-      f.close();
-    }
-  }
-  if (!SPIFFS.exists(NOTIF_FILE)) {
-    File f = SPIFFS.open(NOTIF_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"");
-      f.close();
-    }
-  }
-  if (!SPIFFS.exists(COURSES_FILE)) {
-    File f = SPIFFS.open(COURSES_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"materia\",\"profesor\",\"created_at\"");
-      f.close();
-    }
-  }
-  if (!SPIFFS.exists(TEACHERS_FILE)) {
-    File f = SPIFFS.open(TEACHERS_FILE, FILE_WRITE);
-    if (f) {
-      f.println("\"uid\",\"name\",\"account\",\"materia\",\"created_at\"");
-      f.close();
-    }
-  }
+  return String();
 }
 
-// --- Horarios (schedules) ---
+static String serializeObj(JsonObjectConst obj) {
+  String out;
+  serializeJson(obj, out);
+  return out;
+}
+
+static bool containsIgnoreCase(const String &src, const String &needle) {
+  String a = src;
+  String b = needle;
+  a.toLowerCase();
+  b.toLowerCase();
+  return a.indexOf(b) >= 0;
+}
+
+static String makeMateriaKey(const String &materia, const String &profesor) {
+  if (profesor.length()) return materia + "||" + profesor;
+  return materia;
+}
+
+// ------------------------------------------------------------
+// Schedules
+// ------------------------------------------------------------
 std::vector<ScheduleEntry> loadSchedules() {
   std::vector<ScheduleEntry> res;
-  File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-  if (!f) return res;
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (l.length() == 0) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      ScheduleEntry e; e.materia = c[0]; e.day = c[1]; e.start = c[2]; e.end = c[3];
+
+  String body = listHorarios(String());
+  if (!body.length()) return res;
+
+  DynamicJsonDocument doc(20000);
+  if (!parseResponseDoc(body, doc)) return res;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushEntry = [&](JsonObjectConst obj) {
+    ScheduleEntry e;
+    String materia = pickString(obj, {"materia"});
+    String profesor = pickString(obj, {"profesor"});
+    String day     = pickString(obj, {"day", "dia"});
+    String start   = pickString(obj, {"start", "hora_inicio", "inicio"});
+    String end     = pickString(obj, {"end", "hora_fin", "fin"});
+
+    (void)profesor;
+    e.materia = materia;
+    e.day = day;
+    e.start = start;
+    e.end = end;
+
+    if (e.materia.length() && e.day.length() && e.start.length() && e.end.length()) {
       res.push_back(e);
     }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      pushEntry(obj);
+    }
+    return res;
   }
-  f.close();
+
+  if (doc.is<JsonObjectConst>()) {
+    pushEntry(doc.as<JsonObjectConst>());
+  }
+
   return res;
 }
 
 bool slotOccupied(const String &day, const String &start, const String &materiaFilter) {
   auto v = loadSchedules();
+
   for (auto &e : v) {
-    if (materiaFilter.length() && e.materia != materiaFilter) continue;
-    if (e.day == day && e.start == start) return true;
+    if (materiaFilter.length() && e.materia != materiaFilter) {
+      continue;
+    }
+
+    if (e.day == day && e.start == start) {
+      return true;
+    }
   }
+
   return false;
 }
 
 void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end) {
-  String line = "\"" + materia + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + end + "\"";
-  appendLineToFile(SCHEDULES_FILE, line);
+  bool ok = sendHorarioRegistro(materia, String(), day, start, end);
+  if (!ok) {
+    Serial.printf("WARN: no se pudo crear horario online (%s %s %s-%s)\n",
+                  materia.c_str(), day.c_str(), start.c_str(), end.c_str());
+  }
 }
 
-// --- Cursos (courses) ---
+// ------------------------------------------------------------
+// Courses
+// ------------------------------------------------------------
 std::vector<Course> loadCourses() {
   std::vector<Course> res;
-  File f = SPIFFS.open(COURSES_FILE, FILE_READ);
-  if (!f) return res;
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (l.length() == 0) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 3) {
-      Course co; co.materia = c[0]; co.profesor = c[1]; co.created_at = c[2]; res.push_back(co);
-    } else if (c.size() == 2) {
-      Course co; co.materia = c[0]; co.profesor = c[1]; co.created_at = ""; res.push_back(co);
+
+  String body = listMaterias();
+  if (!body.length()) return res;
+
+  DynamicJsonDocument doc(20000);
+  if (!parseResponseDoc(body, doc)) return res;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushCourse = [&](JsonObjectConst obj) {
+    Course c;
+    c.materia = pickString(obj, {"materia", "name"});
+    c.profesor = pickString(obj, {"profesor", "teacher"});
+    c.created_at = pickString(obj, {"created_at", "createdAt"});
+
+    if (c.materia.length()) {
+      res.push_back(c);
     }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      pushCourse(obj);
+    }
+    return res;
   }
-  f.close();
+
+  if (doc.is<JsonObjectConst>()) {
+    pushCourse(doc.as<JsonObjectConst>());
+  }
+
   return res;
 }
 
 bool courseExists(const String &materia) {
-  if (materia.length() == 0) return false;
+  if (!materia.length()) return false;
+
   auto v = loadCourses();
-  for (auto &c : v) if (c.materia == materia) return true;
+  for (auto &c : v) {
+    if (c.materia == materia) return true;
+  }
   return false;
 }
 
 void addCourse(const String &materia, const String &prof) {
-  String rec = "\"" + materia + "\"," + "\"" + prof + "\"," + "\"" + nowISO() + "\"";
-  appendLineToFile(COURSES_FILE, rec);
+  bool ok = sendMateriaRegistro(materia, prof);
+  if (!ok) {
+    Serial.printf("WARN: no se pudo crear materia online (%s -> %s)\n",
+                  materia.c_str(), prof.c_str());
+  }
 }
 
 void writeCourses(const std::vector<Course> &list) {
-  std::vector<String> lines;
-  lines.push_back("\"materia\",\"profesor\",\"created_at\"");
-  for (auto &c : list)
-    lines.push_back("\"" + c.materia + "\"," + "\"" + c.profesor + "\"," + "\"" + c.created_at + "\"");
-  writeAllLines(COURSES_FILE, lines);
+  for (const auto &c : list) {
+    if (!sendMateriaRegistro(c.materia, c.profesor, c.created_at)) {
+      Serial.printf("WARN: no se pudo sincronizar materia '%s'\n", c.materia.c_str());
+    }
+  }
 }
 
-// --- Usuarios ---
-String findAnyUserByUID(const String &uid) {
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return "";
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto cols = parseQuotedCSVLine(line);
-    if (cols.size() > 0 && cols[0] == uid) { f.close(); return line; }
+// ------------------------------------------------------------
+// Users
+// ------------------------------------------------------------
+static std::vector<JsonObject> loadAllStudentObjects(JsonDocument &storage) {
+  std::vector<JsonObject> out;
+
+  String body = listAlumnos(String());
+  if (!body.length()) return out;
+
+  if (!parseResponseDoc(body, static_cast<DynamicJsonDocument&>(storage))) return out;
+
+  JsonArrayConst arr = extractArray(storage);
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      JsonObject copy = storage.createNestedObject();
+      for (JsonPairConst p : obj) {
+        copy[p.key().c_str()] = p.value();
+      }
+      out.push_back(copy);
+    }
+    return out;
   }
-  f.close();
-  return "";
+
+  if (storage.is<JsonObjectConst>()) {
+    JsonObjectConst obj = storage.as<JsonObjectConst>();
+    JsonObject copy = storage.createNestedObject();
+    for (JsonPairConst p : obj) {
+      copy[p.key().c_str()] = p.value();
+    }
+    out.push_back(copy);
+  }
+
+  return out;
+}
+
+static std::vector<String> loadAllStudentRows() {
+  std::vector<String> out;
+
+  String body = listAlumnos(String());
+  if (!body.length()) return out;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return out;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushRow = [&](JsonObjectConst obj) {
+    String uid      = pickString(obj, {"rfid_uid", "uid"});
+    String name     = pickString(obj, {"name", "nombre"});
+    String account  = pickString(obj, {"account", "cuenta"});
+    String materia  = pickString(obj, {"materia"});
+    String created  = pickString(obj, {"created_at", "createdAt"});
+    (void)created;
+
+    if (uid.length()) {
+      out.push_back(serializeObj(obj));
+    }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) pushRow(obj);
+    return out;
+  }
+
+  if (doc.is<JsonObjectConst>()) pushRow(doc.as<JsonObjectConst>());
+
+  return out;
+}
+
+String findAnyUserByUID(const String &uid) {
+  String body = listAlumnos(String());
+  if (!body.length()) return String();
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return String();
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto matchObj = [&](JsonObjectConst obj) -> String {
+    String a = pickString(obj, {"rfid_uid", "uid"});
+    if (a == uid) return serializeObj(obj);
+    return String();
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      String found = matchObj(obj);
+      if (found.length()) return found;
+    }
+    return String();
+  }
+
+  if (doc.is<JsonObjectConst>()) {
+    return matchObj(doc.as<JsonObjectConst>());
+  }
+
+  return String();
 }
 
 bool existsUserUidMateria(const String &uid, const String &materia) {
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 4 && c[0] == uid && c[3] == materia) { f.close(); return true; }
+  String body = listAlumnos(String());
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return false;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto checkObj = [&](JsonObjectConst obj) -> bool {
+    String a = pickString(obj, {"rfid_uid", "uid"});
+    String m = pickString(obj, {"materia"});
+    return (a == uid && m == materia);
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      if (checkObj(obj)) return true;
+    }
+    return false;
   }
-  f.close();
+
+  if (doc.is<JsonObjectConst>()) return checkObj(doc.as<JsonObjectConst>());
+
   return false;
 }
 
 bool existsUserAccountMateria(const String &account, const String &materia) {
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 4 && c[2] == account && c[3] == materia) { f.close(); return true; }
+  String body = listAlumnos(String());
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return false;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto checkObj = [&](JsonObjectConst obj) -> bool {
+    String a = pickString(obj, {"account", "cuenta"});
+    String m = pickString(obj, {"materia"});
+    return (a == account && m == materia);
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      if (checkObj(obj)) return true;
+    }
+    return false;
   }
-  f.close();
+
+  if (doc.is<JsonObjectConst>()) return checkObj(doc.as<JsonObjectConst>());
+
   return false;
 }
 
 std::vector<String> usersForMateria(const String &materia) {
   std::vector<String> res;
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return res;
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 4 && c[3] == materia) res.push_back(line);
+
+  String body = listAlumnos(String());
+  if (!body.length()) return res;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return res;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushIfMatch = [&](JsonObjectConst obj) {
+    String m = pickString(obj, {"materia"});
+    if (m == materia) {
+      res.push_back(serializeObj(obj));
+    }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) pushIfMatch(obj);
+  } else if (doc.is<JsonObjectConst>()) {
+    pushIfMatch(doc.as<JsonObjectConst>());
   }
-  f.close();
+
   return res;
 }
 
-// --- Notificaciones ---
+// ------------------------------------------------------------
+// Notifications / logs
+// ------------------------------------------------------------
 void addNotification(const String &uid, const String &name, const String &account, const String &note) {
-  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + note + "\"";
-  appendLineToFile(NOTIF_FILE, rec);
+  if (!sendNotificacionRegistro(nowISO(), uid, name, account, note)) {
+    Serial.printf("WARN: no se pudo enviar notificación online UID=%s\n", uid.c_str());
+  }
 }
 
 std::vector<String> readNotifications(int limit) {
   std::vector<String> res;
-  File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
-  if (!f) return res;
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length()) res.push_back(line);
+
+  String body = listNotificaciones(false);
+  if (!body.length()) return res;
+
+  DynamicJsonDocument doc(30000);
+  if (!parseResponseDoc(body, doc)) return res;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushRow = [&](JsonObjectConst obj) {
+    res.push_back(serializeObj(obj));
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) pushRow(obj);
+  } else if (doc.is<JsonObjectConst>()) {
+    pushRow(doc.as<JsonObjectConst>());
   }
-  f.close();
-  int start = max(0, (int)res.size() - limit);
-  std::vector<String> out;
-  for (int i = start; i < (int)res.size(); i++) out.push_back(res[i]);
-  return out;
+
+  if (limit > 0 && (int)res.size() > limit) {
+    std::vector<String> trimmed;
+    int start = (int)res.size() - limit;
+    for (int i = start; i < (int)res.size(); ++i) {
+      trimmed.push_back(res[i]);
+    }
+    return trimmed;
+  }
+
+  return res;
 }
 
 int notifCount() {
-  File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
-  if (!f) return 0;
-  int count = 0;
-  String header = f.readStringUntil('\n');
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim(); if (l.length()) count++;
-  }
-  f.close();
-  return count;
+  String body = listNotificaciones(false);
+  if (!body.length()) return 0;
+
+  DynamicJsonDocument doc(30000);
+  if (!parseResponseDoc(body, doc)) return 0;
+
+  JsonArrayConst arr = extractArray(doc);
+  if (!arr.isNull()) return (int)arr.size();
+
+  if (doc.is<JsonObjectConst>()) return 1;
+  return 0;
 }
 
 void clearNotifications() {
-  writeAllLines(NOTIF_FILE, std::vector<String>{String("\"timestamp\",\"uid\",\"name\",\"account\",\"note\"")});
+  String body = listNotificaciones(false);
+  if (!body.length()) return;
+
+  DynamicJsonDocument doc(30000);
+  if (!parseResponseDoc(body, doc)) return;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto deleteFromObj = [&](JsonObjectConst obj) {
+    int id = -1;
+    if (obj.containsKey("id")) id = obj["id"].as<int>();
+    else if (obj.containsKey("notif_id")) id = obj["notif_id"].as<int>();
+
+    if (id >= 0) {
+      deleteNotificacionById(id);
+    }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) deleteFromObj(obj);
+  } else if (doc.is<JsonObjectConst>()) {
+    deleteFromObj(doc.as<JsonObjectConst>());
+  }
 }
 
-// --- TEACHERS helpers añadidos ---
-String findTeacherByUID(const String &uid) {
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return "";
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto cols = parseQuotedCSVLine(line);
-    if (cols.size() > 0 && cols[0] == uid) { f.close(); return line; }
+// ------------------------------------------------------------
+// Teachers helpers
+// ------------------------------------------------------------
+static std::vector<String> loadAllTeacherRows() {
+  std::vector<String> out;
+
+  String body = listProfesores();
+  if (!body.length()) return out;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return out;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto pushRow = [&](JsonObjectConst obj) {
+    String uid      = pickString(obj, {"rfid_uid", "uid"});
+    String name     = pickString(obj, {"name", "nombre"});
+    String account  = pickString(obj, {"account", "cuenta"});
+    String materia  = pickString(obj, {"materia"});
+    String created  = pickString(obj, {"created_at", "createdAt"});
+    (void)created;
+
+    if (uid.length()) {
+      out.push_back(serializeObj(obj));
+    }
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) pushRow(obj);
+    return out;
   }
-  f.close();
-  return "";
+
+  if (doc.is<JsonObjectConst>()) pushRow(doc.as<JsonObjectConst>());
+
+  return out;
+}
+
+String findTeacherByUID(const String &uid) {
+  String body = listProfesores();
+  if (!body.length()) return String();
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return String();
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto matchObj = [&](JsonObjectConst obj) -> String {
+    String a = pickString(obj, {"rfid_uid", "uid"});
+    if (a == uid) return serializeObj(obj);
+    return String();
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      String found = matchObj(obj);
+      if (found.length()) return found;
+    }
+    return String();
+  }
+
+  if (doc.is<JsonObjectConst>()) {
+    return matchObj(doc.as<JsonObjectConst>());
+  }
+
+  return String();
 }
 
 bool teacherNameExists(const String &name) {
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String line = f.readStringUntil('\n'); line.trim();
-    if (line.length() == 0) continue;
-    auto cols = parseQuotedCSVLine(line);
-    if (cols.size() > 1 && cols[1] == name) { f.close(); return true; }
+  String body = listProfesores();
+  if (!body.length()) return false;
+
+  DynamicJsonDocument doc(25000);
+  if (!parseResponseDoc(body, doc)) return false;
+
+  JsonArrayConst arr = extractArray(doc);
+
+  auto checkObj = [&](JsonObjectConst obj) -> bool {
+    String n = pickString(obj, {"name", "nombre"});
+    return n == name;
+  };
+
+  if (!arr.isNull()) {
+    for (JsonObjectConst obj : arr) {
+      if (checkObj(obj)) return true;
+    }
+    return false;
   }
-  f.close();
+
+  if (doc.is<JsonObjectConst>()) return checkObj(doc.as<JsonObjectConst>());
+
   return false;
 }
 
-std::vector<String> teachersForMateriaFile(const String &materia) {
+std::vector<String> teachersForMateria(const String &materia) {
   std::vector<String> out;
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return out;
-  String header = f.readStringUntil('\n'); (void)header;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      String mat = c[3];
-      if (mat == materia) out.push_back(l);
+
+  auto teacherRows = loadAllTeacherRows();
+  auto courses = loadCourses();
+
+  for (auto &row : teacherRows) {
+    DynamicJsonDocument doc(4096);
+    if (deserializeJson(doc, row)) continue;
+
+    if (!doc.is<JsonObjectConst>()) continue;
+    JsonObjectConst obj = doc.as<JsonObjectConst>();
+
+    String uid     = pickString(obj, {"rfid_uid", "uid"});
+    String name    = pickString(obj, {"name", "nombre"});
+    String acc     = pickString(obj, {"account", "cuenta"});
+    String created  = pickString(obj, {"created_at", "createdAt"});
+    String rowMateria = pickString(obj, {"materia"});
+
+    bool match = false;
+
+    if (rowMateria.length() && rowMateria == materia) {
+      match = true;
+    } else {
+      for (auto &co : courses) {
+        if (co.materia == materia && co.profesor == name) {
+          match = true;
+          break;
+        }
+      }
+    }
+
+    if (match) {
+      DynamicJsonDocument outDoc(512);
+      outDoc["rfid_uid"] = uid;
+      outDoc["name"] = name;
+      outDoc["account"] = acc;
+      outDoc["materia"] = materia;
+      outDoc["created_at"] = created.length() ? created : nowISO();
+
+      String serialized;
+      serializeJson(outDoc, serialized);
+      out.push_back(serialized);
     }
   }
-  f.close();
+
   return out;
 }

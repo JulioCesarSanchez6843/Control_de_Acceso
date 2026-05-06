@@ -1,8 +1,6 @@
 // src/rfid_handler.cpp
 #include <Arduino.h>
 #include <SPI.h>
-#include <FS.h>
-#include <SPIFFS.h>
 #include <MFRC522.h>
 #include <WiFi.h>
 #include <vector>
@@ -15,7 +13,6 @@
 #endif
 
 #include "globals.h"
-#include "files_utils.h"
 #include "display.h"
 #include "time_utils.h"
 #include "web/self_register.h"
@@ -25,7 +22,6 @@
 // Helpers de formato
 // ------------------------------------------------------------
 
-// Extrae la parte "materia" si owner viene como "Materia||Profesor"
 static String baseMateriaFromOwner(const String &owner) {
   int idx = owner.indexOf("||");
   if (idx < 0) {
@@ -38,14 +34,12 @@ static String baseMateriaFromOwner(const String &owner) {
   return b;
 }
 
-// Normaliza una materia (quita espacios al inicio/fin)
 static String normMat(const String &s) {
   String t = s;
   t.trim();
   return t;
 }
 
-// Devuelve string con materias separadas por "; "
 static String joinMats(const std::vector<String> &mats) {
   String out;
   for (size_t i = 0; i < mats.size(); ++i) {
@@ -55,14 +49,12 @@ static String joinMats(const std::vector<String> &mats) {
   return out;
 }
 
-// Helper: devuelve lowercase copy
 static String lowerCopy(const String &s) {
   String t = s;
   t.toLowerCase();
   return t;
 }
 
-// Evita comillas dobles dentro de CSV local
 static String csvSafe(String s) {
   s.replace("\"", "'");
   return s;
@@ -80,85 +72,102 @@ static String csvLine6(const String &a, const String &b, const String &c, const 
   return "\"" + csvSafe(a) + "\",\"" + csvSafe(b) + "\",\"" + csvSafe(c) + "\",\"" + csvSafe(d) + "\",\"" + csvSafe(e) + "\",\"" + csvSafe(f) + "\"";
 }
 
-// Helper local: intenta añadir UID a CAPTURE_QUEUE_FILE evitando duplicados simples
-static void appendUidToQueueAvoidDup(const String &uid) {
-  if (uid.length() == 0) return;
-  const char *QFILE = CAPTURE_QUEUE_FILE;
-  bool exists = false;
-
-  if (SPIFFS.exists(QFILE)) {
-    File f = SPIFFS.open(QFILE, FILE_READ);
-    if (f) {
-      while (f.available()) {
-        String l = f.readStringUntil('\n');
-        l.trim();
-        if (l.length() > 0 && l == uid) {
-          exists = true;
-          break;
-        }
-      }
-      f.close();
-    }
+static bool uidAlreadyCaptured(const String &uid) {
+  for (const auto &x : capturedUIDs) {
+    if (x == uid) return true;
   }
-
-  if (!exists) appendLineToFile(QFILE, uid);
+  return false;
 }
 
-// Helper: obtiene lista única de materias asociadas a un teacher (por uid y por courses)
+static void addUidToBatchQueue(const String &uid) {
+  if (uid.length() == 0) return;
+  if (!uidAlreadyCaptured(uid)) {
+    capturedUIDs.push_back(uid);
+  }
+}
+
 static std::vector<String> teacherMatsForUID(const String &uid) {
   std::vector<String> out;
 
-  // Desde TEACHERS_FILE por uid (si el registro contiene columna de materia)
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (f) {
-    String header = f.readStringUntil('\n');
-    (void)header;
-    while (f.available()) {
-      String l = f.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String rowUid = c[0];
-        String mat = c[3];
-        if (rowUid == uid && mat.length()) {
+  // 1) Intentar obtener el registro del maestro directamente desde backend
+  String teacherRow = findTeacherByUID(uid);
+  if (teacherRow.length()) {
+    auto cols = parseQuotedCSVLine(teacherRow);
+
+    // En muchos esquemas el campo de materia está en la columna 3 o 4
+    if (cols.size() > 3) {
+      String mat = cols[3];
+      mat.trim();
+      if (mat.length()) {
+        bool found = false;
+        for (auto &x : out) {
+          if (x == mat) {
+            found = true;
+            break;
+          }
+        }
+        if (!found) out.push_back(mat);
+      }
+    }
+
+    // También se intenta resolver por nombre del profesor contra la lista de materias
+    String teacherName;
+    if (cols.size() > 1) {
+      teacherName = cols[1];
+      teacherName.trim();
+    }
+
+    if (teacherName.length()) {
+      auto courses = loadCourses();
+      for (auto &c : courses) {
+        if (c.profesor == teacherName) {
           bool found = false;
-          for (auto &x : out) if (x == mat) { found = true; break; }
-          if (!found) out.push_back(mat);
+          for (auto &x : out) {
+            if (x == c.materia) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) out.push_back(c.materia);
         }
       }
     }
-    f.close();
   }
 
-  // Además, buscar en courses por nombre de profesor (si existe)
-  String teacherName;
-  String trec = findTeacherByUID(uid);
-  if (trec.length()) {
-    auto cc = parseQuotedCSVLine(trec);
-    if (cc.size() > 1) teacherName = cc[1];
-  }
-
-  if (teacherName.length()) {
-    auto courses = loadCourses();
-    for (auto &c : courses) {
-      if (c.profesor == teacherName) {
-        bool found = false;
-        for (auto &x : out) if (x == c.materia) { found = true; break; }
-        if (!found) out.push_back(c.materia);
-      }
-    }
-  }
   return out;
+}
+
+static bool parseUserRecordForUID(const String &uid, String &name, String &account, String &materia, String &rawRow) {
+  rawRow = findAnyUserByUID(uid);
+  if (!rawRow.length()) return false;
+
+  auto cols = parseQuotedCSVLine(rawRow);
+  if (cols.size() > 1) name = cols[1];
+  if (cols.size() > 2) account = cols[2];
+  if (cols.size() > 3) materia = cols[3];
+
+  name.trim();
+  account.trim();
+  materia.trim();
+  return true;
+}
+
+static bool parseTeacherRecordForUID(const String &uid, String &name, String &account, String &rawRow) {
+  rawRow = findTeacherByUID(uid);
+  if (!rawRow.length()) return false;
+
+  auto cols = parseQuotedCSVLine(rawRow);
+  if (cols.size() > 1) name = cols[1];
+  if (cols.size() > 2) account = cols[2];
+
+  name.trim();
+  account.trim();
+  return true;
 }
 
 // ------------------------------------------------------------
 // Helpers de persistencia / envío
 // ------------------------------------------------------------
-
-static bool serverSeemsReady() {
-  return (WiFi.status() == WL_CONNECTED) && pingServer();
-}
 
 static bool saveAttendanceSmart(
     const String &timestamp,
@@ -168,26 +177,13 @@ static bool saveAttendanceSmart(
     const String &materia,
     const String &mode
 ) {
-  // En modo online intenta Oracle primero.
-  // Solo si falla, guarda en SPIFFS.
-  if (!modoLocal) {
-    bool sent = sendAsistencia(timestamp, uid, name, account, materia, mode);
-
-    if (sent) {
-      Serial.printf("OK: asistencia enviada a Oracle UID=%s\n", uid.c_str());
-      return true;
-    }
-
-    Serial.println("Oracle fallo en runtime, guardando en SPIFFS");
-    String rec = csvLine6(timestamp, uid, name, account, materia, mode);
-    appendLineToFile(ATT_FILE, rec);
-    return false;
+  bool sent = sendAsistencia(timestamp, uid, name, account, materia, mode);
+  if (sent) {
+    Serial.printf("OK: asistencia enviada a backend UID=%s\n", uid.c_str());
+    return true;
   }
 
-  // Modo local: solo SPIFFS
-  String rec = csvLine6(timestamp, uid, name, account, materia, mode);
-  appendLineToFile(ATT_FILE, rec);
-  Serial.printf("LOCAL: asistencia guardada en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("ERROR: no se pudo enviar asistencia al backend UID=%s\n", uid.c_str());
   return false;
 }
 
@@ -196,23 +192,13 @@ static bool saveDeniedSmart(
     const String &uid,
     const String &note
 ) {
-  if (!modoLocal) {
-    bool sent = sendAccesoDenegadoRegistro(timestamp, uid, note);
-
-    if (sent) {
-      Serial.printf("OK: acceso denegado enviado a Oracle UID=%s\n", uid.c_str());
-      return true;
-    }
-
-    Serial.println("Oracle fallo (denegado), guardando en SPIFFS");
-    String rec = csvLine3(timestamp, uid, note);
-    appendLineToFile(DENIED_FILE, rec);
-    return false;
+  bool sent = sendAccesoDenegadoRegistro(timestamp, uid, note);
+  if (sent) {
+    Serial.printf("OK: acceso denegado enviado a backend UID=%s\n", uid.c_str());
+    return true;
   }
 
-  String rec = csvLine3(timestamp, uid, note);
-  appendLineToFile(DENIED_FILE, rec);
-  Serial.printf("LOCAL: acceso denegado guardado en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("ERROR: no se pudo enviar denegado al backend UID=%s\n", uid.c_str());
   return false;
 }
 
@@ -223,228 +209,26 @@ static bool saveNotificationSmart(
     const String &account,
     const String &note
 ) {
-  if (!modoLocal) {
-    bool sent = sendNotificacionRegistro(timestamp, uid, name, account, note);
-
-    if (sent) {
-      Serial.printf("OK: notificacion enviada a Oracle UID=%s\n", uid.c_str());
-      return true;
-    }
-
-    Serial.println("Oracle fallo (notif), guardando en SPIFFS");
-    String rec = csvLine5(timestamp, uid, name, account, note);
-    appendLineToFile(NOTIF_FILE, rec);
-    return false;
+  bool sent = sendNotificacionRegistro(timestamp, uid, name, account, note);
+  if (sent) {
+    Serial.printf("OK: notificacion enviada a backend UID=%s\n", uid.c_str());
+    return true;
   }
 
-  String rec = csvLine5(timestamp, uid, name, account, note);
-  appendLineToFile(NOTIF_FILE, rec);
-  Serial.printf("LOCAL: notificacion guardada en SPIFFS UID=%s\n", uid.c_str());
+  Serial.printf("ERROR: no se pudo enviar notificacion al backend UID=%s\n", uid.c_str());
   return false;
-}
-
-static bool csvHasDataRows(const char *path) {
-  if (!SPIFFS.exists(path)) return false;
-
-  File f = SPIFFS.open(path, FILE_READ);
-  if (!f) return false;
-
-  if (f.available()) {
-    String header = f.readStringUntil('\n');
-    (void)header;
-  }
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n');
-    l.trim();
-    if (l.length() > 0) {
-      f.close();
-      return true;
-    }
-  }
-
-  f.close();
-  return false;
-}
-
-static bool syncPendingAttendanceFile() {
-  if (!SPIFFS.exists(ATT_FILE)) return true;
-
-  File f = SPIFFS.open(ATT_FILE, FILE_READ);
-  if (!f) return false;
-
-  String header = f.readStringUntil('\n');
-  std::vector<String> remaining;
-  bool hadRows = false;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (!line.length()) continue;
-    hadRows = true;
-
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 6) {
-      if (!sendAsistencia(c[0], c[1], c[2], c[3], c[4], c[5])) {
-        remaining.push_back(line);
-      }
-    } else {
-      remaining.push_back(line);
-    }
-  }
-  f.close();
-
-  if (!hadRows) return true;
-
-  if (remaining.empty()) {
-    SPIFFS.remove(ATT_FILE);
-    File out = SPIFFS.open(ATT_FILE, FILE_WRITE);
-    if (out) {
-      out.println(header);
-      out.close();
-    }
-    return true;
-  }
-
-  std::vector<String> outLines;
-  outLines.push_back(header);
-  for (auto &ln : remaining) outLines.push_back(ln);
-  return writeAllLines(ATT_FILE, outLines);
-}
-
-static bool syncPendingDeniedFile() {
-  if (!SPIFFS.exists(DENIED_FILE)) return true;
-
-  File f = SPIFFS.open(DENIED_FILE, FILE_READ);
-  if (!f) return false;
-
-  String header = f.readStringUntil('\n');
-  std::vector<String> remaining;
-  bool hadRows = false;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (!line.length()) continue;
-    hadRows = true;
-
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 3) {
-      if (!sendAccesoDenegadoRegistro(c[0], c[1], c[2])) {
-        remaining.push_back(line);
-      }
-    } else {
-      remaining.push_back(line);
-    }
-  }
-  f.close();
-
-  if (!hadRows) return true;
-
-  if (remaining.empty()) {
-    SPIFFS.remove(DENIED_FILE);
-    File out = SPIFFS.open(DENIED_FILE, FILE_WRITE);
-    if (out) {
-      out.println(header);
-      out.close();
-    }
-    return true;
-  }
-
-  std::vector<String> outLines;
-  outLines.push_back(header);
-  for (auto &ln : remaining) outLines.push_back(ln);
-  return writeAllLines(DENIED_FILE, outLines);
-}
-
-static bool syncPendingNotificationsFile() {
-  if (!SPIFFS.exists(NOTIF_FILE)) return true;
-
-  File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
-  if (!f) return false;
-
-  String header = f.readStringUntil('\n');
-  std::vector<String> remaining;
-  bool hadRows = false;
-
-  while (f.available()) {
-    String line = f.readStringUntil('\n');
-    line.trim();
-    if (!line.length()) continue;
-    hadRows = true;
-
-    auto c = parseQuotedCSVLine(line);
-    if (c.size() >= 5) {
-      if (!sendNotificacionRegistro(c[0], c[1], c[2], c[3], c[4])) {
-        remaining.push_back(line);
-      }
-    } else {
-      remaining.push_back(line);
-    }
-  }
-  f.close();
-
-  if (!hadRows) return true;
-
-  if (remaining.empty()) {
-    SPIFFS.remove(NOTIF_FILE);
-    File out = SPIFFS.open(NOTIF_FILE, FILE_WRITE);
-    if (out) {
-      out.println(header);
-      out.close();
-    }
-    return true;
-  }
-
-  std::vector<String> outLines;
-  outLines.push_back(header);
-  for (auto &ln : remaining) outLines.push_back(ln);
-  return writeAllLines(NOTIF_FILE, outLines);
-}
-
-// ------------------------------------------------------------
-// Sincronización pública — llamada desde main.cpp en boot
-// y periódicamente desde rfidLoopHandler()
-// ------------------------------------------------------------
-void syncPendingToServer() {
-  static unsigned long lastAttemptMs = 0;
-  const unsigned long SYNC_CHECK_INTERVAL_MS = 15000UL;
-
-  if (millis() - lastAttemptMs < SYNC_CHECK_INTERVAL_MS) return;
-  lastAttemptMs = millis();
-
-  if (!csvHasDataRows(ATT_FILE) && !csvHasDataRows(DENIED_FILE) && !csvHasDataRows(NOTIF_FILE)) {
-    return;
-  }
-
-  if (!serverSeemsReady()) {
-    Serial.println("SYNC: servidor aun no disponible.");
-    return;
-  }
-
-  Serial.println("SYNC: servidor disponible, intentando subir pendientes de SPIFFS...");
-
-  syncPendingAttendanceFile();
-  syncPendingDeniedFile();
-  syncPendingNotificationsFile();
-
-  if (!csvHasDataRows(ATT_FILE) && !csvHasDataRows(DENIED_FILE) && !csvHasDataRows(NOTIF_FILE)) {
-    Serial.println("SYNC: todos los pendientes sincronizados correctamente.");
-    modoLocal = false; // reconectado y limpio: volver a modo online
-  } else {
-    Serial.println("SYNC: aun quedan pendientes en SPIFFS.");
-  }
 }
 
 // ------------------------------------------------------------
 // Handler principal para eventos RFID
 // ------------------------------------------------------------
 void rfidLoopHandler() {
-  // Intento de sincronizar pendientes en segundo plano
-  syncPendingToServer(); // <-- CORREGIDO: antes llamaba syncPendingSpiffsIfPossible()
-
-  if (!mfrc522.PICC_IsNewCardPresent()) return;
-  if (!mfrc522.PICC_ReadCardSerial()) return;
+  if (!mfrc522.PICC_IsNewCardPresent()) {
+    return;
+  }
+  if (!mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
 
   String uid = uidBytesToString(mfrc522.uid.uidByte, mfrc522.uid.size);
   unsigned long now = millis();
@@ -452,7 +236,7 @@ void rfidLoopHandler() {
   Serial.printf("---- RFID event (%s) ----\n", nowISO().c_str());
   Serial.printf("Tarjeta detectada UID=%s\n", uid.c_str());
 
-  // Bloqueo si hay self-register en batch
+  // Bloqueo si hay self-register en curso
   if (captureBatchMode && awaitingSelfRegister) {
     Serial.println("Lectura bloqueada: hay un auto-registro en curso. Ignorando tarjeta.");
     captureUID = uid;
@@ -466,25 +250,23 @@ void rfidLoopHandler() {
     return;
   }
 
+  // ------------------------------------------------------------
   // MODO CAPTURA
+  // ------------------------------------------------------------
   if (captureMode) {
     if (captureBatchMode) {
-      // Añadir a la cola (evita duplicados)
-      appendUidToQueueAvoidDup(uid);
+      addUidToBatchQueue(uid);
       captureDetectedAt = now;
-      Serial.printf("Batch capture: UID %s añadida a la cola.\n", uid.c_str());
+      Serial.printf("Batch capture: UID %s agregada a memoria temporal.\n", uid.c_str());
 
       if (!awaitingSelfRegister) {
-        // Si UID pertenece a un maestro: bloquear visiblemente y notificar
-        if (findTeacherByUID(uid).length() > 0) {
-          Serial.printf("UID %s detectada como MAESTRO durante batch -> bloquear y notificar al dashboard\n", uid.c_str());
+        String teacherRow = findTeacherByUID(uid);
+        if (teacherRow.length() > 0) {
+          Serial.printf("UID %s detectada como MAESTRO durante batch -> bloquear y notificar\n", uid.c_str());
 
-          String teacherRow = findTeacherByUID(uid);
-          String teacherName = "";
-          if (teacherRow.length()) {
-            auto tc = parseQuotedCSVLine(teacherRow);
-            if (tc.size() > 1) teacherName = tc[1];
-          }
+          String teacherName;
+          auto tc = parseQuotedCSVLine(teacherRow);
+          if (tc.size() > 1) teacherName = tc[1];
 
           String notificationMsg = "Tarjeta de maestro detectada en captura por lote y bloqueada: " +
                                    (teacherName.length() ? teacherName : String("Sin nombre")) +
@@ -507,7 +289,6 @@ void rfidLoopHandler() {
           return;
         }
 
-        // Si NO es maestro y no existe en usuarios, crear sesión de self-register
         if (findAnyUserByUID(uid).length() == 0) {
           SelfRegSession s;
           {
@@ -540,19 +321,23 @@ void rfidLoopHandler() {
       return;
     }
 
-    // capture individual
+    // Capture individual
     if (captureUID.length() == 0 || (now - captureDetectedAt) > CAPTURE_DEBOUNCE_MS) {
       captureUID = uid;
-      String found = findAnyUserByUID(uid);
-      captureName = "";
-      captureAccount = "";
-      if (found.length() > 0) {
-        auto c = parseQuotedCSVLine(found);
-        captureName = (c.size() > 1 ? c[1] : "");
-        captureAccount = (c.size() > 2 ? c[2] : "");
+
+      String name, account, materia, rawRow;
+      if (parseUserRecordForUID(uid, name, account, materia, rawRow)) {
+        captureName = name;
+        captureAccount = account;
+      } else {
+        captureName = "";
+        captureAccount = "";
       }
+
       captureDetectedAt = now;
-      Serial.printf("Capture mode: UID=%s -> name='%s' acc='%s'\n", captureUID.c_str(), captureName.c_str(), captureAccount.c_str());
+      Serial.printf("Capture mode: UID=%s -> name='%s' acc='%s'\n",
+                    captureUID.c_str(), captureName.c_str(), captureAccount.c_str());
+
       if (awaitingSelfRegister && currentSelfRegUID.length() > 0 && captureUID != currentSelfRegUID) {
         showTemporaryRedMessage("Espere su turno: registro en curso", 2000UL);
         captureUID = "";
@@ -563,37 +348,28 @@ void rfidLoopHandler() {
         showCaptureInProgress(false, captureUID);
       }
     }
+
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
     return;
   }
 
+  // ------------------------------------------------------------
   // PROCESO NORMAL DE ACCESO
+  // ------------------------------------------------------------
 
-  // Leer registros del UID en USERS_FILE
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  std::vector<std::vector<String>> userRows;
-  if (f) {
-    String header = f.readStringUntil('\n');
-    (void)header;
-    while (f.available()) {
-      String l = f.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() > 0 && c[0] == uid) userRows.push_back(c);
-    }
-    f.close();
-  } else {
-    Serial.println("WARN: no se pudo abrir USERS_FILE (SPIFFS).");
-  }
+  String userName;
+  String userAccount;
+  String userMateria;
+  String userRow;
+  bool isUser = parseUserRecordForUID(uid, userName, userAccount, userMateria, userRow);
 
-  // Revisar TEACHERS_FILE
-  String teacherRow = findTeacherByUID(uid);
-  bool isTeacher = (teacherRow.length() > 0);
+  String teacherName;
+  String teacherAccount;
+  String teacherRow;
+  bool isTeacher = parseTeacherRecordForUID(uid, teacherName, teacherAccount, teacherRow);
 
-  // Si no existe ni user ni teacher -> denegar
-  if (userRows.size() == 0 && !isTeacher) {
+  if (!isUser && !isTeacher) {
     Serial.printf("UID %s no registrado -> DENEGADO\n", uid.c_str());
     saveDeniedSmart(nowISO(), uid, "NO_REGISTRADO");
     String note = "Tarjeta no registrada (UID: " + uid + ")";
@@ -605,13 +381,11 @@ void rfidLoopHandler() {
     return;
   }
 
-  // Materia en horario actual
   String scheduleOwner = currentScheduledMateria();
   String scheduleBaseMat = baseMateriaFromOwner(scheduleOwner);
   scheduleBaseMat.trim();
   Serial.printf("Schedule base materia detectada: '%s'\n", scheduleBaseMat.c_str());
 
-  // Detectar si owner incluye profesor (clave compuesta "Materia||Profesor")
   String scheduleOwnerProf = "";
   bool scheduleOwnerHasProf = false;
   int soidx = scheduleOwner.indexOf("||");
@@ -621,45 +395,25 @@ void rfidLoopHandler() {
     scheduleOwnerHasProf = true;
   }
 
-  // Lógica para ALUMNOS
-  if (userRows.size() > 0) {
-    String name = (userRows.size() > 0 && userRows[0].size() > 1 ? userRows[0][1] : "");
-    String account = (userRows.size() > 0 && userRows[0].size() > 2 ? userRows[0][2] : "");
-
-    std::vector<String> userMats;
-    std::vector<String> userMatsLower;
-    for (auto &r : userRows) {
-      if (r.size() > 3) {
-        String mm = normMat(r[3]);
-        String mmLower = lowerCopy(mm);
-        bool found = false;
-        for (auto &ul : userMatsLower) if (ul == mmLower) { found = true; break; }
-        if (!found) {
-          userMats.push_back(mm);
-          userMatsLower.push_back(mmLower);
-        }
-      }
-    }
-
+  // ------------------------------------------------------------
+  // LÓGICA ALUMNOS
+  // ------------------------------------------------------------
+  if (isUser) {
     if (scheduleBaseMat.length() > 0) {
       String wantMat = normMat(scheduleBaseMat);
-      String wantMatLower = lowerCopy(wantMat);
-      bool hasCurrent = false;
-      for (auto &mmLower : userMatsLower) {
-        if (mmLower == wantMatLower) { hasCurrent = true; break; }
-      }
 
-      if (hasCurrent) {
+      // Validación directa contra backend
+      if (existsUserUidMateria(uid, wantMat)) {
         String ts = nowISO();
-        saveAttendanceSmart(ts, uid, name, account, wantMat, "entrada");
+        saveAttendanceSmart(ts, uid, userName, userAccount, wantMat, "entrada");
         puerta.write(90);
-        showAccessGranted(name, wantMat, uid);
+        showAccessGranted(userName, wantMat, uid);
         puerta.write(0);
         ledOff();
       } else {
-        String mmstr = joinMats(userMats);
-        String note = "Intento fuera de materia en curso. Usuario: " + name + " (" + account + "). Materias del usuario: " + mmstr + ". Materia en curso: " + wantMat;
-        saveNotificationSmart(nowISO(), uid, name, account, note);
+        String note = "Intento fuera de materia en curso. Usuario: " + userName +
+                      " (" + userAccount + "). Materia en curso: " + wantMat;
+        saveNotificationSmart(nowISO(), uid, userName, userAccount, note);
         saveDeniedSmart(nowISO(), uid, "FUERA_DE_MATERIA");
         showAccessDenied(String("No pertenece a: ") + wantMat, uid);
         ledOff();
@@ -668,20 +422,21 @@ void rfidLoopHandler() {
         return;
       }
     } else {
-      // NO HAY CLASE EN ESTE MOMENTO
-      if (!userMats.empty()) {
-        String chosenMat = userMats[0];
+      if (userMateria.length() > 0) {
+        String chosenMat = normMat(userMateria);
         String ts = nowISO();
-        saveAttendanceSmart(ts, uid, name, account, chosenMat, "entrada");
-        String note = "Entrada fuera de horario (Alumno). Usuario: " + name + " (" + account + "). Materia asignada: " + chosenMat;
-        saveNotificationSmart(nowISO(), uid, name, account, note);
+        saveAttendanceSmart(ts, uid, userName, userAccount, chosenMat, "entrada");
+        String note = "Entrada fuera de horario (Alumno). Usuario: " + userName +
+                      " (" + userAccount + "). Materia asignada: " + chosenMat;
+        saveNotificationSmart(nowISO(), uid, userName, userAccount, note);
         puerta.write(90);
-        showAccessGranted(name, chosenMat, uid);
+        showAccessGranted(userName, chosenMat, uid);
         puerta.write(0);
         ledOff();
       } else {
-        String note = "Intento de acceso sin materia asignada. UID: " + uid + " Nombre: " + (userRows.size() ? (userRows[0].size() > 1 ? userRows[0][1] : "") : "");
-        saveNotificationSmart(nowISO(), uid, "", "", note);
+        String note = "Intento de acceso sin materia asignada. UID: " + uid +
+                      " Nombre: " + userName;
+        saveNotificationSmart(nowISO(), uid, userName, userAccount, note);
         saveDeniedSmart(nowISO(), uid, "SIN_MATERIA");
         showAccessDenied("Sin materia asignada", uid);
         ledOff();
@@ -696,12 +451,10 @@ void rfidLoopHandler() {
     return;
   }
 
-  // Lógica para TEACHERS
+  // ------------------------------------------------------------
+  // LÓGICA TEACHERS
+  // ------------------------------------------------------------
   if (isTeacher) {
-    auto cols = parseQuotedCSVLine(teacherRow);
-    String tname = (cols.size() > 1 ? cols[1] : "");
-    String tacc = (cols.size() > 2 ? cols[2] : "");
-
     std::vector<String> tmats = teacherMatsForUID(uid);
 
     if (scheduleBaseMat.length() > 0) {
@@ -709,17 +462,19 @@ void rfidLoopHandler() {
       String wantMatLower = lowerCopy(wantMat);
 
       if (scheduleOwnerHasProf) {
-        if (lowerCopy(tname) == lowerCopy(scheduleOwnerProf)) {
+        if (lowerCopy(teacherName) == lowerCopy(scheduleOwnerProf)) {
           String ts = nowISO();
-          saveAttendanceSmart(ts, uid, tname, tacc, wantMat, "entrada-teacher");
+          saveAttendanceSmart(ts, uid, teacherName, teacherAccount, wantMat, "entrada-teacher");
           puerta.write(90);
-          showAccessGranted(tname, wantMat, uid);
+          showAccessGranted(teacherName, wantMat, uid);
           puerta.write(0);
           ledOff();
         } else {
           String mmstr = joinMats(tmats);
-          String note = "Intento fuera de materia en curso (teacher). Maestro: " + tname + " (" + tacc + "). Materias del maestro: " + mmstr + ". Materia en curso: " + scheduleOwner;
-          saveNotificationSmart(nowISO(), uid, tname, tacc, note);
+          String note = "Intento fuera de materia en curso (teacher). Maestro: " + teacherName +
+                        " (" + teacherAccount + "). Materias del maestro: " + mmstr +
+                        ". Materia en curso: " + scheduleOwner;
+          saveNotificationSmart(nowISO(), uid, teacherName, teacherAccount, note);
           saveDeniedSmart(nowISO(), uid, "NO_MATERIA_TEACHER");
           showAccessDenied(String("No asignado a: ") + wantMat, uid);
           ledOff();
@@ -730,19 +485,25 @@ void rfidLoopHandler() {
       } else {
         bool hasCurrent = false;
         for (auto &m : tmats) {
-          if (lowerCopy(m) == wantMatLower) { hasCurrent = true; break; }
+          if (lowerCopy(m) == wantMatLower) {
+            hasCurrent = true;
+            break;
+          }
         }
+
         if (hasCurrent) {
           String ts = nowISO();
-          saveAttendanceSmart(ts, uid, tname, tacc, wantMat, "entrada-teacher");
+          saveAttendanceSmart(ts, uid, teacherName, teacherAccount, wantMat, "entrada-teacher");
           puerta.write(90);
-          showAccessGranted(tname, wantMat, uid);
+          showAccessGranted(teacherName, wantMat, uid);
           puerta.write(0);
           ledOff();
         } else {
           String mmstr = joinMats(tmats);
-          String note = "Intento fuera de materia en curso (teacher). Maestro: " + tname + " (" + tacc + "). Materias del maestro: " + mmstr + ". Materia en curso: " + wantMat;
-          saveNotificationSmart(nowISO(), uid, tname, tacc, note);
+          String note = "Intento fuera de materia en curso (teacher). Maestro: " + teacherName +
+                        " (" + teacherAccount + "). Materias del maestro: " + mmstr +
+                        ". Materia en curso: " + wantMat;
+          saveNotificationSmart(nowISO(), uid, teacherName, teacherAccount, note);
           saveDeniedSmart(nowISO(), uid, "NO_MATERIA_TEACHER");
           showAccessDenied(String("No asignado a: ") + wantMat, uid);
           ledOff();
@@ -752,20 +513,21 @@ void rfidLoopHandler() {
         }
       }
     } else {
-      // NO HAY CLASE: si maestro tiene materias, permitir y notificar
       if (!tmats.empty()) {
         String chosenMat = tmats[0];
         String ts = nowISO();
-        saveAttendanceSmart(ts, uid, tname, tacc, chosenMat, "entrada-teacher");
-        String note = "Entrada fuera de horario (Maestro). Maestro: " + tname + " (" + tacc + "). Materia: " + chosenMat;
-        saveNotificationSmart(nowISO(), uid, tname, tacc, note);
+        saveAttendanceSmart(ts, uid, teacherName, teacherAccount, chosenMat, "entrada-teacher");
+        String note = "Entrada fuera de horario (Maestro). Maestro: " + teacherName +
+                      " (" + teacherAccount + "). Materia: " + chosenMat;
+        saveNotificationSmart(nowISO(), uid, teacherName, teacherAccount, note);
         puerta.write(90);
-        showAccessGranted(tname, chosenMat, uid);
+        showAccessGranted(teacherName, chosenMat, uid);
         puerta.write(0);
         ledOff();
       } else {
-        String note = "Intento de acceso (teacher) sin materias asignadas. UID: " + uid + " Nombre: " + tname;
-        saveNotificationSmart(nowISO(), uid, tname, tacc, note);
+        String note = "Intento de acceso (teacher) sin materias asignadas. UID: " + uid +
+                      " Nombre: " + teacherName;
+        saveNotificationSmart(nowISO(), uid, teacherName, teacherAccount, note);
         saveDeniedSmart(nowISO(), uid, "SIN_MATERIA_TEACHER");
         showAccessDenied("Sin materia asignada (teacher)", uid);
         ledOff();

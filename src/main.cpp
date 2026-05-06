@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
-#include <SPIFFS.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -17,7 +16,6 @@
 #include "config.h"
 #include "globals.h"
 #include "display.h"
-#include "files_utils.h"
 #include "rfid_handler.h"
 #include "web/web_routes.h"
 #include "db_sync.h"
@@ -25,10 +23,19 @@
 // ============================================================
 // Tiempos de espera
 // ============================================================
-static const unsigned long WIFI_TIMEOUT_MS   = 60UL * 1000UL;
+static const unsigned long WIFI_TIMEOUT_MS    = 60UL * 1000UL;
 static const unsigned long SERVER_TIMEOUT_MS  = 60UL * 1000UL;
-static const unsigned long NTP_TIMEOUT_MS    = 30UL * 1000UL;
-static const unsigned long NTP_POLL_MS       = 500UL;
+static const unsigned long NTP_TIMEOUT_MS     = 30UL * 1000UL;
+static const unsigned long NTP_POLL_MS        = 500UL;
+static const unsigned long RECONNECT_EVERY_MS = 10000UL;
+
+// ============================================================
+// Estado de conectividad
+// ============================================================
+static bool wifiReady = false;
+static bool serverReady = false;
+static bool timeReady = false;
+static unsigned long lastReconnectAttempt = 0;
 
 // ============================================================
 // Utilidades de pantalla de arranque
@@ -52,7 +59,6 @@ static void showBootScreen(const String &line1, const String &line2 = String(), 
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
 
-  // Encabezado simple
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
   tft.setCursor(8, 6);
@@ -66,15 +72,13 @@ static void showBootScreen(const String &line1, const String &line2 = String(), 
   }
 }
 
-static void showBootErrorAndStop(const String &msg) {
-  showBootScreen("ERROR DE RED", msg, ST77XX_RED);
+static void showErrorScreen(const String &msg) {
+  showBootScreen("SIN CONEXION", msg, ST77XX_RED);
   Serial.println(msg);
-  Serial.println("Sistema detenido por falta de conexion WiFi/Internet.");
+}
 
-  while (true) {
-    updateDisplay();
-    delay(1000);
-  }
+static void showOnlineScreen() {
+  showBootScreen("SISTEMA LISTO", "Conexion activa", ST77XX_GREEN);
 }
 
 // ============================================================
@@ -97,8 +101,10 @@ static void waitForNtpSyncOrTimeout() {
 
   if (systemTimeReasonable()) {
     Serial.println("Hora sincronizada via NTP.");
+    timeReady = true;
   } else {
     Serial.println("WARN: Timeout NTP. Hora no sincronizada.");
+    timeReady = false;
   }
 }
 
@@ -131,41 +137,18 @@ static void printTimeInfo() {
 static void wifiEvent(WiFiEvent_t event) {
   Serial.print("WiFi event: ");
   Serial.println((int)event);
-
-  switch (event) {
-    case SYSTEM_EVENT_STA_START:        Serial.println("  -> SYSTEM_EVENT_STA_START"); break;
-    case SYSTEM_EVENT_STA_CONNECTED:    Serial.println("  -> SYSTEM_EVENT_STA_CONNECTED"); break;
-    case SYSTEM_EVENT_STA_GOT_IP:       Serial.println("  -> SYSTEM_EVENT_STA_GOT_IP"); break;
-    case SYSTEM_EVENT_STA_DISCONNECTED: Serial.println("  -> SYSTEM_EVENT_STA_DISCONNECTED"); break;
-    default:                            Serial.println("  -> (otro evento)"); break;
-  }
 }
 
 // ============================================================
 // WiFi / servidor
 // ============================================================
 static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
-  Serial.printf("Intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms / 1000UL);
-
-  WiFi.onEvent(wifiEvent);
-
-  Serial.println("Escaneando redes WiFi visibles...");
-  int n = WiFi.scanNetworks();
-  if (n <= 0) {
-    Serial.println("  No se encontraron redes.");
-  } else {
-    Serial.printf("  %d redes encontradas:\n", n);
-    for (int i = 0; i < n; ++i) {
-      String ssid = WiFi.SSID(i);
-      int rssi = WiFi.RSSI(i);
-      int ch = WiFi.channel(i);
-      wifi_auth_mode_t auth = WiFi.encryptionType(i);
-      const char* enc = (auth == WIFI_AUTH_OPEN) ? "OPEN" : "ENCRYPTED";
-      Serial.printf("   %02d: SSID='%s'  RSSI=%d dBm  CH=%d  %s\n",
-                    i + 1, ssid.c_str(), rssi, ch, enc);
-    }
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiReady = true;
+    return true;
   }
-  WiFi.scanDelete();
+
+  Serial.printf("Intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms / 1000UL);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -173,7 +156,8 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
   delay(250);
 
   if (strlen(WIFI_SSID) == 0) {
-    Serial.println("WARN: WIFI_SSID vacio.");
+    Serial.println("ERR: WIFI_SSID vacio.");
+    wifiReady = false;
     return false;
   }
 
@@ -196,6 +180,7 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
       Serial.println(WiFi.RSSI());
       Serial.print("  MAC: ");
       Serial.println(WiFi.macAddress());
+      wifiReady = true;
       return true;
     }
 
@@ -209,65 +194,16 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
 
   Serial.println("Timeout de conexion WiFi.");
   Serial.printf("Estado final WiFi.status() = %d\n", (int)WiFi.status());
+  wifiReady = false;
   return false;
 }
 
-static bool waitForServerWithTimeout(unsigned long timeout_ms = SERVER_TIMEOUT_MS) {
-  Serial.printf("Probando servidor FastAPI por hasta %lus...\n", timeout_ms / 1000UL);
-
-  unsigned long t0 = millis();
-  while ((millis() - t0) < timeout_ms) {
-    if (pingServer()) {
-      Serial.println("Servidor FastAPI responde OK.");
-      return true;
-    }
-    delay(2000);
+static bool configureTimeIfWiFiReady() {
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) {
+    timeReady = false;
+    return false;
   }
 
-  Serial.println("Servidor FastAPI no respondio dentro del timeout.");
-  return false;
-}
-
-// ============================================================
-// Setup
-// ============================================================
-void setup() {
-  Serial.begin(115200);
-  delay(200);
-
-  Serial.println();
-  Serial.println("Iniciando ESP32 Registro Asistencia - flujo ONLINE/LOCAL");
-
-  Serial.println("Montando SPIFFS...");
-  if (!SPIFFS.begin(true)) {
-    Serial.println("ERR: SPIFFS.begin() fallo. Se continuara, pero faltaran archivos si no existen.");
-  } else {
-    Serial.println("SPIFFS montado OK.");
-  }
-
-  initFiles();
-  Serial.println("initFiles() -> OK.");
-
-  // La pantalla debe estar lista antes del arranque de red
-  displayInit();
-  showBootScreen("Intentando conectar a Internet...", "Espere hasta 60 segundos", ST77XX_CYAN);
-
-  // 1) WiFi / Internet
-  if (!connectWiFiWithTimeout(WIFI_TIMEOUT_MS)) {
-    showBootErrorAndStop("Sin conexion WiFi / Internet");
-  }
-
-  // Si hay WiFi, seguimos
-  showBootScreen("Internet conectado", WiFi.localIP().toString(), ST77XX_GREEN);
-
-  // 2) mDNS
-  if (MDNS.begin("control-acceso")) {
-    Serial.println("mDNS iniciado: http://control-acceso.local");
-  } else {
-    Serial.println("WARN: No se pudo iniciar mDNS");
-  }
-
-  // 3) Hora / NTP
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6";
 
@@ -286,25 +222,77 @@ void setup() {
   }
 
   printTimeInfo();
+  return timeReady;
+}
 
-  // 4) Servidor FastAPI / Oracle
-  showBootScreen("Comprobando servidor FastAPI...", "Intentando 60 segundos", ST77XX_YELLOW);
-
-  bool serverOnline = waitForServerWithTimeout(SERVER_TIMEOUT_MS);
-  if (serverOnline) {
-    modoLocal = false;
-    showBootScreen("Servidor conectado", "Modo ONLINE", ST77XX_GREEN);
-    delay(1500);
-
-    // Si quedaron registros pendientes del modo local anterior, sincronizar
-    syncPendingToServer();
-  } else {
-    modoLocal = true;
-    showBootScreen("Servidor no responde", "Iniciando modo LOCAL", ST77XX_YELLOW);
-    delay(2500);
+static bool waitForServerWithTimeout(unsigned long timeout_ms = SERVER_TIMEOUT_MS) {
+  if (!wifiReady || WiFi.status() != WL_CONNECTED) {
+    serverReady = false;
+    return false;
   }
 
-  // 5) SPI / RFID
+  Serial.printf("Probando servidor FastAPI por hasta %lus...\n", timeout_ms / 1000UL);
+
+  unsigned long t0 = millis();
+  while ((millis() - t0) < timeout_ms) {
+    if (pingServer()) {
+      Serial.println("Servidor FastAPI responde OK.");
+      serverReady = true;
+      return true;
+    }
+    delay(2000);
+  }
+
+  Serial.println("Servidor FastAPI no respondio dentro del timeout.");
+  serverReady = false;
+  return false;
+}
+
+static void bringSystemOnlineIfPossible() {
+  wifiReady = connectWiFiWithTimeout(WIFI_TIMEOUT_MS);
+
+  if (wifiReady && !timeReady) {
+    configureTimeIfWiFiReady();
+  }
+
+  if (wifiReady) {
+    serverReady = waitForServerWithTimeout(SERVER_TIMEOUT_MS);
+  } else {
+    serverReady = false;
+  }
+
+  if (wifiReady && serverReady) {
+    showOnlineScreen();
+    delay(1000);
+    showWaitingMessage();
+  } else if (!wifiReady) {
+    showErrorScreen("WiFi no disponible");
+  } else {
+    showErrorScreen("Servidor no responde");
+  }
+}
+
+// ============================================================
+// Setup
+// ============================================================
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+
+  Serial.println();
+  Serial.println("Iniciando ESP32 Registro Asistencia - flujo online");
+
+  // Pantalla de arranque
+  displayInit();
+  showBootScreen("Iniciando sistema...", "Preparando RFID y red", ST77XX_CYAN);
+
+  // Registrar eventos WiFi
+  WiFi.onEvent(wifiEvent);
+
+  // 1) Intento inicial de conectividad
+  bringSystemOnlineIfPossible();
+
+  // 2) SPI / RFID
   Serial.println("Iniciando SPI...");
   SPI.begin();
 
@@ -312,13 +300,13 @@ void setup() {
   mfrc522.PCD_Init();
   Serial.println("MFRC522 inicializado.");
 
-  // 6) Servo
+  // 3) Servo
   Serial.printf("Inicializando servo. Pin (SERVO_PIN) = %d\n", SERVO_PIN);
   puerta.attach(SERVO_PIN);
   puerta.write(0);
   Serial.println("Servo attach OK. Posicion inicial 0.");
 
-  // 7) Rutas web locales del ESP32
+  // 4) Rutas web del ESP32
   registerRoutes();
 
   server.on("/debug_set_time", HTTP_GET, []() {
@@ -342,10 +330,7 @@ void setup() {
   server.begin();
   Serial.println("Web server iniciado.");
 
-  // Pantalla normal de espera
-  showWaitingMessage();
-
-  Serial.println(serverOnline ? "Sistema listo en MODO ONLINE." : "Sistema listo en MODO LOCAL.");
+  Serial.println((wifiReady && serverReady) ? "Sistema listo en linea." : "Sistema iniciado, esperando conexion.");
   Serial.println("Setup completo - entrando a loop.");
 }
 
@@ -358,6 +343,44 @@ void loop() {
   server.handleClient();
   updateDisplay();
 
+  // Reintento de conexion sin modo local ni guardado offline
+  if (!wifiReady || !serverReady) {
+    if (millis() - lastReconnectAttempt >= RECONNECT_EVERY_MS) {
+      lastReconnectAttempt = millis();
+      Serial.println("Reintentando conexion WiFi/servidor...");
+
+      if (WiFi.status() == WL_CONNECTED) {
+        wifiReady = true;
+      } else {
+        wifiReady = connectWiFiWithTimeout(15000UL);
+      }
+
+      if (wifiReady && !timeReady) {
+        configureTimeIfWiFiReady();
+      }
+
+      if (wifiReady) {
+        serverReady = waitForServerWithTimeout(15000UL);
+      } else {
+        serverReady = false;
+      }
+
+      if (wifiReady && serverReady) {
+        showOnlineScreen();
+        delay(800);
+        showWaitingMessage();
+      } else if (!wifiReady) {
+        showErrorScreen("Reintentando WiFi...");
+      } else {
+        showErrorScreen("Reintentando servidor...");
+      }
+    }
+
+    delay(10);
+    return;
+  }
+
+  // Operacion normal SOLO online
   if (millis() - lastPoll > POLL_INTERVAL) {
     lastPoll = millis();
     rfidLoopHandler();
