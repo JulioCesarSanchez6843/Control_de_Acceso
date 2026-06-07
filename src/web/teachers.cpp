@@ -1,18 +1,20 @@
 // src/web/teachers.cpp
 #include <Arduino.h>
-#include <FS.h>
-#include <SPIFFS.h>
-#include <ctype.h>
 #include <vector>
+#include <algorithm>
+#include <ArduinoJson.h>
 
 #include "teachers.h"
 #include "globals.h"
 #include "web_common.h"
 #include "files_utils.h"
 #include "db_sync.h"
-#include <ArduinoJson.h>
+#include "time_utils.h"
 
-// Pequeña función de escape HTML
+// ------------------------------------------------------------
+// Helpers de texto
+// ------------------------------------------------------------
+
 static String htmlEscape(const String &s) {
   String out = s;
   out.replace("&", "&amp;");
@@ -23,7 +25,6 @@ static String htmlEscape(const String &s) {
   return out;
 }
 
-// simple url encode (reutilizable)
 static String urlEncodeLocal(const String &str) {
   String ret;
   ret.reserve(str.length() * 3);
@@ -45,139 +46,387 @@ static String urlEncodeLocal(const String &str) {
   return ret;
 }
 
-// -------------------------------
-// Small helpers and types
-// -------------------------------
-struct MetaRec {
+static String trimCopy(String s) {
+  s.trim();
+  return s;
+}
+
+// ------------------------------------------------------------
+// JSON helpers
+// ------------------------------------------------------------
+
+static String jsonVariantToString(JsonVariantConst v) {
+  if (v.isNull()) return "";
+
+  if (v.is<const char*>()) {
+    const char* s = v.as<const char*>();
+    return s ? String(s) : String();
+  }
+
+  if (v.is<String>()) return v.as<String>();
+  if (v.is<bool>()) return v.as<bool>() ? "true" : "false";
+  if (v.is<long>()) return String(v.as<long>());
+  if (v.is<unsigned long>()) return String(v.as<unsigned long>());
+  if (v.is<int>()) return String(v.as<int>());
+  if (v.is<float>()) return String(v.as<float>(), 4);
+  if (v.is<double>()) return String(v.as<double>(), 4);
+
+  return "";
+}
+
+static String jsonGetAny(const JsonObjectConst &o, const char* const keys[], size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    const char* k = keys[i];
+    if (!k) continue;
+    if (o.containsKey(k)) {
+      String s = jsonVariantToString(o[k]);
+      s.trim();
+      if (s.length()) return s;
+    }
+  }
+  return "";
+}
+
+template <typename T>
+static void visitJsonItems(JsonVariantConst root, T callback) {
+  if (root.is<JsonArrayConst>()) {
+    JsonArrayConst arr = root.as<JsonArrayConst>();
+    for (JsonVariantConst item : arr) callback(item);
+    return;
+  }
+
+  if (root.is<JsonObjectConst>()) {
+    JsonObjectConst o = root.as<JsonObjectConst>();
+    const char* keys[] = {"data", "items", "rows", "result", "response", "profesores", "teachers", "payload", "list"};
+    for (const char* key : keys) {
+      if (o.containsKey(key) && o[key].is<JsonArrayConst>()) {
+        JsonArrayConst arr = o[key].as<JsonArrayConst>();
+        for (JsonVariantConst item : arr) callback(item);
+        return;
+      }
+    }
+
+    callback(root);
+  }
+}
+
+static bool serverSeemsReady() {
+  return (WiFi.status() == WL_CONNECTED) && pingServer();
+}
+
+// ------------------------------------------------------------
+// Modelo
+// ------------------------------------------------------------
+
+struct TeacherRec {
+  int id = -1;
+  String uid;
+  String name;
+  String acc;
+  String materia;
+  String created;
+};
+
+struct TeacherGroup {
   String uid;
   String name;
   String acc;
   String created;
+  std::vector<String> materias;
 };
 
-static std::vector<String> profsFromCoursesForMateria(const String &materia) {
-  std::vector<String> out;
-  auto courses = loadCourses();
-  for (auto &c : courses) {
-    if (c.materia == materia) {
-      bool found = false;
-      for (auto &p : out) if (p == c.profesor) { found = true; break; }
-      if (!found) out.push_back(c.profesor);
-    }
+static String baseMateriaFromStoredField(const String &materiaField) {
+  String m = materiaField;
+  m.trim();
+  int idx = m.indexOf("||");
+  if (idx >= 0) {
+    m = m.substring(0, idx);
+    m.trim();
   }
-  return out;
+  return m;
 }
 
-// Nota: usamos teachersForMateriaFile(...) DECLARADA en files_utils.h y DEFINIDA en files_utils.cpp
-static std::vector<String> getProfessorsForMateriaCombined(const String &materia) {
-  std::vector<String> out;
-  auto fromCourses = profsFromCoursesForMateria(materia);
-  for (auto &p : fromCourses) {
-    bool f = false;
-    for (auto &x : out) if (x == p) { f = true; break; }
-    if (!f) out.push_back(p);
+static String teacherFromStoredField(const String &materiaField) {
+  String m = materiaField;
+  m.trim();
+  int idx = m.indexOf("||");
+  if (idx >= 0) {
+    String prof = m.substring(idx + 2);
+    prof.trim();
+    return prof;
   }
-  auto fromFile = teachersForMateriaFile(materia);
-  for (auto &ln : fromFile) {
-    auto c = parseQuotedCSVLine(ln);
-    if (c.size() >= 2) {
-      String name = c[1];
-      bool f = false;
-      for (auto &x : out) if (x == name) { f = true; break; }
-      if (!f) out.push_back(name);
-    }
-  }
-  return out;
+  return String();
 }
 
-// build list of MetaRec from TEACHERS_FILE
-static std::vector<MetaRec> buildTeacherMetaList() {
-  std::vector<MetaRec> out;
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return out;
-  String header = f.readStringUntil('\n'); (void)header;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 2) {
-      MetaRec r;
-      r.uid = (c.size() > 0 ? c[0] : "");
-      r.name = (c.size() > 1 ? c[1] : "");
-      r.acc = (c.size() > 2 ? c[2] : "-");
-      r.created = (c.size() > 4 ? c[4] : nowISO());
+static void appendUnique(std::vector<String> &vec, const String &value) {
+  String v = value;
+  v.trim();
+  if (!v.length()) return;
+  for (auto &x : vec) {
+    if (x == v) return;
+  }
+  vec.push_back(v);
+}
+
+static TeacherRec parseTeacherRecFromObject(const JsonObjectConst &obj) {
+  TeacherRec r;
+
+  const char* idKeys[]      = {"id", "teacher_id", "profesor_id", "registro_id"};
+  const char* uidKeys[]     = {"rfid_uid", "uid", "UID", "rfid", "codigo", "tag_uid"};
+  const char* nameKeys[]    = {"name", "nombre", "full_name", "nombre_completo", "nombreCompleto"};
+  const char* accKeys[]     = {"account", "cuenta", "matricula", "registro", "numero_cuenta"};
+  const char* matKeys[]     = {"materia", "subject", "asignatura", "nombre_materia", "nombreMateria"};
+  const char* createdKeys[] = {"created_at", "createdAt", "fecha", "timestamp", "created"};
+
+  String idStr = jsonGetAny(obj, idKeys, sizeof(idKeys) / sizeof(idKeys[0]));
+  r.id = idStr.length() ? idStr.toInt() : -1;
+  r.uid = jsonGetAny(obj, uidKeys, sizeof(uidKeys) / sizeof(uidKeys[0]));
+  r.name = jsonGetAny(obj, nameKeys, sizeof(nameKeys) / sizeof(nameKeys[0]));
+  r.acc = jsonGetAny(obj, accKeys, sizeof(accKeys) / sizeof(accKeys[0]));
+  r.materia = jsonGetAny(obj, matKeys, sizeof(matKeys) / sizeof(matKeys[0]));
+  r.created = jsonGetAny(obj, createdKeys, sizeof(createdKeys) / sizeof(createdKeys[0]));
+
+  r.uid.trim();
+  r.name.trim();
+  r.acc.trim();
+  r.materia.trim();
+  r.created.trim();
+
+  return r;
+}
+
+static void expandTeacherItem(JsonVariantConst item, std::vector<TeacherRec> &out) {
+  if (!item.is<JsonObjectConst>()) return;
+
+  JsonObjectConst o = item.as<JsonObjectConst>();
+  TeacherRec base = parseTeacherRecFromObject(o);
+
+  // Si el backend devuelve materias como array, expandimos una fila por materia.
+  if (o.containsKey("materias") && o["materias"].is<JsonArrayConst>()) {
+    JsonArrayConst arr = o["materias"].as<JsonArrayConst>();
+    bool pushedAny = false;
+
+    for (JsonVariantConst m : arr) {
+      String mat = jsonVariantToString(m);
+      mat.trim();
+      if (!mat.length()) continue;
+
+      TeacherRec r = base;
+      r.materia = mat;
       out.push_back(r);
+      pushedAny = true;
     }
+
+    if (pushedAny) return;
   }
-  f.close();
-  return out;
+
+  // Si el campo materia viene embebido como "Materia||Profesor", lo dejamos tal cual.
+  out.push_back(base);
 }
 
-static bool findMetaByName(const std::vector<MetaRec> &meta, const String &name, MetaRec &out) {
-  for (auto &m : meta) {
-    if (m.name == name) { out = m; return true; }
-  }
-  return false;
-}
+static std::vector<TeacherRec> fetchTeachersFromServer() {
+  std::vector<TeacherRec> out;
+  if (!serverSeemsReady()) return out;
 
-// -------------------------------
-// Oracle sync helpers
-// -------------------------------
-struct OraclePMRec {
-  int id = -1;
-  String uid;
-  String materia;
-  String created_at;
-};
-
-static bool loadOracleProfesorMateria(std::vector<OraclePMRec> &out) {
-  out.clear();
-
-  String json = listProfesorMateria();
-  if (!json.length()) return false;
+  String json = listProfesores();
+  if (!json.length()) return out;
 
   DynamicJsonDocument doc(32768);
   DeserializationError err = deserializeJson(doc, json);
   if (err) {
-    Serial.print("WARN: no se pudo parsear JSON de profesor_materia Oracle: ");
+    Serial.print("WARN: no se pudo parsear JSON de listProfesores(): ");
+    Serial.println(err.c_str());
+    return out;
+  }
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    expandTeacherItem(item, out);
+  });
+
+  return out;
+}
+
+static bool fetchTeacherByUid(const String &uid, TeacherRec &out) {
+  out = TeacherRec();
+
+  if (!serverSeemsReady()) return false;
+
+  String json = getProfesorByUid(uid);
+  if (!json.length()) return false;
+
+  DynamicJsonDocument doc(16384);
+  DeserializationError err = deserializeJson(doc, json);
+  if (err) {
+    Serial.print("WARN: no se pudo parsear JSON de getProfesorByUid(): ");
     Serial.println(err.c_str());
     return false;
   }
 
-  if (!doc.is<JsonArray>()) return false;
+  std::vector<TeacherRec> tmp;
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    expandTeacherItem(item, tmp);
+  });
 
-  for (JsonObject obj : doc.as<JsonArray>()) {
-    OraclePMRec r;
-    r.id = obj["id"] | -1;
-    r.uid = obj["rfid_uid"] | "";
-    r.materia = obj["materia"] | "";
-    r.created_at = obj["created_at"] | "";
-    out.push_back(r);
-  }
+  if (tmp.empty()) return false;
 
+  // Tomamos la primera coincidencia útil
+  out = tmp[0];
+  if (out.uid.length() == 0) out.uid = uid;
   return true;
 }
 
-static bool syncTeacherRemoveCourseOracle(const String &uid, const String &materia) {
-  std::vector<OraclePMRec> rows;
-  if (!loadOracleProfesorMateria(rows)) {
-    Serial.println("WARN: no se pudo leer profesor_materia en Oracle");
-    return false;
+static std::vector<TeacherGroup> groupTeachers(const std::vector<TeacherRec> &rows) {
+  std::vector<TeacherGroup> groups;
+
+  for (auto &r : rows) {
+    String key = r.uid.length() ? r.uid : r.name;
+    int idx = -1;
+
+    for (int i = 0; i < (int)groups.size(); ++i) {
+      String gkey = groups[i].uid.length() ? groups[i].uid : groups[i].name;
+      if (gkey == key) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (idx == -1) {
+      TeacherGroup g;
+      g.uid = r.uid;
+      g.name = r.name;
+      g.acc = r.acc;
+      g.created = r.created.length() ? r.created : nowISO();
+      if (r.materia.length()) appendUnique(g.materias, baseMateriaFromStoredField(r.materia));
+      groups.push_back(g);
+    } else {
+      if (r.uid.length() && groups[idx].uid.length() == 0) groups[idx].uid = r.uid;
+      if (r.name.length() && groups[idx].name.length() == 0) groups[idx].name = r.name;
+      if (r.acc.length() && groups[idx].acc.length() == 0) groups[idx].acc = r.acc;
+      if (r.created.length() && groups[idx].created.length() == 0) groups[idx].created = r.created;
+
+      if (r.materia.length()) appendUnique(groups[idx].materias, baseMateriaFromStoredField(r.materia));
+    }
   }
 
+  return groups;
+}
+
+static std::vector<String> coursesProfessorsForMateria(const String &materia) {
+  std::vector<String> out;
+  auto courses = loadCourses();
+
+  for (auto &c : courses) {
+    if (trimCopy(c.materia) == trimCopy(materia) && c.profesor.length()) {
+      appendUnique(out, c.profesor);
+    }
+  }
+
+  return out;
+}
+
+static std::vector<TeacherGroup> teachersForMateriaFromServer(const String &materia) {
+  std::vector<TeacherGroup> groups;
+  auto rows = fetchTeachersFromServer();
+
+  for (auto &r : rows) {
+    if (trimCopy(baseMateriaFromStoredField(r.materia)) != trimCopy(materia)) continue;
+
+    String key = r.uid.length() ? r.uid : r.name;
+    int idx = -1;
+    for (int i = 0; i < (int)groups.size(); ++i) {
+      String gkey = groups[i].uid.length() ? groups[i].uid : groups[i].name;
+      if (gkey == key) {
+        idx = i;
+        break;
+      }
+    }
+
+    if (idx == -1) {
+      TeacherGroup g;
+      g.uid = r.uid;
+      g.name = r.name;
+      g.acc = r.acc;
+      g.created = r.created.length() ? r.created : nowISO();
+      appendUnique(g.materias, baseMateriaFromStoredField(r.materia));
+      groups.push_back(g);
+    } else {
+      if (r.uid.length() && groups[idx].uid.length() == 0) groups[idx].uid = r.uid;
+      if (r.name.length() && groups[idx].name.length() == 0) groups[idx].name = r.name;
+      if (r.acc.length() && groups[idx].acc.length() == 0) groups[idx].acc = r.acc;
+      if (r.created.length() && groups[idx].created.length() == 0) groups[idx].created = r.created;
+      appendUnique(groups[idx].materias, baseMateriaFromStoredField(r.materia));
+    }
+  }
+
+  if (!groups.empty()) return groups;
+
+  // Fallback: materias/cursos si el backend todavía no devuelve profesor_materia en listProfesores
+  auto profs = coursesProfessorsForMateria(materia);
+  for (auto &p : profs) {
+    TeacherGroup g;
+    g.uid = "";
+    g.name = p;
+    g.acc = "-";
+    g.created = nowISO();
+    appendUnique(g.materias, materia);
+    groups.push_back(g);
+  }
+
+  return groups;
+}
+
+static std::vector<String> uniqueMateriasFromTeachers() {
+  std::vector<String> out;
+  auto rows = fetchTeachersFromServer();
+
+  for (auto &r : rows) {
+    String mat = baseMateriaFromStoredField(r.materia);
+    if (!mat.length()) continue;
+    appendUnique(out, mat);
+  }
+
+  return out;
+}
+
+static std::vector<String> materiasForTeacherName(const String &name) {
+  std::vector<String> out;
+  auto rows = fetchTeachersFromServer();
+
+  for (auto &r : rows) {
+    if (trimCopy(r.name) == trimCopy(name)) {
+      appendUnique(out, baseMateriaFromStoredField(r.materia));
+    }
+  }
+
+  if (out.empty()) {
+    auto courses = loadCourses();
+    for (auto &c : courses) {
+      if (trimCopy(c.profesor) == trimCopy(name)) {
+        appendUnique(out, trimCopy(c.materia));
+      }
+    }
+  }
+
+  return out;
+}
+
+static bool deleteTeacherMateriaRowsByUidAndMateria(const String &uid, const String &materia) {
+  auto rows = fetchTeachersFromServer();
   bool found = false;
   bool ok = true;
 
   for (auto &r : rows) {
-    if (r.uid == uid && r.materia == materia && r.id > 0) {
+    if (trimCopy(r.uid) == trimCopy(uid) && trimCopy(baseMateriaFromStoredField(r.materia)) == trimCopy(materia)) {
       found = true;
-      if (!deleteProfesorMateriaById(r.id)) {
-        Serial.print("WARN: no se pudo borrar profesor_materia id=");
-        Serial.println(r.id);
-        ok = false;
-      } else {
-        Serial.print("DB_SYNC: profesor_materia eliminado id=");
-        Serial.println(r.id);
+      if (r.id > 0) {
+        if (!deleteProfesorMateriaById(r.id)) {
+          Serial.print("WARN: no se pudo borrar profesor_materia id=");
+          Serial.println(r.id);
+          ok = false;
+        } else {
+          Serial.print("DB_SYNC: profesor_materia eliminado id=");
+          Serial.println(r.id);
+        }
       }
     }
   }
@@ -189,70 +438,126 @@ static bool syncTeacherRemoveCourseOracle(const String &uid, const String &mater
   return ok;
 }
 
-static bool syncTeacherDeleteOracle(const String &uid) {
-  if (!deleteProfesorByUid(uid, true)) {
-    Serial.println("WARN: no se pudo eliminar profesor en Oracle con cascade=true");
-    return false;
+static bool deleteTeacherRowsByUid(const String &uid) {
+  TeacherRec teacher;
+  bool haveTeacher = fetchTeacherByUid(uid, teacher);
+  auto rows = fetchTeachersFromServer();
+
+  bool any = false;
+  bool ok = true;
+
+  for (auto &r : rows) {
+    if (trimCopy(r.uid) == trimCopy(uid) && r.id > 0) {
+      any = true;
+      if (!deleteProfesorMateriaById(r.id)) {
+        Serial.print("WARN: no se pudo borrar relación profesor-materia id=");
+        Serial.println(r.id);
+        ok = false;
+      }
+    }
   }
 
-  Serial.println("DB_SYNC: profesor eliminado en Oracle con cascade=true");
-  return true;
+  // Borrado total del profesor
+  if (!deleteProfesorByUid(uid, true)) {
+    Serial.println("WARN: no se pudo eliminar profesor en Oracle con cascade=true");
+    ok = false;
+  } else {
+    Serial.println("DB_SYNC: profesor eliminado en Oracle con cascade=true");
+  }
+
+  if (!any && !haveTeacher) {
+    Serial.println("DB_SYNC: no se encontró profesor para eliminar");
+  }
+
+  return ok;
 }
 
-// -------------------------------
+// ------------------------------------------------------------
 // Handlers
-// -------------------------------
+// ------------------------------------------------------------
 
 void handleTeachersForMateria() {
-  if (!server.hasArg("materia")) { server.send(400,"text/plain","materia required"); return; }
+  if (!server.hasArg("materia")) {
+    server.send(400, "text/plain", "materia required");
+    return;
+  }
+
   String materia = server.arg("materia");
+  materia.trim();
+
   String html = htmlHeader(("Maestros - " + materia).c_str());
-  html += "<div class='card'><h2>Maestros - " + materia + "</h2>";
+  html += "<div class='card'><h2>Maestros - " + htmlEscape(materia) + "</h2>";
 
   String rt = String("/teachers?materia=") + urlEncodeLocal(materia);
   html += "<div style='display:flex;justify-content:flex-end;margin-bottom:8px;gap:8px;'>";
   html += "<a class='btn btn-blue' href='/capture_individual?return_to=" + urlEncodeLocal(rt) + "&target=teachers'>Capturar Maestro</a>";
   html += "</div>";
 
-  html += "<div class='filters'><input id='tf_name' placeholder='Filtrar Nombre'><input id='tf_acc' placeholder='Filtrar Cuenta'><button class='search-btn btn btn-blue' onclick='applyTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearTeacherFilters()'>Limpiar</button></div>";
+  html += "<div class='filters'>"
+          "<input id='tf_name' placeholder='Filtrar Nombre'>"
+          "<input id='tf_acc' placeholder='Filtrar Cuenta'>"
+          "<button class='search-btn btn btn-blue' onclick='applyTeacherFilters()'>Buscar</button>"
+          "<button class='search-btn btn btn-green' onclick='clearTeacherFilters()'>Limpiar</button>"
+          "</div>";
 
-  auto profs = getProfessorsForMateriaCombined(materia);
-  auto meta = buildTeacherMetaList();
+  auto groups = teachersForMateriaFromServer(materia);
 
-  if (profs.size() == 0) {
+  if (groups.size() == 0) {
     html += "<p>No hay maestros registrados para esta materia.</p>";
   } else {
     html += "<table id='teachers_mat_table'><tr><th>Nombre</th><th>Cuenta</th><th>Registro</th><th>Acciones</th></tr>";
-    for (auto &name : profs) {
-      MetaRec mr; String uid=""; String acc="-"; String created = nowISO();
-      if (findMetaByName(meta, name, mr)) {
-        uid = mr.uid; acc = mr.acc; created = mr.created;
+    for (auto &g : groups) {
+      String mats = "";
+      for (size_t i = 0; i < g.materias.size(); ++i) {
+        if (i) mats += "; ";
+        mats += g.materias[i];
       }
-      html += "<tr><td>" + name + "</td><td>" + acc + "</td><td>" + created + "</td>";
+
+      html += "<tr><td>" + htmlEscape(g.name) + "</td><td>" + htmlEscape(g.acc) + "</td><td>" + htmlEscape(g.created) + "</td>";
       html += "<td>";
-      if (uid.length()) {
-        html += "<a class='btn btn-green' href='/capture_edit?uid=" + uid + "&return_to=" + urlEncodeLocal(rt) + "'>✏️ Editar</a> ";
+
+      if (g.uid.length()) {
+        html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(g.uid) + "&return_to=" + urlEncodeLocal(rt) + "'>✏️ Editar</a> ";
       } else {
         html += "<a class='btn btn-blue' href='/capture_individual?return_to=" + urlEncodeLocal(rt) + "&target=teachers'>Capturar Maestro</a> ";
       }
-      html += "<form method='POST' action='/teacher_remove_course' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar este maestro de la materia?\");'>";
-      html += "<input type='hidden' name='uid' value='" + uid + "'>";
-      html += "<input type='hidden' name='materia' value='" + materia + "'>";
-      html += "<input class='btn btn-red' type='submit' value='Eliminar del curso'>";
-      html += "</form>";
+
+      if (g.uid.length()) {
+        html += "<form method='POST' action='/teacher_remove_course' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar este maestro de la materia?\");'>";
+        html += "<input type='hidden' name='uid' value='" + htmlEscape(g.uid) + "'>";
+        html += "<input type='hidden' name='materia' value='" + htmlEscape(materia) + "'>";
+        html += "<input class='btn btn-red' type='submit' value='Eliminar del curso'>";
+        html += "</form>";
+      }
+
       html += "</td></tr>";
     }
     html += "</table>";
 
     html += "<script>"
-            "function applyTeacherFilters(){ const table=document.getElementById('teachers_mat_table'); if(!table) return; const f1=document.getElementById('tf_name').value.trim().toLowerCase(); const f2=document.getElementById('tf_acc').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<3) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1); row.style.display = ok ? '' : 'none'; } }"
-            "function clearTeacherFilters(){ document.getElementById('tf_name').value=''; document.getElementById('tf_acc').value=''; applyTeacherFilters(); }"
+            "function applyTeacherFilters(){"
+            "const table=document.getElementById('teachers_mat_table'); if(!table) return;"
+            "const f1=document.getElementById('tf_name').value.trim().toLowerCase();"
+            "const f2=document.getElementById('tf_acc').value.trim().toLowerCase();"
+            "for(let r=1;r<table.rows.length;r++){"
+            "const row=table.rows[r]; if(row.cells.length<3) continue;"
+            "const name=row.cells[0].textContent.toLowerCase();"
+            "const acc=row.cells[1].textContent.toLowerCase();"
+            "const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1);"
+            "row.style.display = ok ? '' : 'none';"
+            "}"
+            "}"
+            "function clearTeacherFilters(){"
+            "document.getElementById('tf_name').value='';"
+            "document.getElementById('tf_acc').value='';"
+            "applyTeacherFilters();"
+            "}"
             "</script>";
   }
 
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }
 
 void handleTeachersAll() {
@@ -265,128 +570,32 @@ void handleTeachersAll() {
   html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
   html += "</div>";
 
-  html += "<div class='filters'><input id='ta_name' placeholder='Filtrar Nombre'><input id='ta_acc' placeholder='Filtrar Cuenta'><input id='ta_mat' placeholder='Filtrar Materia'><button class='search-btn btn btn-blue' onclick='applyAllTeacherFilters()'>Buscar</button><button class='search-btn btn btn-green' onclick='clearAllTeacherFilters()'>Limpiar</button></div>";
+  html += "<div class='filters'>"
+          "<input id='ta_name' placeholder='Filtrar Nombre'>"
+          "<input id='ta_acc' placeholder='Filtrar Cuenta'>"
+          "<input id='ta_mat' placeholder='Filtrar Materia'>"
+          "<button class='search-btn btn btn-blue' onclick='applyAllTeacherFilters()'>Buscar</button>"
+          "<button class='search-btn btn btn-green' onclick='clearAllTeacherFilters()'>Limpiar</button>"
+          "</div>";
 
-  std::vector<MetaRec> recs = buildTeacherMetaList();
+  auto rows = fetchTeachersFromServer();
+  auto groups = groupTeachers(rows);
 
-  auto courses = loadCourses();
-  for (auto &c : courses) {
-    bool found = false;
-    for (auto &r : recs) {
-      if (r.name == c.profesor) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      MetaRec r;
-      r.uid = "";
-      r.name = c.profesor;
-      r.acc = "-";
-      r.created = nowISO();
-      recs.push_back(r);
-    }
-  }
-
-  if (recs.size() == 0) {
+  if (groups.size() == 0) {
     html += "<p>No hay maestros registrados.</p>";
   } else {
     if (searchUid.length()) {
       bool foundAny = false;
-      for (auto &r : recs) {
-        if (r.uid == searchUid) {
-          foundAny = true;
-          std::vector<String> mats;
 
-          File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-          if (f) {
-            String header = f.readStringUntil('\n'); (void)header;
-            while (f.available()) {
-              String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-              auto c = parseQuotedCSVLine(l);
-              if (c.size() >= 4) {
-                String rowUid = c[0];
-                String name = (c.size() > 1 ? c[1] : "");
-                String mat  = (c.size() > 3 ? c[3] : "");
-                if (rowUid == r.uid || name == r.name) {
-                  if (mat.length()) {
-                    bool fnd = false;
-                    for (auto &m : mats) if (m == mat) { fnd = true; break; }
-                    if (!fnd) mats.push_back(mat);
-                  }
-                }
-              }
-            }
-            f.close();
-          }
+      TeacherRec tr;
+      if (fetchTeacherByUid(searchUid, tr)) {
+        foundAny = true;
 
-          for (auto &c : courses) if (c.profesor == r.name) {
-            bool fnd = false;
-            for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
-            if (!fnd) mats.push_back(c.materia);
-          }
-
-          String matsStr = "-";
-          if (mats.size()) {
-            matsStr = "";
-            for (size_t i = 0; i < mats.size(); ++i) {
-              if (i) matsStr += "; ";
-              matsStr += mats[i];
-            }
-          }
-
-          html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
-          html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
-          if (r.uid.length()) {
-            html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(r.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
-            html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
-            html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
-            html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
-            html += "</form>";
-          } else {
-            html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
-          }
-          html += "</td></tr></table>";
-          break;
-        }
-      }
-      if (!foundAny) html += "<p>No se encontró maestro con UID " + htmlEscape(searchUid) + ".</p>";
-    } else {
-      html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
-
-      for (auto &r : recs) {
-        std::vector<String> mats;
-
-        File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-        if (f) {
-          String header = f.readStringUntil('\n'); (void)header;
-          while (f.available()) {
-            String l = f.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-            auto c = parseQuotedCSVLine(l);
-            if (c.size() >= 4) {
-              String uid = c[0];
-              String name = (c.size() > 1 ? c[1] : "");
-              String mat  = (c.size() > 3 ? c[3] : "");
-              if ((r.uid.length() && uid == r.uid) || (r.uid.length() == 0 && name == r.name)) {
-                if (mat.length()) {
-                  bool fnd = false;
-                  for (auto &m : mats) if (m == mat) { fnd = true; break; }
-                  if (!fnd) mats.push_back(mat);
-                }
-              }
-            }
-          }
-          f.close();
-        }
-
-        for (auto &c : courses) if (c.profesor == r.name) {
-          bool fnd = false;
-          for (auto &m : mats) if (m == c.materia) { fnd = true; break; }
-          if (!fnd) mats.push_back(c.materia);
-        }
+        std::vector<String> mats = materiasForTeacherName(tr.name);
+        if (mats.empty()) appendUnique(mats, baseMateriaFromStoredField(tr.materia));
 
         String matsStr = "-";
-        if (mats.size()) {
+        if (!mats.empty()) {
           matsStr = "";
           for (size_t i = 0; i < mats.size(); ++i) {
             if (i) matsStr += "; ";
@@ -394,196 +603,121 @@ void handleTeachersAll() {
           }
         }
 
-        html += "<tr><td>" + r.name + "</td><td>" + r.acc + "</td><td>" + matsStr + "</td><td>" + r.created + "</td><td>";
-        if (r.uid.length()) {
-          html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(r.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
+        html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+        html += "<tr><td>" + htmlEscape(tr.name) + "</td><td>" + htmlEscape(tr.acc.length() ? tr.acc : String("-")) + "</td><td>" + htmlEscape(matsStr) + "</td><td>" + htmlEscape(tr.created.length() ? tr.created : nowISO()) + "</td><td>";
+
+        if (tr.uid.length()) {
+          html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(tr.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
           html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
-          html += "<input type='hidden' name='uid' value='" + r.uid + "'>";
+          html += "<input type='hidden' name='uid' value='" + htmlEscape(tr.uid) + "'>";
+          html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
+          html += "</form>";
+        }
+
+        html += "</td></tr></table>";
+      }
+
+      if (!foundAny) {
+        html += "<p>No se encontró maestro con UID " + htmlEscape(searchUid) + ".</p>";
+      }
+    } else {
+      html += "<table id='teachers_all_table'><tr><th>Nombre</th><th>Cuenta</th><th>Materias</th><th>Registro</th><th>Acciones</th></tr>";
+
+      for (auto &g : groups) {
+        String mats = "";
+        for (size_t i = 0; i < g.materias.size(); ++i) {
+          if (i) mats += "; ";
+          mats += g.materias[i];
+        }
+        if (mats.length() == 0) mats = "-";
+
+        html += "<tr><td>" + htmlEscape(g.name) + "</td><td>" + htmlEscape(g.acc.length() ? g.acc : String("-")) + "</td><td>" + htmlEscape(mats) + "</td><td>" + htmlEscape(g.created.length() ? g.created : nowISO()) + "</td><td>";
+
+        if (g.uid.length()) {
+          html += "<a class='btn btn-green' href='/capture_edit?uid=" + urlEncodeLocal(g.uid) + "&return_to=" + urlEncodeLocal(String("/teachers_all")) + "'>✏️ Editar</a> ";
+          html += "<form method='POST' action='/teacher_delete' style='display:inline;margin-left:6px;' onsubmit='return confirm(\"Eliminar totalmente este maestro? Esto puede eliminar materias y horarios asociados.\");'>";
+          html += "<input type='hidden' name='uid' value='" + htmlEscape(g.uid) + "'>";
           html += "<input class='btn btn-red' type='submit' value='Eliminar totalmente'>";
           html += "</form>";
         } else {
           html += "<a class='btn btn-blue' href='/capture_individual?return_to=/teachers_all&target=teachers'>Capturar Maestro</a>";
         }
+
         html += "</td></tr>";
       }
+
       html += "</table>";
 
       html += "<script>"
-              "function applyAllTeacherFilters(){ const table=document.getElementById('teachers_all_table'); if(!table) return; const f1=document.getElementById('ta_name').value.trim().toLowerCase(); const f2=document.getElementById('ta_acc').value.trim().toLowerCase(); const f3=document.getElementById('ta_mat').value.trim().toLowerCase(); for(let r=1;r<table.rows.length;r++){ const row=table.rows[r]; if(row.cells.length<4) continue; const name=row.cells[0].textContent.toLowerCase(); const acc=row.cells[1].textContent.toLowerCase(); const mats=row.cells[2].textContent.toLowerCase(); const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1); row.style.display = ok ? '' : 'none'; } }"
-              "function clearAllTeacherFilters(){ document.getElementById('ta_name').value=''; document.getElementById('ta_acc').value=''; document.getElementById('ta_mat').value=''; applyAllTeacherFilters(); }"
+              "function applyAllTeacherFilters(){"
+              "const table=document.getElementById('teachers_all_table'); if(!table) return;"
+              "const f1=document.getElementById('ta_name').value.trim().toLowerCase();"
+              "const f2=document.getElementById('ta_acc').value.trim().toLowerCase();"
+              "const f3=document.getElementById('ta_mat').value.trim().toLowerCase();"
+              "for(let r=1;r<table.rows.length;r++){"
+              "const row=table.rows[r]; if(row.cells.length<4) continue;"
+              "const name=row.cells[0].textContent.toLowerCase();"
+              "const acc=row.cells[1].textContent.toLowerCase();"
+              "const mats=row.cells[2].textContent.toLowerCase();"
+              "const ok=(name.indexOf(f1)!==-1)&&(acc.indexOf(f2)!==-1)&&(mats.indexOf(f3)!==-1);"
+              "row.style.display = ok ? '' : 'none';"
+              "}"
+              "}"
+              "function clearAllTeacherFilters(){"
+              "document.getElementById('ta_name').value='';"
+              "document.getElementById('ta_acc').value='';"
+              "document.getElementById('ta_mat').value='';"
+              "applyAllTeacherFilters();"
+              "}"
               "</script>";
     }
   }
 
   html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/'>Inicio</a></p>";
   html += htmlFooter();
-  server.send(200,"text/html",html);
+  server.send(200, "text/html", html);
 }
 
 void handleTeacherRemoveCourse() {
-  if (!server.hasArg("uid") || !server.hasArg("materia")) { server.send(400,"text/plain","faltan"); return; }
+  if (!server.hasArg("uid") || !server.hasArg("materia")) {
+    server.send(400, "text/plain", "faltan");
+    return;
+  }
+
   String uid = server.arg("uid");
   String materia = server.arg("materia");
 
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) { server.send(500,"text/plain","no file"); return; }
-
-  std::vector<String> lines;
-  String header = f.readStringUntil('\n');
-  lines.push_back(header);
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n');
-    l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      String rowUid = c[0];
-      String rowMat = c[3];
-      if (rowUid == uid && rowMat == materia) continue;
-    }
-    lines.push_back(l);
-  }
-  f.close();
-  writeAllLines(TEACHERS_FILE, lines);
-
-  if (!syncTeacherRemoveCourseOracle(uid, materia)) {
+  if (!deleteTeacherMateriaRowsByUidAndMateria(uid, materia)) {
     Serial.println("WARN: no se pudo sincronizar la eliminación de maestro de la materia en Oracle");
   }
 
-  server.sendHeader("Location","/teachers?materia=" + urlEncodeLocal(materia));
-  server.send(303,"text/plain","Removed");
+  server.sendHeader("Location", "/teachers?materia=" + urlEncodeLocal(materia));
+  server.send(303, "text/plain", "Removed");
 }
 
 void handleTeacherDelete() {
-  if (!server.hasArg("uid")) { server.send(400,"text/plain","faltan"); return; }
+  if (!server.hasArg("uid")) {
+    server.send(400, "text/plain", "faltan");
+    return;
+  }
+
   String uid = server.arg("uid");
 
-  String teacherName = "";
-  File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (ft) {
-    String header = ft.readStringUntil('\n'); (void)header;
-    while (ft.available()) {
-      String l = ft.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 2 && c[0] == uid) {
-        teacherName = c[1];
-        break;
-      }
-    }
-    ft.close();
-  }
-
-  std::vector<Course> courses = loadCourses();
-  std::vector<String> materiasToRemove;
-  for (auto &c : courses) {
-    if (teacherName.length() && c.profesor == teacherName) {
-      bool fnd = false;
-      for (auto &m : materiasToRemove) if (m == c.materia) { fnd = true; break; }
-      if (!fnd) materiasToRemove.push_back(c.materia);
-    }
-  }
-
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  std::vector<String> newTeacherLines;
-  if (f) {
-    String header = f.readStringUntil('\n');
-    newTeacherLines.push_back(header);
-    while (f.available()) {
-      String l = f.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 1) {
-        String rowUid = c[0];
-        if (rowUid == uid) continue;
-      }
-      newTeacherLines.push_back(l);
-    }
-    f.close();
-    writeAllLines(TEACHERS_FILE, newTeacherLines);
-  }
-
-  if (teacherName.length()) {
-    std::vector<Course> newCourses;
-    for (auto &c : courses) {
-      if (c.profesor == teacherName) continue;
-      newCourses.push_back(c);
-    }
-    writeCourses(newCourses);
-  }
-
-  File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-  std::vector<String> slines;
-  if (fs) {
-    String header = fs.readStringUntil('\n');
-    slines.push_back(header);
-    while (fs.available()) {
-      String l = fs.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String owner = c[0];
-        bool skip = false;
-        for (auto &m : materiasToRemove) {
-          String key = m + String("||") + teacherName;
-          if (owner == key) { skip = true; break; }
-        }
-        if (skip) continue;
-        for (auto &m : materiasToRemove) {
-          bool still = false;
-          auto remCourses = loadCourses();
-          for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
-          if (!still && owner == m) { skip = true; break; }
-        }
-        if (skip) continue;
-      }
-      slines.push_back(l);
-    }
-    fs.close();
-    writeAllLines(SCHEDULES_FILE, slines);
-  }
-
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  std::vector<String> ulines;
-  if (fu) {
-    String uheader = fu.readStringUntil('\n');
-    ulines.push_back(uheader);
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n');
-      l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String uid_u = c[0], name = c[1], acc = c[2], mm = c[3];
-        bool removeUser = false;
-        for (auto &m : materiasToRemove) {
-          if (mm == m) {
-            bool still = false;
-            auto remCourses = loadCourses();
-            for (auto &rc : remCourses) if (rc.materia == m) { still = true; break; }
-            if (!still) removeUser = true;
-            break;
-          }
-        }
-        if (removeUser) {
-          addNotification(uid_u, name, acc, String("Cuenta eliminada: materia removida al borrar maestro ") + teacherName);
-          continue;
-        }
-        ulines.push_back("\"" + uid_u + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + (c.size()>4?c[4]:"") + "\"");
-      } else ulines.push_back(l);
-    }
-    fu.close();
-    writeAllLines(USERS_FILE, ulines);
-  }
-
-  if (!syncTeacherDeleteOracle(uid)) {
+  if (!deleteTeacherRowsByUid(uid)) {
     Serial.println("WARN: no se pudo sincronizar la eliminación total del maestro en Oracle");
   }
 
-  server.sendHeader("Location","/teachers_all");
-  server.send(303,"text/plain","Deleted");
+  server.sendHeader("Location", "/teachers_all");
+  server.send(303, "text/plain", "Deleted");
+}
+
+// ------------------------------------------------------------
+// Registro de rutas
+// ------------------------------------------------------------
+
+void registerTeachersHandlers() {
+  server.on("/teachers", HTTP_GET, handleTeachersForMateria);
+  server.on("/teachers_all", HTTP_GET, handleTeachersAll);
+  server.on("/teacher_remove_course", HTTP_POST, handleTeacherRemoveCourse);
+  server.on("/teacher_delete", HTTP_POST, handleTeacherDelete);
 }

@@ -1,19 +1,21 @@
 #pragma once
-// Declaraciones públicas de utilidades de archivos usadas por el proyecto.
+// Declaraciones públicas de utilidades del proyecto.
+// Versión online-only: sin SPIFFS como fuente de persistencia.
+
 #include <vector>
 #include <Arduino.h>
-#include <FS.h>
-#include "globals.h"  
+#include "globals.h"
 
-// --- Parse / I/O básico ---
+// --- Parse / compatibilidad ---
 std::vector<String> parseQuotedCSVLine(const String &line);
+
+// --- Stubs de transición: no escriben nada local ---
 bool appendLineToFile(const char *path, const String &line);
 bool writeAllLines(const char *path, const std::vector<String> &lines);
 void initFiles();
 
 // --- Schedules ---
 std::vector<ScheduleEntry> loadSchedules();
-// Nota: no repetir argumentos por defecto si ya está en globals.h
 bool slotOccupied(const String &day, const String &start, const String &materiaFilter);
 void addScheduleSlot(const String &materia, const String &day, const String &start, const String &end);
 
@@ -23,7 +25,7 @@ bool courseExists(const String &materia);
 void addCourse(const String &materia, const String &prof);
 void writeCourses(const std::vector<Course> &list);
 
-// --- Usuarios / Students helpers ---
+// --- Usuarios / students ---
 String findAnyUserByUID(const String &uid);
 bool existsUserUidMateria(const String &uid, const String &materia);
 bool existsUserAccountMateria(const String &account, const String &materia);
@@ -35,7 +37,7 @@ std::vector<String> readNotifications(int limit);
 int notifCount();
 void clearNotifications();
 
-// --- Teachers helpers (usadas en rfid_handler y web) ---
+// --- Teachers ---
 String findTeacherByUID(const String &uid);
 bool teacherNameExists(const String &name);
 std::vector<String> teachersForMateriaFile(const String &materia);

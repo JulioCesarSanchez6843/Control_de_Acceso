@@ -3,7 +3,6 @@
 #include "globals.h"
 #include "config.h"
 
-#include <SPIFFS.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>

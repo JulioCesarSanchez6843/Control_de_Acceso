@@ -1,18 +1,22 @@
 // src/web/courses.cpp
 #include "courses.h"
 #include "web_common.h"
-#include "files_utils.h"
-#include "config.h"
 #include "globals.h"
 #include "db_sync.h"
+#include "schedules.h"  // provee deleteScheduleSlot
 
-#include <SPIFFS.h>
+#include <WiFi.h>
+#include <ArduinoJson.h>
 #include <vector>
 #include <algorithm>
 #include <cstring>
 
-// ---------- Helpers locales ----------
 static const char *COURSE_KEY_SEP = "||";
+
+
+// ------------------------------------------------------------
+// Helpers locales
+// ------------------------------------------------------------
 
 static String makeCourseKey(const String &materia, const String &profesor) {
   return materia + String(COURSE_KEY_SEP) + profesor;
@@ -23,6 +27,8 @@ static bool splitCourseKey(const String &key, String &materiaOut, String &profes
   if (idx < 0) return false;
   materiaOut = key.substring(0, idx);
   profesorOut = key.substring(idx + strlen(COURSE_KEY_SEP));
+  materiaOut.trim();
+  profesorOut.trim();
   return true;
 }
 
@@ -44,7 +50,6 @@ static String urlEncode(const String &str) {
   return encoded;
 }
 
-// ---------- Helper JSON-escape local ----------
 static String jsonEscape(const String &s) {
   String o = s;
   o.replace("\\", "\\\\");
@@ -54,148 +59,522 @@ static String jsonEscape(const String &s) {
   return o;
 }
 
-/*
-  Nota: loadCourses() y writeCourses() NO se definen aquí;
-  están en files_utils.cpp
-*/
+static String jsonVariantToString(JsonVariantConst v) {
+  if (v.isNull()) return "";
+  if (v.is<const char*>()) {
+    const char* s = v.as<const char*>();
+    return s ? String(s) : String();
+  }
+  if (v.is<String>()) return v.as<String>();
+  if (v.is<bool>()) return v.as<bool>() ? "true" : "false";
+  if (v.is<long>()) return String(v.as<long>());
+  if (v.is<unsigned long>()) return String(v.as<unsigned long>());
+  if (v.is<int>()) return String(v.as<int>());
+  if (v.is<float>()) return String(v.as<float>(), 4);
+  if (v.is<double>()) return String(v.as<double>(), 4);
+  return "";
+}
 
-// ---------- Sync helpers Oracle ----------
-static void syncMateriaCreateToOracle(const String &materia, const String &profesor, const String &createdAt) {
-  if (!sendMateriaRegistro(materia, profesor, createdAt)) {
-    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (CREATE)");
-  } else {
-    Serial.println("DB_SYNC: materia sincronizada correctamente (CREATE)");
+static String jsonGetAny(const JsonObjectConst &o, const char* const keys[], size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    const char* k = keys[i];
+    if (!k) continue;
+    if (o.containsKey(k)) {
+      String s = jsonVariantToString(o[k]);
+      s.trim();
+      if (s.length()) return s;
+    }
+  }
+  return "";
+}
+
+template <typename T>
+static void visitJsonItems(JsonVariantConst root, T callback) {
+  if (root.is<JsonArrayConst>()) {
+    JsonArrayConst arr = root.as<JsonArrayConst>();
+    for (JsonVariantConst item : arr) callback(item);
+    return;
+  }
+
+  if (root.is<JsonObjectConst>()) {
+    JsonObjectConst o = root.as<JsonObjectConst>();
+    const char* keys[] = {"data", "items", "rows", "result", "response", "materias", "horarios", "profesores", "teachers", "subjects", "list"};
+    for (const char* key : keys) {
+      if (o.containsKey(key) && o[key].is<JsonArrayConst>()) {
+        JsonArrayConst arr = o[key].as<JsonArrayConst>();
+        for (JsonVariantConst item : arr) callback(item);
+        return;
+      }
+    }
+    callback(root);
   }
 }
 
-static void syncMateriaUpdateToOracle(
-    const String &oldMateria,
-    const String &newMateria,
-    const String &profesor,
-    const String &createdAt
-) {
-  if (!updateMateriaByName(oldMateria, newMateria, profesor, createdAt)) {
-    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (UPDATE)");
-  } else {
-    Serial.println("DB_SYNC: materia sincronizada correctamente (UPDATE)");
-  }
+static bool serverSeemsReady() {
+  return (WiFi.status() == WL_CONNECTED) && pingServer();
 }
 
-static void syncMateriaDeleteToOracle(const String &materia, bool cascade = true) {
-  if (!deleteMateriaByName(materia, cascade)) {
-    Serial.println("WARN: no se pudo sincronizar la materia con Oracle (DELETE)");
-  } else {
-    Serial.println("DB_SYNC: materia sincronizada correctamente (DELETE)");
-  }
+// ------------------------------------------------------------
+// Modelos locales
+// ------------------------------------------------------------
+
+struct ScheduleRemoteEntry {
+  String owner;
+  String day;
+  String start;
+  String end;
+};
+
+static String parseTeacherNameFromJsonItem(JsonVariantConst item) {
+  if (!item.is<JsonObjectConst>()) return "";
+  JsonObjectConst o = item.as<JsonObjectConst>();
+
+  const char* nameKeys[] = {"nombre", "name", "full_name", "nombre_completo", "nombreCompleto", "profesor", "teacher", "docente"};
+  String name = jsonGetAny(o, nameKeys, sizeof(nameKeys) / sizeof(nameKeys[0]));
+  name.trim();
+  return name;
 }
 
-// ---------- Helper: contar cursos con nombre dado ----------
-static int countCoursesWithName(const String &materia) {
-  auto courses = loadCourses();
+static Course courseFromJson(JsonVariantConst item) {
+  Course c;
+
+  if (!item.is<JsonObjectConst>()) {
+    String raw = jsonVariantToString(item);
+    raw.trim();
+    c.materia = raw;
+    c.profesor = "";
+    c.created_at = "";
+    return c;
+  }
+
+  JsonObjectConst o = item.as<JsonObjectConst>();
+
+  const char* matKeys[] = {"materia", "subject", "asignatura", "nombre_materia", "nombreMateria", "course"};
+  const char* profKeys[] = {"profesor", "teacher", "docente", "nombre_profesor", "nombreProfesor", "teacher_name"};
+  const char* createdKeys[] = {"created_at", "createdAt", "fecha", "timestamp", "created"};
+
+  c.materia = jsonGetAny(o, matKeys, sizeof(matKeys) / sizeof(matKeys[0]));
+  c.profesor = jsonGetAny(o, profKeys, sizeof(profKeys) / sizeof(profKeys[0]));
+  c.created_at = jsonGetAny(o, createdKeys, sizeof(createdKeys) / sizeof(createdKeys[0]));
+
+  c.materia.trim();
+  c.profesor.trim();
+  c.created_at.trim();
+
+  return c;
+}
+
+static ScheduleRemoteEntry scheduleFromJson(JsonVariantConst item) {
+  ScheduleRemoteEntry e;
+
+  if (!item.is<JsonObjectConst>()) {
+    String raw = jsonVariantToString(item);
+    raw.trim();
+    e.owner = raw;
+    e.day = "";
+    e.start = "";
+    e.end = "";
+    return e;
+  }
+
+  JsonObjectConst o = item.as<JsonObjectConst>();
+
+  const char* ownerKeys[] = {"materia", "subject", "asignatura", "owner", "course_key", "clave", "owner_key"};
+  const char* dayKeys[]   = {"day", "dia", "weekday", "day_name", "nombre_dia", "nombreDia"};
+  const char* startKeys[] = {"start", "inicio", "hora_inicio", "start_time", "horaInicio"};
+  const char* endKeys[]   = {"end", "fin", "hora_fin", "end_time", "horaFin"};
+
+  e.owner = jsonGetAny(o, ownerKeys, sizeof(ownerKeys) / sizeof(ownerKeys[0]));
+  e.day   = jsonGetAny(o, dayKeys, sizeof(dayKeys) / sizeof(dayKeys[0]));
+  e.start = jsonGetAny(o, startKeys, sizeof(startKeys) / sizeof(startKeys[0]));
+  e.end   = jsonGetAny(o, endKeys, sizeof(endKeys) / sizeof(endKeys[0]));
+
+  e.owner.trim();
+  e.day.trim();
+  e.start.trim();
+  e.end.trim();
+  return e;
+}
+
+static std::vector<Course> fetchCoursesFromServer() {
+  std::vector<Course> res;
+  if (!serverSeemsReady()) return res;
+
+  String payload = listMaterias();
+  if (!payload.length()) return res;
+
+  DynamicJsonDocument doc(32 * 1024);
+  DeserializationError de = deserializeJson(doc, payload);
+  if (de) {
+    Serial.printf("WARN: listMaterias JSON invalido: %s\n", de.c_str());
+    return res;
+  }
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    Course c = courseFromJson(item);
+    if (c.materia.length() || c.profesor.length() || c.created_at.length()) {
+      res.push_back(c);
+    }
+  });
+
+  return res;
+}
+
+static std::vector<ScheduleRemoteEntry> fetchSchedulesFromServer() {
+  std::vector<ScheduleRemoteEntry> res;
+  if (!serverSeemsReady()) return res;
+
+  String payload = listHorarios();
+  if (!payload.length()) return res;
+
+  DynamicJsonDocument doc(32 * 1024);
+  DeserializationError de = deserializeJson(doc, payload);
+  if (de) {
+    Serial.printf("WARN: listHorarios JSON invalido: %s\n", de.c_str());
+    return res;
+  }
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    ScheduleRemoteEntry e = scheduleFromJson(item);
+    if (e.owner.length() || e.day.length() || e.start.length() || e.end.length()) {
+      res.push_back(e);
+    }
+  });
+
+  return res;
+}
+
+static std::vector<String> fetchTeacherNamesFromServer() {
+  std::vector<String> out;
+  if (!serverSeemsReady()) return out;
+
+  String payload = listProfesores();
+  if (!payload.length()) return out;
+
+  DynamicJsonDocument doc(32 * 1024);
+  DeserializationError de = deserializeJson(doc, payload);
+  if (de) {
+    Serial.printf("WARN: listProfesores JSON invalido: %s\n", de.c_str());
+    return out;
+  }
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    String name = parseTeacherNameFromJsonItem(item);
+    if (!name.length()) return;
+    bool found = false;
+    for (auto &x : out) {
+      if (x == name) { found = true; break; }
+    }
+    if (!found) out.push_back(name);
+  });
+
+  return out;
+}
+
+static std::vector<String> getProfessorsForMateriaFromServer(const String &materia) {
+  std::vector<String> out;
+  if (!serverSeemsReady()) return out;
+
+  auto courses = fetchCoursesFromServer();
+  for (auto &c : courses) {
+    if (c.materia == materia) {
+      bool found = false;
+      for (auto &p : out) {
+        if (p == c.profesor) { found = true; break; }
+      }
+      if (!found && c.profesor.length()) out.push_back(c.profesor);
+    }
+  }
+  return out;
+}
+
+static int countCoursesWithName(const std::vector<Course> &courses, const String &materia) {
   int cnt = 0;
-  for (auto &c : courses) if (c.materia == materia) cnt++;
+  for (auto &c : courses) {
+    if (c.materia == materia) cnt++;
+  }
   return cnt;
 }
 
-static bool coursePairExists(const String &materia, const String &profesor) {
-  auto courses = loadCourses();
+static bool coursePairExists(const std::vector<Course> &courses, const String &materia, const String &profesor) {
   for (auto &c : courses) {
     if (c.materia == materia && c.profesor == profesor) return true;
   }
   return false;
 }
 
-static bool slotOccupiedLocal(const String &day, const String &start, String *ownerOut = nullptr) {
-  auto schedules = loadSchedules();
+static int findCourseIndex(const std::vector<Course> &courses, const String &materia, const String &profesor) {
+  for (int i = 0; i < (int)courses.size(); ++i) {
+    if (courses[i].materia == materia && courses[i].profesor == profesor) return i;
+  }
+  return -1;
+}
+
+static bool courseExistsRemote(const String &materia) {
+  auto courses = fetchCoursesFromServer();
+  for (auto &c : courses) {
+    if (c.materia == materia) return true;
+  }
+  return false;
+}
+
+static bool slotOccupiedRemote(const String &day, const String &start, String *ownerOut = nullptr) {
+  auto schedules = fetchSchedulesFromServer();
   for (auto &s : schedules) {
     if (s.day == day && s.start == start) {
-      if (ownerOut) *ownerOut = s.materia;
+      if (ownerOut) *ownerOut = s.owner;
       return true;
     }
   }
   return false;
 }
 
-static bool addScheduleSlotSafeLocalKey(const String &courseKey, const String &day, const String &start, const String &end, String *err = nullptr) {
-  String owner;
-  if (slotOccupiedLocal(day, start, &owner)) {
-    if (owner != courseKey) {
-      if (err) *err = "ocupado por otra materia";
-      return false;
-    }
-    if (err) *err = "ya asignado";
-    return false;
+static bool scheduleBelongsToCourse(const String &owner, const String &mat, const String &prof) {
+  if (owner == makeCourseKey(mat, prof)) return true;
+
+  String ownerMat, ownerProf;
+  if (splitCourseKey(owner, ownerMat, ownerProf)) {
+    return ownerMat == mat && ownerProf == prof;
   }
-  addScheduleSlot(courseKey, day, start, end);
+
+  return owner == mat;
+}
+
+static void migrateSchedulesForCourseRename(const String &oldMat, const String &oldProf,
+                                           const String &newMat, const String &newProf,
+                                           bool oldNameWasUnique) {
+  String oldKey = makeCourseKey(oldMat, oldProf);
+  String newKey = makeCourseKey(newMat, newProf);
+
+  auto schedules = fetchSchedulesFromServer();
+  for (auto &s : schedules) {
+    bool shouldMove = false;
+
+    if (s.owner == oldKey) {
+      shouldMove = true;
+    } else if (oldNameWasUnique && s.owner == oldMat) {
+      shouldMove = true;
+    }
+
+    if (!shouldMove) continue;
+
+    deleteScheduleSlot(s.owner, s.day, s.start);
+    addScheduleSlot(newKey, s.day, s.start, s.end);
+  }
+}
+
+static void removeSchedulesForDeletedCourse(const String &mat, const String &prof, bool oldNameWasUnique) {
+  String key = makeCourseKey(mat, prof);
+
+  auto schedules = fetchSchedulesFromServer();
+  for (auto &s : schedules) {
+    bool shouldDelete = false;
+
+    if (s.owner == key) {
+      shouldDelete = true;
+    } else if (oldNameWasUnique && s.owner == mat) {
+      shouldDelete = true;
+    }
+
+    if (shouldDelete) {
+      deleteScheduleSlot(s.owner, s.day, s.start);
+    }
+  }
+}
+
+static void migrateStudentsForCourseRename(const String &oldMat, const String &newMat, bool oldNameWasUnique) {
+  if (!oldNameWasUnique || oldMat == newMat) return;
+
+  auto students = listAlumnos();
+  if (!students.length()) return;
+
+  size_t cap = students.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError de = deserializeJson(doc, students);
+  if (de) {
+    Serial.printf("WARN: listAlumnos JSON invalido: %s\n", de.c_str());
+    return;
+  }
+
+  auto updateRow = [&](JsonObjectConst obj) {
+    const char* idKeys[] = {"id", "ID"};
+    const char* uidKeys[] = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+    const char* nameKeys[] = {"name", "nombre", "full_name"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    const char* materiaKeys[] = {"materia", "subject"};
+    const char* createdKeys[] = {"created", "created_at", "createdAt", "fecha", "timestamp"};
+
+    String id = jsonGetAny(obj, idKeys, 2);
+    String uid = jsonGetAny(obj, uidKeys, 4);
+    String name = jsonGetAny(obj, nameKeys, 3);
+    String account = jsonGetAny(obj, accountKeys, 4);
+    String materia = jsonGetAny(obj, materiaKeys, 2);
+    String created = jsonGetAny(obj, createdKeys, 5);
+
+    if (materia != oldMat) return;
+
+    int idNum = id.toInt();
+    if (idNum > 0) {
+      updateAlumnoById(idNum, uid, name, account, newMat, created);
+    }
+  };
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    if (!item.is<JsonObjectConst>()) return;
+    updateRow(item.as<JsonObjectConst>());
+  });
+}
+
+static void deleteStudentsForDeletedCourse(const String &mat) {
+  auto students = listAlumnos();
+  if (!students.length()) return;
+
+  size_t cap = students.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError de = deserializeJson(doc, students);
+  if (de) {
+    Serial.printf("WARN: listAlumnos JSON invalido: %s\n", de.c_str());
+    return;
+  }
+
+  visitJsonItems(doc.as<JsonVariantConst>(), [&](JsonVariantConst item) {
+    if (!item.is<JsonObjectConst>()) return;
+    JsonObjectConst obj = item.as<JsonObjectConst>();
+
+    const char* idKeys[] = {"id", "ID"};
+    const char* materiaKeys[] = {"materia", "subject"};
+
+    String id = jsonGetAny(obj, idKeys, 2);
+    String materia = jsonGetAny(obj, materiaKeys, 2);
+
+    if (materia != mat) return;
+
+    int idNum = id.toInt();
+    if (idNum > 0) {
+      deleteAlumnoById(idNum);
+    }
+  });
+}
+
+static bool deleteCourseRelatedSchedules(const String &mat, const String &prof, bool oldNameWasUnique) {
+  removeSchedulesForDeletedCourse(mat, prof, oldNameWasUnique);
   return true;
 }
 
-// Devuelve lista única de nombres de materia (sin repetir por profesor)
-static std::vector<String> getUniqueMateriaNamesLocal() {
-  std::vector<String> out;
-  auto courses = loadCourses();
-  for (auto &c : courses) {
-    bool found = false;
-    for (auto &x : out) if (x == c.materia) { found = true; break; }
-    if (!found) out.push_back(c.materia);
+static bool registerCourseInDb(const String &materia, const String &profesor, const String &createdAt) {
+  if (!sendMateriaRegistro(materia, profesor, createdAt)) {
+    Serial.println("WARN: no se pudo registrar la materia en la BD");
+    return false;
   }
-  return out;
+  Serial.println("DB_SYNC: materia registrada correctamente");
+  return true;
 }
 
-// Devuelve lista de profesores para una materia (puede haber varios)
-static std::vector<String> getProfessorsForMateriaLocal(const String &materia) {
-  std::vector<String> out;
-  auto courses = loadCourses();
-  for (auto &c : courses) {
-    if (c.materia == materia) {
-      bool found = false;
-      for (auto &p : out) if (p == c.profesor) { found = true; break; }
-      if (!found) out.push_back(c.profesor);
-    }
+static bool updateCourseInDb(const String &oldMat, const String &newMat, const String &newProf, const String &createdAt) {
+  if (!updateMateriaByName(oldMat, newMat, newProf, createdAt)) {
+    Serial.println("WARN: no se pudo actualizar la materia en la BD");
+    return false;
   }
-  return out;
+  Serial.println("DB_SYNC: materia actualizada correctamente");
+  return true;
 }
 
-// Export: wrapper visible desde otros .cpp
+static bool deleteCourseInDb(const String &mat, bool cascade) {
+  if (!deleteMateriaByName(mat, cascade)) {
+    Serial.println("WARN: no se pudo eliminar la materia en la BD");
+    return false;
+  }
+  Serial.println("DB_SYNC: materia eliminada correctamente");
+  return true;
+}
+
+// Export visible desde otros .cpp
 std::vector<String> getProfessorsForMateria(const String &materia) {
-  return getProfessorsForMateriaLocal(materia);
+  return getProfessorsForMateriaFromServer(materia);
 }
 
-// Lee los maestros registrados (TEACHERS_FILE) y devuelve lista de nombres únicos
-static std::vector<String> loadRegisteredTeachersNamesLocal() {
-  std::vector<String> out;
-  if (!SPIFFS.exists(TEACHERS_FILE)) return out;
-
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return out;
-
-  if (f.available()) {
-    String header = f.readStringUntil('\n');
-    (void)header;
-  }
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n');
-    l.trim();
-    if (l.length() == 0) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 2) {
-      String name = c[1];
-      bool found = false;
-      for (auto &x : out) if (x == name) { found = true; break; }
-      if (!found) out.push_back(name);
-    }
-  }
-  f.close();
-  return out;
-}
-
-// Export wrapper
 std::vector<String> loadRegisteredTeachersNames() {
-  return loadRegisteredTeachersNamesLocal();
+  return fetchTeacherNamesFromServer();
 }
 
-// ---------- Handlers: materias ----------
+// ------------------------------------------------------------
+// Implementaciones públicas usadas por otros módulos
+// ------------------------------------------------------------
+
+std::vector<Course> loadCourses() {
+  return fetchCoursesFromServer();
+}
+
+bool courseExists(const String &materia) {
+  return courseExistsRemote(materia);
+}
+
+void addCourse(const String &materia, const String &prof) {
+  String mat = materia; mat.trim();
+  String pr = prof; pr.trim();
+  if (!mat.length() || !pr.length()) return;
+  String createdAt = nowISO();
+  registerCourseInDb(mat, pr, createdAt);
+}
+
+void writeCourses(const std::vector<Course> &list) {
+  std::vector<Course> current = fetchCoursesFromServer();
+
+  // 1) Crear o actualizar lo necesario
+  for (const auto &desired : list) {
+    if (!desired.materia.length() || !desired.profesor.length()) continue;
+
+    int idx = findCourseIndex(current, desired.materia, desired.profesor);
+    if (idx >= 0) {
+      // Ya existe exacto; nada que hacer.
+      continue;
+    }
+
+    // Intentar encontrar una materia con el mismo nombre para renombrar/ajustar
+    int sameNameIdx = -1;
+    for (int i = 0; i < (int)current.size(); ++i) {
+      if (current[i].materia == desired.materia) {
+        sameNameIdx = i;
+        break;
+      }
+    }
+
+    if (sameNameIdx >= 0) {
+      Course old = current[sameNameIdx];
+      updateCourseInDb(old.materia, desired.materia, desired.profesor, old.created_at);
+      current[sameNameIdx] = desired;
+      continue;
+    }
+
+    registerCourseInDb(desired.materia, desired.profesor, desired.created_at.length() ? desired.created_at : nowISO());
+    current.push_back(desired);
+  }
+
+  // 2) Eliminar lo que ya no existe en el nuevo listado
+  for (const auto &cur : current) {
+    bool stillWanted = false;
+    for (const auto &desired : list) {
+      if (desired.materia == cur.materia && desired.profesor == cur.profesor) {
+        stillWanted = true;
+        break;
+      }
+    }
+
+    if (stillWanted) continue;
+
+    // Si ya no está en la lista final, intentar borrarlo.
+    // Se usa cascade=true porque en esta capa la BD debe resolver la limpieza de relaciones.
+    deleteCourseInDb(cur.materia, true);
+  }
+}
+
+// ------------------------------------------------------------
+// Handlers: materias
+// ------------------------------------------------------------
 
 void handleMaterias() {
   String html = htmlHeader("Materias");
@@ -208,28 +587,18 @@ void handleMaterias() {
   if (courses.size() == 0) {
     html += "<p>No hay materias registradas.</p>";
   } else {
-    auto schedules = loadSchedules();
+    auto schedules = fetchSchedulesFromServer();
     html += "<table id='materias_table'><tr><th>Materia</th><th>Profesor</th><th>Creado</th><th>Horarios</th><th>Acción</th></tr>";
     for (auto &c : courses) {
       String schedStr = "";
       for (auto &s : schedules) {
-        String schedOwner = s.materia;
-        String ownerMat, ownerProf;
-        if (splitCourseKey(schedOwner, ownerMat, ownerProf)) {
-          if (ownerMat == c.materia && ownerProf == c.profesor) {
-            if (schedStr.length()) schedStr += "; ";
-            schedStr += s.day + " " + s.start + "-" + s.end;
-          }
-        } else {
-          if (schedOwner == c.materia) {
-            if (countCoursesWithName(c.materia) == 1) {
-              if (schedStr.length()) schedStr += "; ";
-              schedStr += s.day + " " + s.start + "-" + s.end;
-            }
-          }
+        if (scheduleBelongsToCourse(s.owner, c.materia, c.profesor)) {
+          if (schedStr.length()) schedStr += "; ";
+          schedStr += s.day + " " + s.start + "-" + s.end;
         }
       }
       if (schedStr.length() == 0) schedStr = "-";
+
       html += "<tr><td>" + c.materia + "</td><td>" + c.profesor + "</td><td>" + c.created_at + "</td><td>" + schedStr + "</td>";
 
       html += "<td>";
@@ -270,7 +639,7 @@ void handleMaterias() {
 }
 
 void handleMateriasNew() {
-  auto teachers = loadRegisteredTeachersNamesLocal();
+  auto teachers = fetchTeacherNamesFromServer();
 
   String html = htmlHeader("Agregar Materia");
   html += "<div class='card'><h2>Agregar nueva materia</h2>";
@@ -304,12 +673,15 @@ void handleMateriasAddPOST() {
     server.send(400, "text/plain", "materia y profesor requeridos");
     return;
   }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
+
   if (mat.length() == 0) { server.send(400, "text/plain", "materia vacia"); return; }
   if (prof.length() == 0) { server.send(400, "text/plain", "profesor vacio"); return; }
 
-  if (coursePairExists(mat, prof)) {
+  auto courses = loadCourses();
+  if (coursePairExists(courses, mat, prof)) {
     String html = htmlHeader("Operación inválida");
     html += "<div class='card'><h3>Operación inválida — duplicado de materia y profesor</h3>";
     html += "<p class='small'>No se puede registrar la misma materia con el mismo profesor porque ya existe una entrada idéntica en el sistema.</p>";
@@ -319,29 +691,41 @@ void handleMateriasAddPOST() {
     return;
   }
 
-  auto courses = loadCourses();
-  Course nc;
-  nc.materia = mat;
-  nc.profesor = prof;
-  nc.created_at = nowISO();
-  courses.push_back(nc);
-  writeCourses(courses);
-
-  syncMateriaCreateToOracle(nc.materia, nc.profesor, nc.created_at);
+  String createdAt = nowISO();
+  if (!registerCourseInDb(mat, prof, createdAt)) {
+    String html = htmlHeader("Error");
+    html += "<div class='card'><h3>No se pudo registrar la materia en la base de datos.</h3>";
+    html += "<p class='small'>Revise la conexión al servidor o los datos enviados.</p>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>";
+    html += htmlFooter();
+    server.send(200, "text/html", html);
+    return;
+  }
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "&new=1");
   server.send(303, "text/plain", "Continuar a asignar horarios (opcional)");
 }
 
 void handleMateriasNewScheduleGET() {
-  if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
+  if (!server.hasArg("materia") || !server.hasArg("profesor")) {
+    server.send(400, "text/plain", "materia y profesor requeridos");
+    return;
+  }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
-  if (mat.length() == 0 || prof.length() == 0) { server.send(400, "text/plain", "materia o profesor invalidos"); return; }
-  if (!coursePairExists(mat, prof)) { server.send(404, "text/plain", "Curso no encontrado"); return; }
+  if (mat.length() == 0 || prof.length() == 0) {
+    server.send(400, "text/plain", "materia o profesor invalidos");
+    return;
+  }
+
+  auto courses = loadCourses();
+  if (!coursePairExists(courses, mat, prof)) {
+    server.send(404, "text/plain", "Curso no encontrado");
+    return;
+  }
 
   bool fromNewFlow = (server.hasArg("new") && server.arg("new") == "1");
-  auto schedules = loadSchedules();
   String headerTitle = String("Asignar horarios - ") + mat + " (" + prof + ")";
   String html = htmlHeader(headerTitle.c_str());
   html += "<div class='card'><h2>Horarios para: " + mat + " — " + prof + "</h2>";
@@ -357,38 +741,29 @@ void handleMateriasNewScheduleGET() {
     char lbl[16];
     snprintf(lbl, sizeof(lbl), "%02d:00 - %02d:00", h, h + 2);
     html += "<tr><th>" + String(lbl) + "</th>";
+
     for (int d = 0; d < 6; d++) {
       String day = DAYS[d];
       String start = String(h) + ":00";
       String end = String(h + 2) + ":00";
       String owner;
-      bool occ = slotOccupiedLocal(day, start, &owner);
+      bool occ = slotOccupiedRemote(day, start, &owner);
+
       html += "<td style='min-width:150px'>";
       if (occ) {
-        String ownerMat, ownerProf;
-        if (splitCourseKey(owner, ownerMat, ownerProf)) {
-          if (owner == courseKey) {
-            html += "<div>" + ownerMat + " (" + ownerProf + ")</div>";
-            html += "<div style='margin-top:6px'><form method='POST' action='/materias_new_schedule_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
-                    "<input type='hidden' name='materia' value='" + mat + "'>"
-                    "<input type='hidden' name='profesor' value='" + prof + "'>"
-                    "<input type='hidden' name='day' value='" + day + "'>"
-                    "<input type='hidden' name='start' value='" + start + "'>"
-                    "<input class='btn btn-red' type='submit' value='Eliminar'>"
-                    "</form></div>";
-          } else {
-            html += "<div class='occupied-other'>" + ownerMat + " (" + ownerProf + ")</div>";
-          }
+        if (scheduleBelongsToCourse(owner, mat, prof)) {
+          html += "<div>" + mat + " (" + prof + ")</div>";
+          html += "<div style='margin-top:6px'><form method='POST' action='/materias_new_schedule_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
+                  "<input type='hidden' name='materia' value='" + mat + "'>"
+                  "<input type='hidden' name='profesor' value='" + prof + "'>"
+                  "<input type='hidden' name='day' value='" + day + "'>"
+                  "<input type='hidden' name='start' value='" + start + "'>"
+                  "<button class='btn btn-red' type='submit'>Eliminar</button>"
+                  "</form></div>";
         } else {
-          if (owner == mat && countCoursesWithName(mat) == 1) {
-            html += "<div>" + owner + "</div>";
-            html += "<div style='margin-top:6px'><form method='POST' action='/materias_new_schedule_del' style='display:inline' onsubmit='return confirm(\"Eliminar este horario?\");'>"
-                    "<input type='hidden' name='materia' value='" + mat + "'>"
-                    "<input type='hidden' name='profesor' value='" + prof + "'>"
-                    "<input type='hidden' name='day' value='" + day + "'>"
-                    "<input type='hidden' name='start' value='" + start + "'>"
-                    "<input class='btn btn-red' type='submit' value='Eliminar'>"
-                    "</form></div>";
+          String ownerMat, ownerProf;
+          if (splitCourseKey(owner, ownerMat, ownerProf)) {
+            html += "<div class='occupied-other'>" + ownerMat + " (" + ownerProf + ")</div>";
           } else {
             html += "<div class='occupied-other'>" + owner + "</div>";
           }
@@ -400,7 +775,7 @@ void handleMateriasNewScheduleGET() {
         html += "<input type='hidden' name='day' value='" + day + "'>";
         html += "<input type='hidden' name='start' value='" + start + "'>";
         html += "<input type='hidden' name='end' value='" + end + "'>";
-        html += "<input class='btn btn-green' type='submit' value='Agregar'>";
+        html += "<button class='btn btn-green' type='submit'>Agregar</button>";
         html += "</form>";
       }
       html += "</td>";
@@ -413,7 +788,7 @@ void handleMateriasNewScheduleGET() {
   html += "<p style='margin-top:12px'>";
   if (fromNewFlow) {
     html += "<form method='GET' action='/materias' style='display:inline'><button class='btn btn-green'>Continuar</button></form> ";
-    html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios.\");'>";
+    html += "<form method='POST' action='/materias_delete' style='display:inline' onsubmit='return confirm(\"Cancelar registro y eliminar la materia? Esta acción borrará la materia y sus horarios/usuarios.\");'>";
     html += "<input type='hidden' name='materia' value='" + mat + "'>";
     html += "<input type='hidden' name='profesor' value='" + prof + "'>";
     html += "<button class='btn btn-red' type='submit'>Cancelar registro</button>";
@@ -428,24 +803,50 @@ void handleMateriasNewScheduleGET() {
 
 void handleMateriasNewScheduleAddPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start") || !server.hasArg("end")) {
-    server.send(400, "text/plain", "faltan"); return;
+    server.send(400, "text/plain", "faltan");
+    return;
   }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
   String day = server.arg("day"); day.trim();
   String start = server.arg("start"); start.trim();
   String end = server.arg("end"); end.trim();
-  if (mat.length() == 0 || prof.length() == 0) { server.send(400, "text/plain", "materia o profesor vacio"); return; }
-  if (!coursePairExists(mat, prof)) { server.send(400, "text/plain", "Curso no registrado"); return; }
+
+  if (mat.length() == 0 || prof.length() == 0) {
+    server.send(400, "text/plain", "materia o profesor vacio");
+    return;
+  }
+
+  auto courses = loadCourses();
+  if (!coursePairExists(courses, mat, prof)) {
+    server.send(400, "text/plain", "Curso no registrado");
+    return;
+  }
 
   String courseKey = makeCourseKey(mat, prof);
-  String err;
-  if (!addScheduleSlotSafeLocalKey(courseKey, day, start, end, &err)) {
-    Serial.print("WARN: no se pudo agregar horario local: ");
-    Serial.println(err);
-  } else {
-    Serial.println("Horario agregado localmente");
+  String owner;
+  if (slotOccupiedRemote(day, start, &owner)) {
+    if (owner != courseKey) {
+      String html = htmlHeader("Horario ocupado");
+      html += "<div class='card'><h3>Ese horario ya está ocupado por otra materia.</h3>";
+      html += "<p class='small'>Seleccione otro horario.</p>";
+      html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "'>Volver</a></p></div>";
+      html += htmlFooter();
+      server.send(200, "text/html", html);
+      return;
+    }
+
+    String html = htmlHeader("Horario duplicado");
+    html += "<div class='card'><h3>Ese horario ya estaba asignado a este mismo curso.</h3>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof) + "'>Volver</a></p></div>";
+    html += htmlFooter();
+    server.send(200, "text/html", html);
+    return;
   }
+
+  addScheduleSlot(courseKey, day, start, end);
+  Serial.println("Horario agregado en servidor");
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof));
   server.send(303, "text/plain", "Agregado");
@@ -453,42 +854,25 @@ void handleMateriasNewScheduleAddPOST() {
 
 void handleMateriasNewScheduleDelPOST() {
   if (!server.hasArg("materia") || !server.hasArg("profesor") || !server.hasArg("day") || !server.hasArg("start")) {
-    server.send(400, "text/plain", "faltan"); return;
+    server.send(400, "text/plain", "faltan");
+    return;
   }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
   String day = server.arg("day"); day.trim();
   String start = server.arg("start"); start.trim();
-  if (mat.length() == 0 || prof.length() == 0) { server.send(400, "text/plain", "materia/profesor vacio"); return; }
+
+  if (mat.length() == 0 || prof.length() == 0) {
+    server.send(400, "text/plain", "materia/profesor vacio");
+    return;
+  }
 
   String courseKey = makeCourseKey(mat, prof);
-
-  File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-  std::vector<String> slines;
-  if (f) {
-    String header = f.readStringUntil('\n');
-    slines.push_back(header);
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String owner = c[0];
-        String dayc = c[1];
-        String startc = c[2];
-        if (dayc == day && startc == start) {
-          String ownerMat, ownerProf;
-          if (splitCourseKey(owner, ownerMat, ownerProf)) {
-            if (owner == courseKey) continue;
-          } else {
-            if (owner == mat && countCoursesWithName(mat) == 1) continue;
-          }
-        }
-      }
-      slines.push_back(l);
-    }
-    f.close();
-    writeAllLines(SCHEDULES_FILE, slines);
+  bool ok = deleteScheduleSlot(courseKey, day, start);
+  if (!ok) {
+    // Fallback por compatibilidad con horarios antiguos guardados solo con materia.
+    deleteScheduleSlot(mat, day, start);
   }
 
   server.sendHeader("Location", "/materias_new_schedule?materia=" + urlEncode(mat) + "&profesor=" + urlEncode(prof));
@@ -496,17 +880,22 @@ void handleMateriasNewScheduleDelPOST() {
 }
 
 void handleMateriasEditGET() {
-  if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
+  if (!server.hasArg("materia") || !server.hasArg("profesor")) {
+    server.send(400, "text/plain", "materia y profesor requeridos");
+    return;
+  }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
-  auto courses = loadCourses();
-  int idx = -1;
-  for (int i = 0; i < (int)courses.size(); i++) {
-    if (courses[i].materia == mat && courses[i].profesor == prof) { idx = i; break; }
-  }
-  if (idx == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
-  auto teachers = loadRegisteredTeachersNamesLocal();
+  auto courses = loadCourses();
+  int idx = findCourseIndex(courses, mat, prof);
+  if (idx == -1) {
+    server.send(404, "text/plain", "Materia no encontrada");
+    return;
+  }
+
+  auto teachers = fetchTeacherNamesFromServer();
 
   String html = htmlHeader("Editar Materia");
   html += R"rawliteral(
@@ -538,8 +927,12 @@ void handleMateriasEditGET() {
     bool currentInList = false;
     html += "<select name='profesor' required>";
     for (auto &t : teachers) {
-      if (t == courses[idx].profesor) { html += "<option value='" + t + "' selected>" + t + "</option>"; currentInList = true; }
-      else html += "<option value='" + t + "'>" + t + "</option>";
+      if (t == courses[idx].profesor) {
+        html += "<option value='" + t + "' selected>" + t + "</option>";
+        currentInList = true;
+      } else {
+        html += "<option value='" + t + "'>" + t + "</option>";
+      }
     }
     if (!currentInList) {
       html += "<option value='" + courses[idx].profesor + "' selected>" + courses[idx].profesor + "</option>";
@@ -550,26 +943,31 @@ void handleMateriasEditGET() {
 
   html += "<div class='actions-row'><button class='btn btn-green' type='submit'>Guardar cambios</button>";
   html += "<a class='btn btn-blue' href='/materias'>Volver</a></div>";
-
   html += "</form></div>" + htmlFooter();
+
   server.send(200, "text/html", html);
 }
 
 void handleMateriasEditPOST() {
-  if (!server.hasArg("orig_materia") || !server.hasArg("orig_profesor") || !server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "faltan"); return; }
+  if (!server.hasArg("orig_materia") || !server.hasArg("orig_profesor") || !server.hasArg("materia") || !server.hasArg("profesor")) {
+    server.send(400, "text/plain", "faltan");
+    return;
+  }
+
   String orig = server.arg("orig_materia"); orig.trim();
   String origProf = server.arg("orig_profesor"); origProf.trim();
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
+
   if (mat.length() == 0) { server.send(400, "text/plain", "materia vacia"); return; }
   if (prof.length() == 0) { server.send(400, "text/plain", "profesor vacio"); return; }
 
   auto courses = loadCourses();
-  int origIndex = -1;
-  for (int i = 0; i < (int)courses.size(); i++) {
-    if (courses[i].materia == orig && courses[i].profesor == origProf) { origIndex = i; break; }
+  int origIndex = findCourseIndex(courses, orig, origProf);
+  if (origIndex == -1) {
+    server.send(404, "text/plain", "Materia no encontrada");
+    return;
   }
-  if (origIndex == -1) { server.send(404, "text/plain", "Materia no encontrada"); return; }
 
   for (int i = 0; i < (int)courses.size(); i++) {
     if (i == origIndex) continue;
@@ -587,143 +985,78 @@ void handleMateriasEditPOST() {
   String oldMat = courses[origIndex].materia;
   String oldProf = courses[origIndex].profesor;
   String oldCreated = courses[origIndex].created_at;
+  bool oldNameWasUnique = (countCoursesWithName(courses, oldMat) == 1);
 
-  courses[origIndex].materia = mat;
-  courses[origIndex].profesor = prof;
-  writeCourses(courses);
-
-  syncMateriaUpdateToOracle(oldMat, mat, prof, oldCreated);
-
-  String oldKey = makeCourseKey(oldMat, oldProf);
-  String newKey = makeCourseKey(mat, prof);
-  File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-  std::vector<String> slines;
-  if (f) {
-    String header = f.readStringUntil('\n');
-    slines.push_back(header);
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String owner = c[0];
-        String day = c[1];
-        String start = c[2];
-        String rest = c[3];
-        if (owner == oldKey) {
-          String newline = "\"" + newKey + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
-          slines.push_back(newline);
-          continue;
-        }
-        if (owner == oldMat) {
-          if (countCoursesWithName(oldMat) == 1) {
-            String newline = "\"" + newKey + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
-            slines.push_back(newline);
-            continue;
-          }
-        }
-      }
-      slines.push_back(l);
-    }
-    f.close();
-    writeAllLines(SCHEDULES_FILE, slines);
+  // Actualización en BD
+  if (!updateCourseInDb(oldMat, mat, prof, oldCreated)) {
+    String html = htmlHeader("Error");
+    html += "<div class='card'><h3>No se pudo actualizar la materia en la base de datos.</h3>";
+    html += "<p class='small'>Revise la conexión al servidor o los datos enviados.</p>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>";
+    html += htmlFooter();
+    server.send(200, "text/html", html);
+    return;
   }
 
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  std::vector<String> ulines;
-  if (fu) {
-    String uheader = fu.readStringUntil('\n');
-    ulines.push_back(uheader);
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String uid = c[0], name = c[1], acc = c[2], mm = c[3];
-        String created = (c.size() > 4 ? c[4] : "");
-        if (mm == oldMat && countCoursesWithName(oldMat) == 1) mm = mat;
-        if (mm == oldKey) mm = newKey;
-        ulines.push_back("\"" + uid + "\"," + "\"" + name + "\"," + "\"" + acc + "\"," + "\"" + mm + "\"," + "\"" + created + "\"");
-      } else ulines.push_back(l);
-    }
-    fu.close();
-    writeAllLines(USERS_FILE, ulines);
-  }
+  // Migrar horarios y alumnos si el nombre de la materia cambió y era único
+  migrateSchedulesForCourseRename(oldMat, oldProf, mat, prof, oldNameWasUnique);
+  migrateStudentsForCourseRename(oldMat, mat, oldNameWasUnique);
 
   server.sendHeader("Location", "/materias");
   server.send(303, "text/plain", "Editado");
 }
 
 void handleMateriasDeletePOST() {
-  if (!server.hasArg("materia") || !server.hasArg("profesor")) { server.send(400, "text/plain", "materia y profesor requeridos"); return; }
+  if (!server.hasArg("materia") || !server.hasArg("profesor")) {
+    server.send(400, "text/plain", "materia y profesor requeridos");
+    return;
+  }
+
   String mat = server.arg("materia"); mat.trim();
   String prof = server.arg("profesor"); prof.trim();
-  if (mat.length() == 0 || prof.length() == 0) { server.send(400, "text/plain", "materia/profesor vacio"); return; }
+  if (mat.length() == 0 || prof.length() == 0) {
+    server.send(400, "text/plain", "materia/profesor vacio");
+    return;
+  }
 
   auto courses = loadCourses();
-  std::vector<Course> newCourses;
-  for (auto &c : courses) {
-    if (!(c.materia == mat && c.profesor == prof)) newCourses.push_back(c);
-  }
-  writeCourses(newCourses);
-
-  syncMateriaDeleteToOracle(mat, true);
-
-  String targetKey = makeCourseKey(mat, prof);
-
-  File f = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-  std::vector<String> slines;
-  if (f) {
-    String header = f.readStringUntil('\n'); slines.push_back(header);
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String owner = c[0];
-        if (owner == targetKey) continue;
-        if (owner == mat) {
-          if (countCoursesWithName(mat) == 0) continue;
-        }
-      }
-      slines.push_back(l);
-    }
-    f.close();
-    writeAllLines(SCHEDULES_FILE, slines);
+  int idx = findCourseIndex(courses, mat, prof);
+  if (idx == -1) {
+    server.send(404, "text/plain", "Materia no encontrada");
+    return;
   }
 
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  std::vector<String> ulines;
-  if (fu) {
-    String uheader = fu.readStringUntil('\n'); ulines.push_back(uheader);
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 4) {
-        String uid = c[0], name = c[1], acc = c[2], mm = c[3];
-        if (mm == makeCourseKey(mat, prof)) continue;
-        if (mm == mat && countCoursesWithName(mat) == 0) continue;
-        ulines.push_back(l);
-      } else ulines.push_back(l);
-    }
-    fu.close();
-    writeAllLines(USERS_FILE, ulines);
+  bool oldNameWasUnique = (countCoursesWithName(courses, mat) == 1);
+
+  if (!deleteCourseInDb(mat, true)) {
+    String html = htmlHeader("Error");
+    html += "<div class='card'><h3>No se pudo eliminar la materia en la base de datos.</h3>";
+    html += "<p class='small'>Revise la conexión al servidor o intente nuevamente.</p>";
+    html += "<p style='margin-top:8px'><a class='btn btn-blue' href='/materias'>Volver</a></p></div>";
+    html += htmlFooter();
+    server.send(200, "text/html", html);
+    return;
+  }
+
+  deleteCourseRelatedSchedules(mat, prof, oldNameWasUnique);
+
+  if (oldNameWasUnique) {
+    deleteStudentsForDeletedCourse(mat);
   }
 
   server.sendHeader("Location", "/materias");
   server.send(303, "text/plain", "Eliminado");
 }
 
-// --- Endpoint JSON para obtener profesores por materia ---
+// Endpoint JSON para obtener profesores por materia
 void handleProfesoresForMateriaGET() {
   String mat = "";
   if (server.hasArg("materia")) {
     mat = server.arg("materia");
     mat.trim();
   }
-  std::vector<String> profs;
-  if (mat.length() > 0) profs = getProfessorsForMateria(mat);
+
+  std::vector<String> profs = getProfessorsForMateriaFromServer(mat);
   String j = "{\"profesores\":[";
   for (size_t i = 0; i < profs.size(); ++i) {
     if (i) j += ",";

@@ -1,16 +1,14 @@
 // src/web/web_common.cpp
 #include <Arduino.h>
 #include <WiFi.h>
-#include <FS.h>
-#include <SPIFFS.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 #include "web/web_common.h"
 #include "globals.h"
 #include "config.h"
 #include "files_utils.h"
 #include "db_sync.h"
-#include <vector>
 
 // ---------------------------
 // Utilities: hashing (stable) - DEBE SER IDÉNTICO A notifications.cpp
@@ -33,93 +31,94 @@ static String notifKeyLocal(const String &ts, const String &uid, const String &n
   return out;
 }
 
-// --------------------------------------------------
-// Contador de notificaciones no leídas desde Oracle
-// --------------------------------------------------
-static int unreadNotifCountOracle() {
-  if (WiFi.status() != WL_CONNECTED) return -1;
+static String jsonAnyString(const JsonObjectConst &obj, const char* const* keys, size_t keyCount) {
+  for (size_t i = 0; i < keyCount; ++i) {
+    const char* k = keys[i];
+    if (!obj.containsKey(k)) continue;
+    JsonVariantConst v = obj[k];
+    if (v.isNull()) continue;
+    String s = v.as<String>();
+    s.trim();
+    if (s.length()) return s;
+  }
+  return "";
+}
 
-  String body = listNotificaciones(true); // solo no leídas
-  if (!body.length()) return -1;
+static bool parseDbRows(const String &body, std::vector<JsonObjectConst> &rows, const char* const* wrappers, size_t wrappersCount) {
+  rows.clear();
+  if (!body.length()) return false;
 
-  DynamicJsonDocument doc(16384);
+  size_t cap = body.length() * 2 + 2048;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
-    Serial.print("WARN: no se pudo parsear notificaciones Oracle: ");
+    Serial.print("WARN: no se pudo parsear JSON de DB: ");
     Serial.println(err.c_str());
-    return -1;
+    return false;
   }
 
-  if (!doc.is<JsonArray>()) return -1;
-  return doc.as<JsonArray>().size();
-}
-
-// --------------------------------------------------
-// Contador local en SPIFFS (respaldo offline)
-// --------------------------------------------------
-static int unreadNotifCountLocal() {
-  const char *readFile = "/.notif_read";
-  if (!SPIFFS.exists(NOTIF_FILE)) return 0;
-
-  std::vector<String> notifKeys;
-  File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
-  if (!f) return 0;
-
-  bool firstLine = true;
-  while (f.available()) {
-    String l = f.readStringUntil('\n');
-    if (firstLine) {
-      firstLine = false;
-      continue;
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      rows.push_back(v.as<JsonObjectConst>());
     }
-    l.trim();
-    if (!l.length()) continue;
-    auto cols = parseQuotedCSVLine(l);
-    String ts = (cols.size() > 0 ? cols[0] : "");
-    String uid = (cols.size() > 1 ? cols[1] : "");
-    String note = (cols.size() > 4 ? cols[4] : "");
-    String key = notifKeyLocal(ts, uid, note);
-    notifKeys.push_back(key);
+    return true;
   }
-  f.close();
 
-  int total = (int)notifKeys.size();
-  if (total == 0) return 0;
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
 
-  if (!SPIFFS.exists(readFile)) return total;
-
-  File rf = SPIFFS.open(readFile, FILE_READ);
-  if (!rf) return total;
-
-  std::vector<String> readKeys;
-  while (rf.available()) {
-    String l = rf.readStringUntil('\n');
-    l.trim();
-    if (l.length()) readKeys.push_back(l);
-  }
-  rf.close();
-
-  int unread = 0;
-  for (auto &k : notifKeys) {
-    bool found = false;
-    for (auto &rk : readKeys) {
-      if (k == rk) {
-        found = true;
-        break;
+    for (size_t i = 0; i < wrappersCount; ++i) {
+      const char* key = wrappers[i];
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          rows.push_back(v.as<JsonObjectConst>());
+        }
+        return true;
       }
     }
-    if (!found) unread++;
+
+    rows.push_back(root);
+    return true;
   }
 
-  return unread;
+  return false;
 }
 
-// Cuenta notificaciones no leídas usando Oracle si está disponible,
-// y si no, usa el respaldo local en SPIFFS.
+static int countUnreadNotifFromOracle() {
+  if (WiFi.status() != WL_CONNECTED) return 0;
+
+  String body = listNotificaciones(true); // solo no leídas
+  if (!body.length()) return 0;
+
+  std::vector<JsonObjectConst> rows;
+  const char* wrappers[] = {"data", "notificaciones", "rows", "result", "items"};
+  if (!parseDbRows(body, rows, wrappers, sizeof(wrappers) / sizeof(wrappers[0]))) return 0;
+
+  return (int)rows.size();
+}
+
+static int countStudentsFromOracle() {
+  if (WiFi.status() != WL_CONNECTED) return 0;
+
+  String body = listAlumnos();
+  if (!body.length()) return 0;
+
+  std::vector<JsonObjectConst> rows;
+  const char* wrappers[] = {"data", "alumnos", "students", "rows", "result", "items"};
+  if (!parseDbRows(body, rows, wrappers, sizeof(wrappers) / sizeof(wrappers[0]))) return 0;
+
+  return (int)rows.size();
+}
+
+// Cuenta notificaciones no leídas usando Oracle.
 int unreadNotifCount() {
-  int oracleCount = unreadNotifCountOracle();
-  if (oracleCount >= 0) return oracleCount;
-  return unreadNotifCountLocal();
+  return countUnreadNotifFromOracle();
 }
 
 // ==================== CABECERA HTML GLOBAL ====================
@@ -567,7 +566,7 @@ String htmlHeader(const char* title) {
   if (nCount > 0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a></div>";
 
-  // Menú de navegación principal (se eliminó botón Capturar del nav)
+  // Menú de navegación principal
   h += "<div class='nav'>";
   h += "<a class='btn btn-blue' href='/schedules'>Horarios</a>";
   h += "<a class='btn btn-blue' href='/materias'>Materias</a>";
@@ -576,7 +575,7 @@ String htmlHeader(const char* title) {
   h += "<a class='btn btn-blue' href='/history'>Historial</a>";
   h += "</div></div>";
 
-  // Contenedor principal (contenido de la página)
+  // Contenedor principal
   h += "<div class='page-content'>";
 
   return h;
@@ -757,7 +756,7 @@ void handleRoot() {
   html += "<ul class='feature-list'>";
   html += "<li>Diferentes tipos de notificaciones: tarjetas desconocidas, intentos denegados, entradas fuera de horario.</li>";
   html += "<li>Acciones: marcar leído/no leído, ver perfiles.</li>";
-  html += "<li>Informacion completa de las notificaciones.</li>";
+  html += "<li>Información completa de las notificaciones.</li>";
   html += "</ul>";
   html += "<p class='small'>No leídas: " + String(unreadNotifCount()) + "</p>";
   html += "<a class='btn-module' href='/notifications'>Ver Notificaciones</a>";
@@ -773,31 +772,15 @@ void handleRoot() {
 // ==================== ESTADO DEL DISPOSITIVO ====================
 // Muestra información básica del ESP32: IP, uptime, memoria y conteo de usuarios.
 void handleStatus() {
-  size_t total = SPIFFS.totalBytes();
-  size_t used = SPIFFS.usedBytes();
-  float pct = (total > 0) ? (used * 100.0f) / (float)total : 0;
+  int usersCount = countStudentsFromOracle();
 
   String html = htmlHeader("Estado ESP32");
   html += "<div class='card'><h2>Estado del Dispositivo</h2>";
   html += "<p><b>IP:</b> " + WiFi.localIP().toString() + "</p>";
   html += "<p><b>Tiempo activo:</b> " + String(millis() / 1000) + " segundos</p>";
   html += "<p><b>Memoria RAM libre:</b> " + String(ESP.getFreeHeap()) + " bytes</p>";
-  html += "<p><b>Almacenamiento SPIFFS:</b> " + String(used) + " / " + String(total) + " bytes (" + String(pct, 1) + "%)</p>";
-
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  int usersCount = 0;
-  if (fu) {
-    fu.readStringUntil('\n');
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n');
-      l.trim();
-      if (l.length()) usersCount++;
-    }
-    fu.close();
-  }
   html += "<p><b>Usuarios registrados:</b> " + String(usersCount) + "</p>";
-  html += "<div style='margin-top:10px'><a class='btn btn-blue' href='/users.csv'>Descargar Usuarios</a> "
-          "<a class='btn btn-blue' href='/'>Volver</a></div></div>";
+  html += "<div style='margin-top:10px'><a class='btn btn-blue' href='/'>Volver</a></div></div>";
   html += htmlFooter();
   server.send(200, "text/html", html);
 }

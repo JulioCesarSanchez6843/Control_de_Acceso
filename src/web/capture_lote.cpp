@@ -6,10 +6,10 @@
 #include "files_utils.h"
 #include "db_sync.h"
 
-#include <FS.h>
-#include <SPIFFS.h>
 #include <ctype.h>
 #include <vector>
+#include <utility>
+#include <ArduinoJson.h>
 
 // Externals (asegúrate están declaradas en globals.h)
 extern volatile bool captureMode;
@@ -57,6 +57,316 @@ static String jsEscape(const String &s) {
   return r;
 }
 
+static String jsonAnyString(const JsonObjectConst &obj, const char* const* keys, size_t keyCount) {
+  for (size_t i = 0; i < keyCount; ++i) {
+    const char* k = keys[i];
+    if (!obj.containsKey(k)) continue;
+    JsonVariantConst v = obj[k];
+    if (v.isNull()) continue;
+    String s = v.as<String>();
+    s.trim();
+    if (s.length()) return s;
+  }
+  return "";
+}
+
+// ---------------------------
+// DB rows
+// ---------------------------
+struct MateriaDbRow {
+  String materia;
+  String profesor;
+};
+
+struct AlumnoDbRow {
+  String id;
+  String uid;
+  String name;
+  String account;
+  String materia;
+  String created;
+};
+
+struct ProfesorDbRow {
+  String id;
+  String uid;
+  String name;
+  String account;
+  String created;
+};
+
+static bool parseMateriasResponse(const String &body, std::vector<MateriaDbRow> &out) {
+  out.clear();
+  if (!body.length()) return false;
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando listMaterias(): ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  auto handleObj = [&](JsonObjectConst obj) {
+    const char* materiaKeys[] = {"materia", "subject", "name"};
+    const char* profesorKeys[] = {"profesor", "teacher", "maestro", "nombre_profesor"};
+    MateriaDbRow r;
+    r.materia = jsonAnyString(obj, materiaKeys, 3);
+    r.profesor = jsonAnyString(obj, profesorKeys, 4);
+    if (r.materia.length()) out.push_back(r);
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      handleObj(v.as<JsonObjectConst>());
+    }
+    return true;
+  }
+
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "materias", "rows", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          handleObj(v.as<JsonObjectConst>());
+        }
+        return true;
+      }
+    }
+    handleObj(root);
+    return true;
+  }
+
+  return false;
+}
+
+static bool parseAlumnosResponse(const String &body, std::vector<AlumnoDbRow> &out) {
+  out.clear();
+  if (!body.length()) return false;
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando listAlumnos(): ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  auto handleObj = [&](JsonObjectConst obj) {
+    const char* idKeys[] = {"id", "ID"};
+    const char* uidKeys[] = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+    const char* nameKeys[] = {"name", "nombre", "full_name"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    const char* materiaKeys[] = {"materia", "subject"};
+    const char* createdKeys[] = {"created", "created_at", "createdAt", "fecha", "timestamp"};
+
+    AlumnoDbRow r;
+    r.id = jsonAnyString(obj, idKeys, 2);
+    r.uid = jsonAnyString(obj, uidKeys, 4);
+    r.name = jsonAnyString(obj, nameKeys, 3);
+    r.account = jsonAnyString(obj, accountKeys, 4);
+    r.materia = jsonAnyString(obj, materiaKeys, 2);
+    r.created = jsonAnyString(obj, createdKeys, 5);
+
+    if (r.uid.length()) out.push_back(r);
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      handleObj(v.as<JsonObjectConst>());
+    }
+    return true;
+  }
+
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "alumnos", "students", "rows", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          handleObj(v.as<JsonObjectConst>());
+        }
+        return true;
+      }
+    }
+    handleObj(root);
+    return true;
+  }
+
+  return false;
+}
+
+static bool parseProfesoresResponse(const String &body, std::vector<ProfesorDbRow> &out) {
+  out.clear();
+  if (!body.length()) return false;
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando listProfesores(): ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  auto handleObj = [&](JsonObjectConst obj) {
+    const char* idKeys[] = {"id", "ID"};
+    const char* uidKeys[] = {"rfid_uid", "uid", "profesor_uid", "teacher_uid"};
+    const char* nameKeys[] = {"name", "nombre", "full_name"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    const char* createdKeys[] = {"created", "created_at", "createdAt", "fecha", "timestamp"};
+
+    ProfesorDbRow r;
+    r.id = jsonAnyString(obj, idKeys, 2);
+    r.uid = jsonAnyString(obj, uidKeys, 4);
+    r.name = jsonAnyString(obj, nameKeys, 3);
+    r.account = jsonAnyString(obj, accountKeys, 4);
+    r.created = jsonAnyString(obj, createdKeys, 5);
+
+    if (r.uid.length()) out.push_back(r);
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      handleObj(v.as<JsonObjectConst>());
+    }
+    return true;
+  }
+
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "profesores", "teachers", "rows", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          handleObj(v.as<JsonObjectConst>());
+        }
+        return true;
+      }
+    }
+    handleObj(root);
+    return true;
+  }
+
+  return false;
+}
+
+static std::vector<MateriaDbRow> loadMateriasFromDb() {
+  std::vector<MateriaDbRow> out;
+  String body = listMaterias();
+  if (!body.length()) return out;
+  parseMateriasResponse(body, out);
+  return out;
+}
+
+static std::vector<AlumnoDbRow> loadAlumnosFromDb() {
+  std::vector<AlumnoDbRow> out;
+  String body = listAlumnos();
+  if (!body.length()) return out;
+  parseAlumnosResponse(body, out);
+  return out;
+}
+
+static std::vector<ProfesorDbRow> loadProfesoresFromDb() {
+  std::vector<ProfesorDbRow> out;
+  String body = listProfesores();
+  if (!body.length()) return out;
+  parseProfesoresResponse(body, out);
+  return out;
+}
+
+static std::vector<AlumnoDbRow> loadAlumnosByUidDb(const String &uid) {
+  std::vector<AlumnoDbRow> all = loadAlumnosFromDb();
+  std::vector<AlumnoDbRow> out;
+  for (auto &r : all) {
+    if (r.uid == uid) out.push_back(r);
+  }
+  return out;
+}
+
+static std::vector<ProfesorDbRow> loadProfesoresByUidDb(const String &uid) {
+  std::vector<ProfesorDbRow> all = loadProfesoresFromDb();
+  std::vector<ProfesorDbRow> out;
+  for (auto &r : all) {
+    if (r.uid == uid) out.push_back(r);
+  }
+  return out;
+}
+
+static bool uidExistsInTeachers(const String &uid) {
+  if (uid.length() == 0) return false;
+  return !loadProfesoresByUidDb(uid).empty();
+}
+
+static String teacherNameByUidDb(const String &uid) {
+  auto rows = loadProfesoresByUidDb(uid);
+  if (!rows.empty()) return rows[0].name;
+  return String();
+}
+
+static bool studentExistsInMateria(const String &uid, const String &materia) {
+  if (uid.length() == 0 || materia.length() == 0) return false;
+  std::vector<AlumnoDbRow> rows = loadAlumnosByUidDb(uid);
+  for (auto &r : rows) {
+    if (r.materia == materia) return true;
+  }
+  return false;
+}
+
+static bool studentExistsInDb(const String &uid) {
+  if (uid.length() == 0) return false;
+  return !loadAlumnosByUidDb(uid).empty();
+}
+
+static std::pair<String, String> findByAccountDb(const String &account) {
+  if (account.length() == 0) return std::make_pair(String(""), String(""));
+
+  std::vector<AlumnoDbRow> alumnos = loadAlumnosFromDb();
+  for (auto &r : alumnos) {
+    if (r.account == account) return std::make_pair(r.uid, String("users"));
+  }
+
+  std::vector<ProfesorDbRow> profes = loadProfesoresFromDb();
+  for (auto &r : profes) {
+    if (r.account == account) return std::make_pair(r.uid, String("teachers"));
+  }
+
+  return std::make_pair(String(""), String(""));
+}
+
+static String getUserNameForUidMateria(const String &uid, const String &materia) {
+  String name = "";
+  if (uid.length() == 0) return name;
+
+  std::vector<AlumnoDbRow> rows = loadAlumnosByUidDb(uid);
+  for (auto &r : rows) {
+    if (r.name.length() && name.length() == 0) name = r.name;
+    if (materia.length() > 0 && r.materia == materia && r.name.length()) return r.name;
+  }
+  return name;
+}
+
 static String computeScheduleBaseMat() {
   String scheduleOwner = currentScheduledMateria();
   String scheduleBaseMat;
@@ -71,100 +381,95 @@ static String computeScheduleBaseMat() {
   return scheduleBaseMat;
 }
 
-// Función para verificar si un alumno ya está registrado en una materia específica
-static bool studentExistsInMateria(const String &uid, const String &materia) {
-  if (uid.length() == 0 || materia.length() == 0) return false;
+static std::vector<String> getProfessorsForMateriaDb(const String &materia) {
+  std::vector<String> out;
+  if (materia.length() == 0) return out;
 
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return false;
-
-  while (f.available()) {
-    String l = f.readStringUntil('\n');
-    l.trim();
-    if (l.length() == 0) continue;
-
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 4) {
-      String uidc = c[0];
-      String matc = c[3];
-      if (uidc == uid && matc == materia) {
-        f.close();
-        return true;
-      }
+  std::vector<MateriaDbRow> materias = loadMateriasFromDb();
+  for (auto &m : materias) {
+    if (m.materia == materia && m.profesor.length()) {
+      bool ok = true;
+      for (auto &p : out) if (p == m.profesor) { ok = false; break; }
+      if (ok) out.push_back(m.profesor);
     }
   }
-  f.close();
+  return out;
+}
+
+static String inferProfessorForMateria(const String &materia) {
+  if (materia.length() == 0) return String();
+  std::vector<String> profs = getProfessorsForMateriaDb(materia);
+  if (profs.size() == 1) return profs[0];
+  return String();
+}
+
+static bool materiaExistsDb(const String &materia) {
+  if (materia.length() == 0) return false;
+  std::vector<MateriaDbRow> materias = loadMateriasFromDb();
+  for (auto &m : materias) {
+    if (m.materia == materia) return true;
+  }
   return false;
 }
 
-// uidExistsInTeachers/uidExistsInUsers
-static bool uidExistsInTeachers(const String &uid) {
-  if (uid.length() == 0) return false;
-  File f = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
-  }
-  f.close();
-  return false;
+static String nowStr() {
+  return nowISO();
 }
 
-static bool uidExistsInUsers(const String &uid) {
-  if (uid.length() == 0) return false;
-  File f = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+static bool registerDeniedNotificationDb(const String &uid, const String &name, const String &account, const String &note) {
+  // Usamos la BD de notificaciones en lugar de archivar en SPIFFS
+  bool ok = sendNotificacionRegistro(nowISO(), uid, name, account, note);
+  if (!ok) {
+    Serial.println("WARN: no se pudo registrar la notificación de denegado en Oracle");
   }
-  f.close();
-  return false;
+  return ok;
 }
 
-// Helper: elimina UIDs de maestro desde el vector y devuelve lista de maestros eliminados (detalles)
-static std::vector<String> filterOutTeachersFromList(std::vector<String> &list) {
-  std::vector<String> removed;
-  for (int i = (int)list.size() - 1; i >= 0; --i) {
-    String uid = list[i];
-    if (uidExistsInTeachers(uid)) {
-      String teacherName = "";
-      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-      if (ft) {
-        while (ft.available()) {
-          String l = ft.readStringUntil('\n'); l.trim();
-          if (!l.length()) continue;
-          auto c = parseQuotedCSVLine(l);
-          if (c.size() >= 2 && c[0] == uid) { teacherName = c[1]; break; }
-        }
-        ft.close();
-      }
-      String entry = uid + (teacherName.length() ? String(" - ") + teacherName : "");
-      removed.push_back(entry);
-      list.erase(list.begin() + i);
-    }
-  }
-  return removed;
-}
+static bool registerBatchAlumnoDb(const String &uid, const String &name, const String &account, const String &materia, const String &createdAt) {
+  bool ok = true;
 
-// Sync helpers
-static void syncBatchAlumnoToOracle(const String &uid, const String &name, const String &account, const String &materia, const String &createdAt) {
-  if (name.length() == 0 || account.length() == 0) return;
   if (!sendAlumnoRegistro(uid, name, account, materia, createdAt)) {
-    Serial.println("WARN: no se pudo sincronizar alumno del lote con Oracle");
+    Serial.println("WARN: no se pudo registrar alumno del lote en Oracle");
+    ok = false;
   } else {
-    Serial.println("DB_SYNC: alumno del lote sincronizado correctamente");
+    Serial.println("DB_SYNC: alumno del lote registrado correctamente");
   }
 
-  if (!sendAsistencia(createdAt, uid, name, account, materia, "captura")) {
-    Serial.println("WARN: no se pudo sincronizar asistencia del lote");
+  if (!sendAsistencia(createdAt, uid, name, account, materia, "entrada")) {
+    Serial.println("WARN: no se pudo registrar asistencia del lote en Oracle");
+    ok = false;
   } else {
-    Serial.println("DB_SYNC: asistencia del lote sincronizada correctamente");
+    Serial.println("DB_SYNC: asistencia del lote registrada correctamente");
   }
+
+  return ok;
+}
+
+static bool isTeacherUidDb(const String &uid) {
+  return uidExistsInTeachers(uid);
+}
+
+static void removeTeacherUidsFromQueue(std::vector<String> &uids, std::vector<String> &removedTeachers) {
+  removedTeachers.clear();
+
+  for (int i = (int)uids.size() - 1; i >= 0; --i) {
+    String uid = uids[i];
+    if (!isTeacherUidDb(uid)) continue;
+
+    String teacherName = teacherNameByUidDb(uid);
+    String entry = uid;
+    if (teacherName.length()) entry += " - " + teacherName;
+    removedTeachers.push_back(entry);
+    uids.erase(uids.begin() + i);
+  }
+}
+
+static void noteTeacherBlocked(const String &uid, const String &teacherName, const String &context) {
+  String note = "Tarjeta de maestro detectada y omitida en captura por lote";
+  if (context.length()) note += " (" + context + ")";
+  if (teacherName.length()) note += ": " + teacherName;
+  else note += ": " + uid;
+  registerDeniedNotificationDb(uid, teacherName, String(), note);
 }
 
 // -------------------- Page --------------------
@@ -193,11 +498,11 @@ void capture_lote_page() {
 
   String coursesOptionsHtml = "";
   if (scheduleBaseMat.length() == 0) {
-    auto courses = loadCourses();
-    for (size_t i = 0; i < courses.size(); ++i) {
-      String label = courses[i].materia;
-      if (courses[i].profesor.length()) label += " (" + courses[i].profesor + ")";
-      coursesOptionsHtml += "<option value='" + htmlEscape(courses[i].materia) + "'>" + htmlEscape(label) + "</option>";
+    auto materias = loadMateriasFromDb();
+    for (size_t i = 0; i < materias.size(); ++i) {
+      String label = materias[i].materia;
+      if (materias[i].profesor.length()) label += " (" + materias[i].profesor + ")";
+      coursesOptionsHtml += "<option value='" + htmlEscape(materias[i].materia) + "'>" + htmlEscape(label) + "</option>";
     }
   }
 
@@ -251,138 +556,138 @@ void capture_lote_page() {
   String scheduleFlag = scheduleBaseMat.length() ? "true" : "false";
 
   html += R"rawliteral(
-    <script>
-    var scheduleHasMateria = )rawliteral";
+<script>
+var scheduleHasMateria = )rawliteral";
   html += scheduleFlag;
   html += R"rawliteral(;
-    var selectedMateria = '';
-    function setGlobalMateriaValue(val) {
-      selectedMateria = val || '';
-      var hidden = document.getElementById('batch_materia');
-      if (hidden) hidden.value = selectedMateria;
-      var finishBtn = document.getElementById('finishBtn');
-      if (finishBtn) finishBtn.disabled = (!selectedMateria || selectedMateria.trim() == '');
-    }
+var selectedMateria = '';
+function setGlobalMateriaValue(val) {
+  selectedMateria = val || '';
+  var hidden = document.getElementById('batch_materia');
+  if (hidden) hidden.value = selectedMateria;
+  var finishBtn = document.getElementById('finishBtn');
+  if (finishBtn) finishBtn.disabled = (!selectedMateria || selectedMateria.trim() == '');
+}
 
-    function removeUid(uid) {
-      if (!uid) return;
-      fetch('/capture_remove_uid', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'uid=' + encodeURIComponent(uid)
-      }).then(function(r){
-        setTimeout(pollQueue, 250);
-      }).catch(function(){ setTimeout(pollQueue, 500); });
-    }
+function removeUid(uid) {
+  if (!uid) return;
+  fetch('/capture_remove_uid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'uid=' + encodeURIComponent(uid)
+  }).then(function(r){
+    setTimeout(pollQueue, 250);
+  }).catch(function(){ setTimeout(pollQueue, 500); });
+}
 
-    var teacherBannerTimer = null;
-    function pollQueue() {
-      fetch('/capture_batch_poll')
-        .then(r=>r.json())
-        .then(j=>{
-          var cntEl = document.getElementById('queue_count');
-          if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
+var teacherBannerTimer = null;
+function pollQueue() {
+  fetch('/capture_batch_poll')
+    .then(r=>r.json())
+    .then(j=>{
+      var cntEl = document.getElementById('queue_count');
+      if (cntEl) cntEl.textContent = j.uids ? j.uids.length : 0;
 
-          var bc = document.getElementById('banners_container');
-          bc.innerHTML = '';
+      var bc = document.getElementById('banners_container');
+      bc.innerHTML = '';
 
-          if (j.awaiting) {
-            var y = document.createElement('div');
-            y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
-            y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
-            y.innerHTML='Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
-            bc.appendChild(y);
-          }
-
-          if (j.wrong_card) {
-            var red = document.createElement('div');
-            red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
-            red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
-            red.textContent = 'Espere su turno: registro en curso';
-            bc.appendChild(red);
-          }
-
-          if (j.teacher_blocked) {
-            var existing = document.getElementById('teacher_blocked_banner');
-            if (!existing) {
-              var tb = document.createElement('div');
-              tb.id = 'teacher_blocked_banner';
-              tb.style.marginBottom='8px'; tb.style.padding='8px'; tb.style.borderRadius='6px'; tb.style.background='#ffeaa7';
-              tb.style.color='#111'; tb.style.fontWeight='700'; tb.style.textAlign='center';
-              tb.textContent = j.teacher_blocked_message || 'Tarjeta de maestro rechazada';
-              bc.appendChild(tb);
-            } else {
-              bc.appendChild(existing);
-            }
-
-            if (teacherBannerTimer) clearTimeout(teacherBannerTimer);
-            teacherBannerTimer = setTimeout(function(){
-              var el = document.getElementById('teacher_blocked_banner');
-              if (el && el.parentNode) el.parentNode.removeChild(el);
-              teacherBannerTimer = null;
-            }, 5000);
-          } else {
-            var el = document.getElementById('teacher_blocked_banner');
-            if (el && el.parentNode) el.parentNode.removeChild(el);
-            if (teacherBannerTimer) { clearTimeout(teacherBannerTimer); teacherBannerTimer = null; }
-          }
-
-          var list = document.getElementById('queue_list');
-          if (!j.uids || j.uids.length==0) {
-            list.innerHTML = 'No hay UIDs capturadas aún.';
-          } else {
-            var html = '<table style="width:100%;border-collapse:collapse;"><tr><th style="text-align:left;padding:6px">UID</th><th style="text-align:left;padding:6px">Reg</th><th style="text-align:left;padding:6px">Nombre</th><th style="text-align:left;padding:6px">Cuenta</th><th style="text-align:left;padding:6px">Materia</th><th style="text-align:center;padding:6px">Acción</th></tr>';
-            for (var i=0;i<j.uids.length;i++){
-              var u = j.uids[i];
-              var reg = u.registered ? '✅' : '❌';
-              var nm = u.name || '';
-              var acc = u.account || '';
-              var mat = '';
-              if (scheduleHasMateria) mat = u.materia || '';
-              else mat = (selectedMateria && selectedMateria.length) ? selectedMateria : (u.materia || '');
-              html += '<tr><td style="padding:6px;border-top:1px solid #ddd;">' + (u.uid||'') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + reg + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (nm||'') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (acc||'') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (mat||'') + '</td>';
-              html += '<td style="padding:6px;border-top:1px solid #ddd;text-align:center;">';
-              html += '<button style="padding:4px 8px;border-radius:4px;border:none;background:#ef4444;color:#fff;cursor:pointer;" onclick="removeUid(\'' + (u.uid||'').replace(/'/g,'\\\'') + '\')">Eliminar</button>';
-              html += '</td></tr>';
-            }
-            html += '</table>';
-            list.innerHTML = html;
-          }
-
-          if (!scheduleHasMateria) {
-            var g = document.getElementById('global_materia_select');
-            if (g) g.value = selectedMateria || '';
-          }
-
-          var finishBtn = document.getElementById('finishBtn');
-          if (finishBtn) {
-            var disable = false;
-            if (!scheduleHasMateria) {
-              if (!selectedMateria || selectedMateria.trim()=='') disable = true;
-            }
-            finishBtn.disabled = disable;
-            if (disable) finishBtn.classList.remove('btn-green');
-            else finishBtn.classList.add('btn-green');
-          }
-        }).catch(e=>{
-        });
-      setTimeout(pollQueue, 900);
-    }
-    document.addEventListener('DOMContentLoaded', function(){
-      var g = document.getElementById('global_materia_select');
-      if (g) g.addEventListener('change', function(){ setGlobalMateriaValue(this.value); });
-      var hidden = document.getElementById('batch_materia');
-      if (hidden && hidden.value && hidden.value.trim()!='') {
-        selectedMateria = hidden.value;
+      if (j.awaiting) {
+        var y = document.createElement('div');
+        y.style.marginBottom='8px'; y.style.padding='8px'; y.style.borderRadius='6px'; y.style.background='#fff8d6';
+        y.style.color='#111'; y.style.fontWeight='700'; y.style.textAlign='center';
+        y.innerHTML='Atención: Registrando nuevo usuario (UID: ' + (j.awaiting_uid||'') + '). No pasar tarjeta hasta terminar el registro.';
+        bc.appendChild(y);
       }
-      pollQueue();
+
+      if (j.wrong_card) {
+        var red = document.createElement('div');
+        red.style.marginBottom='8px'; red.style.padding='8px'; red.style.borderRadius='6px'; red.style.background='#ef4444';
+        red.style.color='#fff'; red.style.fontWeight='700'; red.style.textAlign='center';
+        red.textContent = 'Espere su turno: registro en curso';
+        bc.appendChild(red);
+      }
+
+      if (j.teacher_blocked) {
+        var existing = document.getElementById('teacher_blocked_banner');
+        if (!existing) {
+          var tb = document.createElement('div');
+          tb.id = 'teacher_blocked_banner';
+          tb.style.marginBottom='8px'; tb.style.padding='8px'; tb.style.borderRadius='6px'; tb.style.background='#ffeaa7';
+          tb.style.color='#111'; tb.style.fontWeight='700'; tb.style.textAlign='center';
+          tb.textContent = j.teacher_blocked_message || 'Tarjeta de maestro rechazada';
+          bc.appendChild(tb);
+        } else {
+          bc.appendChild(existing);
+        }
+
+        if (teacherBannerTimer) clearTimeout(teacherBannerTimer);
+        teacherBannerTimer = setTimeout(function(){
+          var el = document.getElementById('teacher_blocked_banner');
+          if (el && el.parentNode) el.parentNode.removeChild(el);
+          teacherBannerTimer = null;
+        }, 5000);
+      } else {
+        var el = document.getElementById('teacher_blocked_banner');
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+        if (teacherBannerTimer) { clearTimeout(teacherBannerTimer); teacherBannerTimer = null; }
+      }
+
+      var list = document.getElementById('queue_list');
+      if (!j.uids || j.uids.length==0) {
+        list.innerHTML = 'No hay UIDs capturadas aún.';
+      } else {
+        var html = '<table style="width:100%;border-collapse:collapse;"><tr><th style="text-align:left;padding:6px">UID</th><th style="text-align:left;padding:6px">Reg</th><th style="text-align:left;padding:6px">Nombre</th><th style="text-align:left;padding:6px">Cuenta</th><th style="text-align:left;padding:6px">Materia</th><th style="text-align:center;padding:6px">Acción</th></tr>';
+        for (var i=0;i<j.uids.length;i++){
+          var u = j.uids[i];
+          var reg = u.registered ? '✅' : '❌';
+          var nm = u.name || '';
+          var acc = u.account || '';
+          var mat = '';
+          if (scheduleHasMateria) mat = u.materia || '';
+          else mat = (selectedMateria && selectedMateria.length) ? selectedMateria : (u.materia || '');
+          html += '<tr><td style="padding:6px;border-top:1px solid #ddd;">' + (u.uid||'') + '</td>';
+          html += '<td style="padding:6px;border-top:1px solid #ddd;">' + reg + '</td>';
+          html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (nm||'') + '</td>';
+          html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (acc||'') + '</td>';
+          html += '<td style="padding:6px;border-top:1px solid #ddd;">' + (mat||'') + '</td>';
+          html += '<td style="padding:6px;border-top:1px solid #ddd;text-align:center;">';
+          html += '<button style="padding:4px 8px;border-radius:4px;border:none;background:#ef4444;color:#fff;cursor:pointer;" onclick="removeUid(\'' + (u.uid||'').replace(/'/g,'\\\'') + '\')">Eliminar</button>';
+          html += '</td></tr>';
+        }
+        html += '</table>';
+        list.innerHTML = html;
+      }
+
+      if (!scheduleHasMateria) {
+        var g = document.getElementById('global_materia_select');
+        if (g) g.value = selectedMateria || '';
+      }
+
+      var finishBtn = document.getElementById('finishBtn');
+      if (finishBtn) {
+        var disable = false;
+        if (!scheduleHasMateria) {
+          if (!selectedMateria || selectedMateria.trim()=='') disable = true;
+        }
+        finishBtn.disabled = disable;
+        if (disable) finishBtn.classList.remove('btn-green');
+        else finishBtn.classList.add('btn-green');
+      }
+    }).catch(e=>{
     });
-    </script>
-  )rawliteral";
+  setTimeout(pollQueue, 900);
+}
+document.addEventListener('DOMContentLoaded', function(){
+  var g = document.getElementById('global_materia_select');
+  if (g) g.addEventListener('change', function(){ setGlobalMateriaValue(this.value); });
+  var hidden = document.getElementById('batch_materia');
+  if (hidden && hidden.value && hidden.value.trim()!='') {
+    selectedMateria = hidden.value;
+  }
+  pollQueue();
+});
+</script>
+)rawliteral";
 
   server.send(200, "text/html", html);
 }
@@ -394,13 +699,21 @@ void capture_lote_batchPollGET() {
 
   String scheduleBaseMat = computeScheduleBaseMat();
 
-  std::vector<String> removedTeachers = filterOutTeachersFromList(u);
+  // Filtrar maestros de la cola
+  std::vector<String> removedTeachers;
+  removeTeacherUidsFromQueue(u, removedTeachers);
+
   if (!removedTeachers.empty()) {
     writeCaptureQueue(u);
     for (auto &t : removedTeachers) {
-      String recDenied = "\"" + nowISO() + "\"," + "\"" + t + "\"," + "\"MAESTRO_OMITIDO_EN_COLA\"";
-      appendLineToFile(DENIED_FILE, recDenied);
-      addNotification(t, String(""), String(""), String("Tarjeta de maestro detectada y omitida en captura por lote: ") + t);
+      String uid = t;
+      String teacherName = "";
+      int dash = t.indexOf(" - ");
+      if (dash > 0) {
+        uid = t.substring(0, dash);
+        teacherName = t.substring(dash + 3);
+      }
+      noteTeacherBlocked(uid, teacherName, "cola");
     }
   }
 
@@ -420,32 +733,11 @@ void capture_lote_batchPollGET() {
   String teacherBlockedMessage = "";
 
   if (captureUID.length() > 0) {
-    if (uidExistsInTeachers(captureUID)) {
+    if (isTeacherUidDb(captureUID)) {
       if (teacherBlockedTime == 0 || (millis() - teacherBlockedTime) > 5000UL) {
         teacherBlockedTime = millis();
-        String recDenied = "\"" + nowISO() + "\"," + "\"" + captureUID + "\"," + "\"MAESTRO_BLOQUEADO_LOTE\"";
-        appendLineToFile(DENIED_FILE, recDenied);
-
-        String teacherName = "";
-        File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-        if (ft) {
-          while (ft.available()) {
-            String l = ft.readStringUntil('\n');
-            l.trim();
-            if (!l.length()) continue;
-            auto c = parseQuotedCSVLine(l);
-            if (c.size() >= 2 && c[0] == captureUID) {
-              teacherName = c[1];
-              break;
-            }
-          }
-          ft.close();
-        }
-
-        String notificationMsg = "Tarjeta de maestro BLOQUEADA en captura por lote: " +
-                                (teacherName.length() ? teacherName : "Sin nombre") +
-                                " (UID: " + captureUID + ")";
-        addNotification(captureUID, String(""), String(""), notificationMsg);
+        String teacherName = teacherNameByUidDb(captureUID);
+        noteTeacherBlocked(captureUID, teacherName, "escaneo");
       }
 
       teacherBlocked = true;
@@ -454,7 +746,7 @@ void capture_lote_batchPollGET() {
     }
   }
 
-  if (captureUID.length() > 0 && !uidExistsInTeachers(captureUID)) {
+  if (captureUID.length() > 0 && !isTeacherUidDb(captureUID)) {
     if (awaitingSelfRegister && currentSelfRegUID.length() > 0) {
       if (captureUID != currentSelfRegUID) {
         wrongCard = true;
@@ -511,39 +803,43 @@ send_response:
   for (size_t i = 0; i < u.size(); ++i) {
     String uid = u[i];
 
-    if (uidExistsInTeachers(uid)) {
-      appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"MAESTRO_OMITIDO_RESPUESTA\""));
+    if (isTeacherUidDb(uid)) {
+      noteTeacherBlocked(uid, teacherNameByUidDb(uid), "respuesta");
       continue;
     }
 
-    String rec = findAnyUserByUID(uid);
-    bool reg = rec.length() > 0;
-    String name="", account="", materia="";
+    std::vector<AlumnoDbRow> rows = loadAlumnosByUidDb(uid);
+    bool reg = !rows.empty();
+
+    String name = "";
+    String account = "";
+    String materia = "";
+
     if (reg) {
-      auto c = parseQuotedCSVLine(rec);
-      if (c.size() > 1) name = c[1];
-      if (c.size() > 2) account = c[2];
-      if (c.size() > 3) materia = c[3];
+      if (rows[0].name.length()) name = rows[0].name;
+      if (rows[0].account.length()) account = rows[0].account;
+      if (rows[0].materia.length()) materia = rows[0].materia;
     }
+
     if (scheduleBaseMat.length() > 0) materia = scheduleBaseMat;
     else materia = String("");
 
     if (!first) j += ",";
     first = false;
-    j += "{\"uid\":\"" + jsonEscape(uid) + "\",";
+    j += "{\"uid\":\"" + jsEscape(uid) + "\",";
     j += "\"registered\":" + String(reg ? "true" : "false") + ",";
-    j += "\"name\":\"" + jsonEscape(name) + "\",";
-    j += "\"account\":\"" + jsonEscape(account) + "\",";
-    j += "\"materia\":\"" + jsonEscape(materia) + "\"}";
+    j += "\"name\":\"" + jsEscape(name) + "\",";
+    j += "\"account\":\"" + jsEscape(account) + "\",";
+    j += "\"materia\":\"" + jsEscape(materia) + "\"}";
   }
   j += "],";
   j += "\"awaiting\":" + String(awaitingSelfRegister ? "true" : "false") + ",";
-  j += "\"awaiting_uid\":\"" + jsonEscape(currentSelfRegUID) + "\",";
+  j += "\"awaiting_uid\":\"" + jsEscape(currentSelfRegUID) + "\",";
   j += "\"card_triggered\":" + String(cardTriggered ? "true" : "false") + ",";
   j += "\"wrong_card\":" + String(wrongCard ? "true" : "false") + ",";
   j += "\"teacher_blocked\":" + String(teacherBlocked ? "true" : "false") + ",";
   if (teacherBlocked) {
-    j += "\"teacher_blocked_message\":\"" + jsonEscape(teacherBlockedMessage) + "\"";
+    j += "\"teacher_blocked_message\":\"" + jsEscape(teacherBlockedMessage) + "\"";
   } else {
     j += "\"teacher_blocked_message\":\"\"";
   }
@@ -635,22 +931,11 @@ void capture_lote_generateLinksPOST() {
   std::vector<String> teacherList;
   for (int i = (int)lines.size() - 1; i >= 0; --i) {
     String uid = lines[i];
-    if (uidExistsInTeachers(uid)) {
-      String teacherName = "";
-      File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-      if (ft) {
-        while (ft.available()) {
-          String l = ft.readStringUntil('\n');
-          l.trim();
-          if (!l.length()) continue;
-          auto c = parseQuotedCSVLine(l);
-          if (c.size() >= 2 && c[0] == uid) { teacherName = c[1]; break; }
-        }
-        ft.close();
-      }
+    if (isTeacherUidDb(uid)) {
+      String teacherName = teacherNameByUidDb(uid);
       teacherList.push_back(uid + (teacherName.length() ? String(" - ") + teacherName : ""));
       lines.erase(lines.begin() + i);
-      appendLineToFile(DENIED_FILE, String("\"") + nowISO() + String("\",\"") + uid + String("\",\"MAESTRO_OMITIDO_GENERAR_LINKS\""));
+      noteTeacherBlocked(uid, teacherName, "generar_links");
     }
   }
 
@@ -670,7 +955,7 @@ void capture_lote_generateLinksPOST() {
     uid.trim();
     if (uid.length() == 0) continue;
 
-    if (uidExistsInTeachers(uid)) {
+    if (isTeacherUidDb(uid)) {
       continue;
     }
 
@@ -749,64 +1034,38 @@ void capture_lote_finishPOST() {
 
   std::vector<String> successList;
   std::vector<String> duplicateList;
+  bool anyWarn = false;
 
   for (auto &uid : q) {
     uid.trim();
     if (uid.length() == 0) continue;
 
-    if (uidExistsInTeachers(uid)) {
-      String recDenied = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"MAESTRO_BLOQUEADO_FINISH\"";
-      appendLineToFile(DENIED_FILE, recDenied);
+    if (isTeacherUidDb(uid)) {
+      noteTeacherBlocked(uid, teacherNameByUidDb(uid), "finish");
       continue;
     }
 
     if (studentExistsInMateria(uid, chosenMateria)) {
-      String studentName = "";
-      File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-      if (fu) {
-        while (fu.available()) {
-          String l = fu.readStringUntil('\n');
-          l.trim();
-          if (!l.length()) continue;
-          auto c = parseQuotedCSVLine(l);
-          if (c.size() >= 2 && c[0] == uid) {
-            studentName = c[1];
-            break;
-          }
-        }
-        fu.close();
-      }
+      String studentName = getUserNameForUidMateria(uid, chosenMateria);
       duplicateList.push_back(uid + " - " + (studentName.length() ? studentName : "Sin nombre"));
       continue;
     }
 
-    String rec = findAnyUserByUID(uid);
+    std::vector<AlumnoDbRow> rows = loadAlumnosByUidDb(uid);
+    String name = "";
+    String account = "";
 
-    if (rec.length() > 0) {
-      auto c = parseQuotedCSVLine(rec);
-      String name = (c.size() > 1 ? c[1] : "");
-      String account = (c.size() > 2 ? c[2] : "");
-
-      String userRow = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
-      appendLineToFile(USERS_FILE, userRow);
-
-      successList.push_back(uid + " - " + (name.length() ? name : "Sin nombre"));
-
-      String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
-      appendLineToFile(ATT_FILE, att);
-
-      syncBatchAlumnoToOracle(uid, name, account, chosenMateria, nowISO());
-    } else {
-      String userRow = "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"" + nowISO() + "\"";
-      appendLineToFile(USERS_FILE, userRow);
-
-      successList.push_back(uid + " - Sin nombre");
-
-      String att = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"\"," + "\"\"," + "\"" + chosenMateria + "\"," + "\"entrada\"";
-      appendLineToFile(ATT_FILE, att);
-
-      addNotification(uid, String(""), String(""), String("Batch capture: usuario no registrado. Se creó fila nueva (sin nombre/cuenta)."));
+    if (!rows.empty()) {
+      if (rows[0].name.length()) name = rows[0].name;
+      if (rows[0].account.length()) account = rows[0].account;
     }
+
+    String createdAt = nowISO();
+    if (!registerBatchAlumnoDb(uid, name, account, chosenMateria, createdAt)) {
+      anyWarn = true;
+    }
+
+    successList.push_back(uid + " - " + (name.length() ? name : "Sin nombre"));
   }
 
   clearCaptureQueueFile();
@@ -849,7 +1108,7 @@ void capture_lote_finishPOST() {
 
   if (successList.size() > 0) {
     html += "<div style='margin-top:16px;padding:12px;background:#e6ffed;border-radius:8px;border:1px solid #c7f0d4;'>";
-    html += "<h4 style='margin-top:0;color:#0a7020;'>Registros guardados </h4>";
+    html += "<h4 style='margin-top:0;color:#0a7020;'>Registros guardados</h4>";
     html += "<ul style='margin:0 0 0 18px;'>";
     int shown = 0;
     for (auto &ok : successList) {
@@ -859,6 +1118,10 @@ void capture_lote_finishPOST() {
     if (successList.size() > 10) html += "<li>... y " + String(successList.size() - 10) + " más</li>";
     html += "</ul>";
     html += "</div>";
+  }
+
+  if (anyWarn) {
+    html += "<p class='small' style='margin-top:12px;color:#b45309;'>Algunas operaciones no pudieron sincronizarse completamente con la base de datos.</p>";
   }
 
   String rt = server.hasArg("return_to") ? server.arg("return_to") : String("/students");

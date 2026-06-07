@@ -1,14 +1,13 @@
 // src/web/self_register.cpp
 #include "self_register.h"
-#include "files_utils.h"
 #include "globals.h"
-#include <SPIFFS.h>
-#include "web_utils.h"
-#include <algorithm>
-#include "display.h"
 #include "web_common.h"
 #include "db_sync.h"
+#include "display.h"
+
+#include <Arduino.h>
 #include <ctype.h>
+#include <vector>
 #include <ArduinoJson.h>
 
 static String makeRandomToken() {
@@ -19,13 +18,30 @@ static String makeRandomToken() {
   return String(buf);
 }
 
+static String htmlEscape(const String &s) {
+  String r;
+  r.reserve(s.length());
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    switch (c) {
+      case '&': r += "&amp;"; break;
+      case '<': r += "&lt;"; break;
+      case '>': r += "&gt;"; break;
+      case '"': r += "&quot;"; break;
+      case '\'': r += "&#39;"; break;
+      default: r += c; break;
+    }
+  }
+  return r;
+}
+
 static String jsEscape(const String &s) {
   String r;
   r.reserve(s.length() * 2);
-  for (size_t i = 0; i < (size_t)s.length(); ++i) {
+  for (size_t i = 0; i < s.length(); ++i) {
     char c = s[i];
     if (c == '\\') r += "\\\\";
-    else if (c == '\'') r += "\\\'";
+    else if (c == '\'') r += "\\'";
     else if (c == '"') r += "\\\"";
     else if (c == '\n') r += "\\n";
     else if (c == '\r') r += "\\r";
@@ -55,22 +71,76 @@ static void cleanupExpiredSessions() {
   }
 }
 
-static bool oracleTeacherExistsByUID(const String &uid) {
-  String body = listProfesores();
+static String jsonAnyString(const JsonObjectConst &obj, const char* const* keys, size_t keyCount) {
+  for (size_t i = 0; i < keyCount; ++i) {
+    const char* k = keys[i];
+    if (!obj.containsKey(k)) continue;
+    JsonVariantConst v = obj[k];
+    if (v.isNull()) continue;
+    String s = v.as<String>();
+    s.trim();
+    if (s.length()) return s;
+  }
+  return "";
+}
+
+static bool parseDbRows(const String &body, std::vector<JsonObjectConst> &rows, const char* const* wrappers, size_t wrappersCount) {
+  rows.clear();
   if (!body.length()) return false;
 
-  DynamicJsonDocument doc(body.length() * 2 + 2048);
+  size_t cap = body.length() * 2 + 2048;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
-    Serial.print("WARN: no se pudo parsear lista de profesores Oracle: ");
+    Serial.print("WARN: no se pudo parsear JSON de DB: ");
     Serial.println(err.c_str());
     return false;
   }
 
-  if (!doc.is<JsonArray>()) return false;
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      rows.push_back(v.as<JsonObjectConst>());
+    }
+    return true;
+  }
 
-  for (JsonObject obj : doc.as<JsonArray>()) {
-    String rowUid = obj["rfid_uid"] | "";
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+
+    for (size_t i = 0; i < wrappersCount; ++i) {
+      const char* key = wrappers[i];
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          rows.push_back(v.as<JsonObjectConst>());
+        }
+        return true;
+      }
+    }
+
+    rows.push_back(root);
+    return true;
+  }
+
+  return false;
+}
+
+static bool oracleTeacherExistsByUID(const String &uid) {
+  String body = listProfesores();
+  if (!body.length()) return false;
+
+  std::vector<JsonObjectConst> rows;
+  const char* wrappers[] = {"data", "profesores", "teachers", "rows", "result", "items"};
+  if (!parseDbRows(body, rows, wrappers, sizeof(wrappers) / sizeof(wrappers[0]))) return false;
+
+  const char* uidKeys[] = {"rfid_uid", "uid", "profesor_uid", "teacher_uid"};
+  for (auto obj : rows) {
+    String rowUid = jsonAnyString(obj, uidKeys, 4);
     if (rowUid == uid) return true;
   }
 
@@ -81,18 +151,13 @@ static bool oracleAlumnoExistsByUID(const String &uid) {
   String body = listAlumnos();
   if (!body.length()) return false;
 
-  DynamicJsonDocument doc(body.length() * 2 + 4096);
-  DeserializationError err = deserializeJson(doc, body);
-  if (err) {
-    Serial.print("WARN: no se pudo parsear lista de alumnos Oracle: ");
-    Serial.println(err.c_str());
-    return false;
-  }
+  std::vector<JsonObjectConst> rows;
+  const char* wrappers[] = {"data", "alumnos", "students", "rows", "result", "items"};
+  if (!parseDbRows(body, rows, wrappers, sizeof(wrappers) / sizeof(wrappers[0]))) return false;
 
-  if (!doc.is<JsonArray>()) return false;
-
-  for (JsonObject obj : doc.as<JsonArray>()) {
-    String rowUid = obj["rfid_uid"] | "";
+  const char* uidKeys[] = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+  for (auto obj : rows) {
+    String rowUid = jsonAnyString(obj, uidKeys, 4);
     if (rowUid == uid) return true;
   }
 
@@ -102,15 +167,11 @@ static bool oracleAlumnoExistsByUID(const String &uid) {
 static bool syncSelfRegisterToOracle(const String &uid, const String &name, const String &account, const String &createdAt) {
   bool ok = true;
 
-  if (!oracleAlumnoExistsByUID(uid)) {
-    if (!sendAlumnoRegistro(uid, name, account, String(), createdAt)) {
-      Serial.println("WARN: no se pudo sincronizar el alumno con Oracle");
-      ok = false;
-    } else {
-      Serial.println("DB_SYNC: alumno sincronizado correctamente con Oracle");
-    }
+  if (!sendAlumnoRegistro(uid, name, account, String(), createdAt)) {
+    Serial.println("WARN: no se pudo registrar el alumno en Oracle");
+    ok = false;
   } else {
-    Serial.println("DB_SYNC: alumno ya existe en Oracle, se omite CREATE");
+    Serial.println("DB_SYNC: alumno registrado correctamente en Oracle");
   }
 
   if (!sendAsistencia(nowISO(), uid, name, account, String(), "captura_self")) {
@@ -139,27 +200,17 @@ void handleSelfRegisterStartPOST() {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"uid required\"}");
     return;
   }
-  String uid = server.arg("uid"); uid.trim();
+
+  String uid = server.arg("uid");
+  uid.trim();
 
   if (uid.length() == 0) {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"uid empty\"}");
     return;
   }
 
-  // NEW: Reject if uid belongs to a teacher (defensive)
-  String trow = findTeacherByUID(uid);
-  if (trow.length() > 0) {
-    server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid is teacher\"}");
-    return;
-  }
-
   if (oracleTeacherExistsByUID(uid)) {
     server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid is teacher\"}");
-    return;
-  }
-
-  if (findAnyUserByUID(uid).length() > 0) {
-    server.send(409, "application/json", "{\"ok\":false,\"err\":\"uid already registered\"}");
     return;
   }
 
@@ -182,7 +233,7 @@ void handleSelfRegisterStartPOST() {
   server.send(200, "application/json", resp);
 }
 
-// ---------------- GET /self_register?token=... (page) ----------------
+// ---------------- GET /self_register?token=... ----------------
 void handleSelfRegisterGET() {
   cleanupExpiredSessions();
 
@@ -190,6 +241,7 @@ void handleSelfRegisterGET() {
     server.send(400, "text/plain", "token required");
     return;
   }
+
   String token = server.arg("token");
   int idx = findSelfRegSessionIndexByToken(token);
   if (idx < 0) {
@@ -200,7 +252,7 @@ void handleSelfRegisterGET() {
   SelfRegSession &s = selfRegSessions[idx];
 
   String html;
-  html.reserve(1200);
+  html.reserve(1400);
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<meta charset='utf-8'><title>Auto-registro</title>";
   html += "<style>body{font-family:Arial,Helvetica,sans-serif;background:#071026;color:#fff;margin:0;padding:12px} .card{background:#0f1724;padding:12px;border-radius:8px} label{display:block;margin-top:8px} input{width:100%;padding:8px;border-radius:6px;border:1px solid #334155;background:#071026;color:#fff;box-sizing:border-box} .btn{padding:8px 12px;border-radius:6px;border:none;margin-top:12px} .small{font-size:13px;color:#cbd5e1;margin-top:6px}</style>";
@@ -216,9 +268,7 @@ void handleSelfRegisterGET() {
   html += "<input name='name' required placeholder='Nombre completo'>";
   html += "<label>Cuenta (7 dígitos)</label>";
   html += "<input name='account' inputmode='numeric' pattern='[0-9]{7}' maxlength='7' minlength='7' placeholder='Ej: 2123456'>";
-
   html += "<input type='hidden' name='materia' value=''>";
-
   html += "<div style='display:flex;gap:8px;'><button class='btn' type='submit' style='background:#10b981;color:#04201b'>Registrar</button></div>";
   html += "<div id='msg' class='small' style='display:none;margin-top:8px;color:#ffdede;'></div>";
   html += "</form></div>";
@@ -251,10 +301,15 @@ void handleSelfRegisterPost() {
     server.send(400, "text/plain", "faltan parametros");
     return;
   }
-  String token = server.arg("token"); token.trim();
-  String uid = server.arg("uid"); uid.trim();
-  String name = server.arg("name"); name.trim();
-  String account = server.arg("account"); account.trim();
+
+  String token = server.arg("token");
+  token.trim();
+  String uid = server.arg("uid");
+  uid.trim();
+  String name = server.arg("name");
+  name.trim();
+  String account = server.arg("account");
+  account.trim();
 
   int idx = findSelfRegSessionIndexByToken(token);
   if (idx < 0) {
@@ -262,23 +317,27 @@ void handleSelfRegisterPost() {
     return;
   }
 
+  SelfRegSession &s = selfRegSessions[idx];
+  if (s.uid != uid) {
+    server.send(409, "text/plain", "uid mismatch");
+    return;
+  }
+
   if (uid.length() == 0 || name.length() == 0 || account.length() != 7) {
     server.send(400, "text/plain", "datos invalidos");
     return;
   }
+
   for (size_t i = 0; i < account.length(); ++i) {
-    if (!isdigit(account[i])) { server.send(400, "text/plain", "cuenta invalida"); return; }
+    if (!isdigit(account[i])) {
+      server.send(400, "text/plain", "cuenta invalida");
+      return;
+    }
   }
 
   if (oracleTeacherExistsByUID(uid)) {
     removeSelfRegSessionByIndex(idx);
     server.send(409, "text/plain", "UID is teacher");
-    return;
-  }
-
-  if (findAnyUserByUID(uid).length() > 0) {
-    removeSelfRegSessionByIndex(idx);
-    server.send(409, "text/plain", "UID already registered");
     return;
   }
 
@@ -289,23 +348,21 @@ void handleSelfRegisterPost() {
   }
 
   String created = nowISO();
-  String line = "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"" + created + "\"";
-  if (!appendLineToFile(USERS_FILE, line)) {
-    server.send(500, "text/plain", "Error guardando usuario");
+
+  // Registro directo en BD
+  if (!sendAlumnoRegistro(uid, name, account, String(), created)) {
+    server.send(500, "text/plain", "Error registrando alumno en base de datos");
     return;
   }
 
-  String rec = "\"" + nowISO() + "\"," + "\"" + uid + "\"," + "\"" + name + "\"," + "\"" + account + "\"," + "\"\"," + "\"captura_self\"";
-  if (!appendLineToFile(ATT_FILE, rec)) {
-    server.send(500, "text/plain", "Error guardando attendance");
-    return;
+  // Lo demás también va a BD
+  if (!sendAsistencia(nowISO(), uid, name, account, String(), "captura_self")) {
+    Serial.println("WARN: no se pudo sincronizar la asistencia del auto-registro con Oracle");
   }
 
   String note = "Auto-registro completado. Usuario: " + name + " (" + account + ") - Materia pendiente de asignar";
-  addNotification(uid, name, account, note);
-
-  if (!syncSelfRegisterToOracle(uid, name, account, created)) {
-    Serial.println("WARN: sincronización Oracle del auto-registro no completa");
+  if (!sendNotificacionRegistro(nowISO(), uid, name, account, note)) {
+    Serial.println("WARN: no se pudo sincronizar la notificación del auto-registro con Oracle");
   }
 
   removeSelfRegSessionByIndex(idx);
@@ -319,7 +376,7 @@ void handleSelfRegisterPost() {
   }
 
   String html;
-  html.reserve(800);
+  html.reserve(900);
   html  = "<!doctype html><html lang='es'><head><meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<meta charset='utf-8'><title>Registro Completado</title>";
   html += "<style>";
@@ -353,7 +410,10 @@ void handleSelfRegisterCancelPOST() {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"token required\"}");
     return;
   }
-  String token = server.arg("token"); token.trim();
+
+  String token = server.arg("token");
+  token.trim();
+
   int idx = findSelfRegSessionIndexByToken(token);
   if (idx >= 0) removeSelfRegSessionByIndex(idx);
 
@@ -368,7 +428,7 @@ void handleSelfRegisterCancelPOST() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
-// Las otras funciones las mantenemos por si se usan en otro lugar
+// Compatibilidad / rutas auxiliares
 void handleSelfRegisterPollGET() {
   server.send(200, "application/json", "{\"ok\":true,\"status\":\"active\"}");
 }

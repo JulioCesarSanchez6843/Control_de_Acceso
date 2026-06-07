@@ -7,7 +7,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <vector>
-#include <FS.h>
 
 class Servo;
 
@@ -29,17 +28,6 @@ extern const int RGB_G_PIN;
 extern const int BUZZER_PIN;
 // ----------------------------------------
 
-// ---------------- FILES SPIFFS ----------------
-extern const char* USERS_FILE;
-extern const char* ATT_FILE;
-extern const char* DENIED_FILE;
-extern const char* SCHEDULES_FILE;
-extern const char* NOTIF_FILE;
-extern const char* COURSES_FILE;
-extern const char* CAPTURE_QUEUE_FILE;
-extern const char* TEACHERS_FILE; // archivo para maestros
-// -----------------------------------------------
-
 // Timing constants
 extern const unsigned long DISPLAY_MS;
 extern const unsigned long POLL_INTERVAL;
@@ -54,7 +42,7 @@ extern const int SLOT_COUNT;
 extern WebServer server;
 extern MFRC522 mfrc522;
 extern Adafruit_ST7735 tft;
-extern Servo puerta; // forward-declared; definido en globals.cpp
+extern Servo puerta;
 // --------------------------------------------------------------------
 
 // Capture mode globals
@@ -65,7 +53,7 @@ extern String captureName;
 extern String captureAccount;
 extern unsigned long captureDetectedAt;
 
-// Variables para captura batch (declaraciones ONLY -> definidas en globals.cpp)
+// Variables para captura batch
 extern std::vector<String> capturedUIDs;
 extern volatile bool isCapturing;
 extern volatile bool isBatchCapture;
@@ -80,7 +68,7 @@ struct SelfRegSession {
 };
 extern std::vector<SelfRegSession> selfRegSessions;
 
-// Estado de self-register mostrado en display (bloqueo mientras alumno completa)
+// Estado de self-register mostrado en display
 extern volatile bool awaitingSelfRegister;
 extern unsigned long awaitingSinceMs;
 extern unsigned long SELF_REG_TIMEOUT_MS;
@@ -118,7 +106,7 @@ void addScheduleSlot(const String &materia, const String &day, const String &sta
 // csv parsing
 std::vector<String> parseQuotedCSVLine(const String &line);
 
-// files utils (deben devolver bool)
+// files utils
 bool appendLineToFile(const char* path, const String &line);
 bool writeAllLines(const char* path, const std::vector<String> &lines);
 void initFiles();

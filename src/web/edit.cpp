@@ -1,17 +1,14 @@
 // src/web/edit.cpp
 #include <Arduino.h>
-#include <FS.h>
-#include <SPIFFS.h>
 #include <ctype.h>
 #include <vector>
+#include <utility>
 
 #include "globals.h"
 #include "web_common.h"
-#include "files_utils.h"
 #include "edit.h"
 #include "courses.h"    // loadCourses(), writeCourses()
-#include "schedules.h"  // SCHEDULES_FILE (si lo usas) - opcional, solo para consistencia
-#include "db_sync.h"    // Oracle sync
+#include "db_sync.h"    // Oracle sync / DB helpers
 
 #include <ArduinoJson.h>
 
@@ -31,67 +28,249 @@ static String sanitizeReturnToLocal(const String &rt) {
   return String("/students_all");
 }
 
-static bool uidExistsInFile(const char* filename, const String &uid) {
-  if (!uid.length()) return false;
-  if (!SPIFFS.exists(filename)) return false;
-  File f = SPIFFS.open(filename, FILE_READ);
-  if (!f) return false;
-  while (f.available()) {
-    String l = f.readStringUntil('\n'); l.trim();
-    if (!l.length()) continue;
-    auto c = parseQuotedCSVLine(l);
-    if (c.size() >= 1 && c[0] == uid) { f.close(); return true; }
+static String nowCreatedFallback() {
+  return nowISO();
+}
+
+static String getJsonString(const JsonObjectConst &obj, const char* const *keys, size_t keyCount) {
+  for (size_t i = 0; i < keyCount; ++i) {
+    const char* k = keys[i];
+    if (!obj.containsKey(k)) continue;
+    JsonVariantConst v = obj[k];
+    if (v.isNull()) continue;
+    String s = v.as<String>();
+    s.trim();
+    if (s.length()) return s;
   }
-  f.close();
+  return "";
+}
+
+struct AlumnoDbRow {
+  String id;
+  String uid;
+  String name;
+  String account;
+  String materia;
+  String created;
+};
+
+struct ProfesorDbRow {
+  String id;
+  String uid;
+  String name;
+  String account;
+  String created;
+};
+
+static bool parseListAlumnosResponse(const String &body, std::vector<AlumnoDbRow> &rows, const String &uidFilter) {
+  rows.clear();
+  if (!body.length()) return false;
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando listAlumnos(): ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  auto handleObj = [&](JsonObjectConst obj) {
+    const char* uidKeys[]     = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+    const char* idKeys[]      = {"id", "ID"};
+    const char* nameKeys[]    = {"name", "nombre", "full_name"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    const char* materiaKeys[] = {"materia", "subject"};
+    const char* createdKeys[] = {"created", "created_at", "createdAt", "fecha", "timestamp"};
+
+    AlumnoDbRow row;
+    row.id      = getJsonString(obj, idKeys,      2);
+    row.uid     = getJsonString(obj, uidKeys,     4);
+    row.name    = getJsonString(obj, nameKeys,    3);
+    row.account = getJsonString(obj, accountKeys, 4);
+    row.materia = getJsonString(obj, materiaKeys, 2);
+    row.created = getJsonString(obj, createdKeys, 5);
+
+    if (!row.uid.length()) return;
+    if (uidFilter.length() && row.uid != uidFilter) return;
+    rows.push_back(row);
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      handleObj(v.as<JsonObjectConst>());
+    }
+    return true;
+  }
+
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "alumnos", "rows", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          handleObj(v.as<JsonObjectConst>());
+        }
+        return true;
+      }
+    }
+    handleObj(root);
+    return true;
+  }
+
   return false;
 }
-static bool uidExistsInUsers(const String &uid) { return uidExistsInFile(USERS_FILE, uid); }
-static bool uidExistsInTeachers(const String &uid) { return uidExistsInFile(TEACHERS_FILE, uid); }
+
+static bool loadAlumnoRowsByUid(const String &uid, std::vector<AlumnoDbRow> &rows) {
+  String body = listAlumnos();
+  if (!body.length()) return false;
+  return parseListAlumnosResponse(body, rows, uid);
+}
+
+static bool loadProfesorByUidDb(const String &uid, ProfesorDbRow &out) {
+  out = ProfesorDbRow();
+
+  String body = getProfesorByUid(uid);
+  if (!body.length()) return false;
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: error parseando getProfesorByUid(): ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  auto handleObj = [&](JsonObjectConst obj) -> bool {
+    const char* idKeys[]      = {"id", "ID"};
+    const char* uidKeys[]     = {"rfid_uid", "uid", "profesor_uid", "teacher_uid"};
+    const char* nameKeys[]    = {"name", "nombre", "full_name"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    const char* createdKeys[] = {"created", "created_at", "createdAt", "fecha", "timestamp"};
+
+    out.id      = getJsonString(obj, idKeys,      2);
+    out.uid     = getJsonString(obj, uidKeys,     4);
+    out.name    = getJsonString(obj, nameKeys,    3);
+    out.account = getJsonString(obj, accountKeys, 4);
+    out.created = getJsonString(obj, createdKeys, 5);
+
+    if (!out.uid.length()) out.uid = uid;
+    return true;
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      if (handleObj(v.as<JsonObjectConst>())) return true;
+    }
+    return false;
+  }
+
+  if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "profesor", "teacher", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          if (handleObj(v.as<JsonObjectConst>())) return true;
+        }
+        return false;
+      }
+    }
+    return handleObj(root);
+  }
+
+  return false;
+}
+
+static String findUidByAccountInStudentsDb(const String &account) {
+  if (!account.length()) return "";
+  String body = listAlumnos();
+  if (!body.length()) return "";
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
+  if (deserializeJson(doc, body)) return "";
+
+  auto checkObj = [&](JsonObjectConst obj) -> String {
+    const char* uidKeys[]     = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+    const char* accountKeys[] = {"account", "cuenta", "matricula", "account_number"};
+    String uid = getJsonString(obj, uidKeys,     4);
+    String acc = getJsonString(obj, accountKeys, 4);
+    if (uid.length() && acc == account) return uid;
+    return "";
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      String uid = checkObj(v.as<JsonObjectConst>());
+      if (uid.length()) return uid;
+    }
+  } else if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "alumnos", "rows", "result", "items"};
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          String uid = checkObj(v.as<JsonObjectConst>());
+          if (uid.length()) return uid;
+        }
+        return "";
+      }
+    }
+    return checkObj(root);
+  }
+
+  return "";
+}
+
+static bool uidExistsInUsers(const String &uid) {
+  std::vector<AlumnoDbRow> rows;
+  return loadAlumnoRowsByUid(uid, rows) && rows.size() > 0;
+}
+
+static bool uidExistsInTeachers(const String &uid) {
+  ProfesorDbRow p;
+  return loadProfesorByUidDb(uid, p);
+}
 
 static std::pair<String,String> findByAccountLocal(const String &account) {
-  if (account.length() == 0) return std::make_pair(String(""), String(""));
-
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (fu) {
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-      auto p = parseQuotedCSVLine(l);
-      if (p.size() >= 3) {
-        if (p[2] == account) { fu.close(); return std::make_pair(p[0], String("users")); }
-      }
-    }
-    fu.close();
-  }
-
-  File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-  if (ft) {
-    while (ft.available()) {
-      String l = ft.readStringUntil('\n'); l.trim(); if (!l.length()) continue;
-      auto p = parseQuotedCSVLine(l);
-      if (p.size() >= 3) {
-        if (p[2] == account) { ft.close(); return std::make_pair(p[0], String("teachers")); }
-      }
-    }
-    ft.close();
-  }
-
+  String uid = findUidByAccountInStudentsDb(account);
+  if (uid.length()) return std::make_pair(uid, String("users"));
   return std::make_pair(String(""), String(""));
 }
 
 // ---------------- Oracle helpers ----------------
-static String readOracleAlumnosJson() {
-  String body = listAlumnos();
-  return body;
-}
 
 static bool oracleDeleteAlumnoRowsByUid(const String &uid) {
-  String body = readOracleAlumnosJson();
+  String body = listAlumnos();
   if (!body.length()) {
     Serial.println("WARN: no se pudo leer /alumnos desde Oracle para limpiar filas previas");
     return false;
   }
 
-  DynamicJsonDocument doc(body.length() * 2 + 1024);
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 4096) cap = 4096;
+
+  DynamicJsonDocument doc(cap);
   DeserializationError err = deserializeJson(doc, body);
   if (err) {
     Serial.print("WARN: error parseando JSON de alumnos Oracle: ");
@@ -99,21 +278,51 @@ static bool oracleDeleteAlumnoRowsByUid(const String &uid) {
     return false;
   }
 
-  JsonArray arr = doc.as<JsonArray>();
   bool ok = true;
-  for (JsonObject obj : arr) {
-    String rowUid = obj["rfid_uid"] | "";
-    int id = obj["id"] | -1;
-    if (rowUid == uid && id > 0) {
-      if (!deleteAlumnoById(id)) {
-        Serial.print("WARN: no se pudo borrar alumno Oracle id=");
-        Serial.println(id);
-        ok = false;
-      } else {
-        Serial.print("DB_SYNC: alumno Oracle eliminado id=");
-        Serial.println(id);
+
+  auto handleObj = [&](JsonObjectConst obj) {
+    const char* uidKeys[] = {"rfid_uid", "uid", "alumno_uid", "user_uid"};
+    const char* idKeys[]  = {"id", "ID"};
+    String rowUid = getJsonString(obj, uidKeys, 4);
+    String id     = getJsonString(obj, idKeys,  2);
+
+    if (rowUid == uid && id.length()) {
+      int idNum = id.toInt();
+      if (idNum > 0) {
+        if (!deleteAlumnoById(idNum)) {
+          Serial.print("WARN: no se pudo borrar alumno Oracle id=");
+          Serial.println(idNum);
+          ok = false;
+        } else {
+          Serial.print("DB_SYNC: alumno Oracle eliminado id=");
+          Serial.println(idNum);
+        }
       }
     }
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (!v.is<JsonObjectConst>()) continue;
+      handleObj(v.as<JsonObjectConst>());
+    }
+  } else if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "alumnos", "rows", "result", "items"};
+    bool wrapped = false;
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        wrapped = true;
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (!v.is<JsonObjectConst>()) continue;
+          handleObj(v.as<JsonObjectConst>());
+        }
+        break;
+      }
+    }
+    if (!wrapped) handleObj(root);
   }
 
   return ok;
@@ -128,13 +337,11 @@ static bool oracleSyncUserRows(
 ) {
   bool ok = true;
 
-  // Limpia todas las filas previas de este UID en Oracle
   if (!oracleDeleteAlumnoRowsByUid(uid)) {
     Serial.println("WARN: no se pudieron limpiar las filas previas del alumno en Oracle");
     ok = false;
   }
 
-  // Inserta las filas actuales
   for (auto &mat : materias) {
     if (mat.length() == 0) continue;
     if (!sendAlumnoRegistro(uid, name, account, mat, createdAt)) {
@@ -151,7 +358,6 @@ static bool oracleSyncUserRows(
 }
 
 static bool syncTeacherToOracle(const String &uid, const String &name, const String &account, const String &createdAt) {
-  // Primero intentamos actualizar; si no existe todavía, lo creamos.
   if (updateProfesorByUid(uid, uid, name, account, createdAt)) {
     Serial.println("DB_SYNC: profesor sincronizado correctamente (UPDATE)");
     return true;
@@ -167,65 +373,140 @@ static bool syncTeacherToOracle(const String &uid, const String &name, const Str
   return false;
 }
 
+// Propaga el renombre de un profesor en todos los horarios de la base de datos.
+// Reemplaza SPIFFS.open() / writeAllLines() / parseQuotedCSVLine() por
+// listHorarios() + updateHorarioById() completamente en memoria.
+static void propagateTeacherRenameInSchedules(const String &oldName, const String &newName) {
+  if (!oldName.length() || oldName == newName) return;
+
+  String body = listHorarios();
+  if (!body.length()) {
+    Serial.println("WARN: propagateTeacherRenameInSchedules: listHorarios() vacío");
+    return;
+  }
+
+  size_t cap = body.length() * 2 + 1024;
+  if (cap < 8192) cap = 8192;
+
+  DynamicJsonDocument doc(cap);
+  DeserializationError err = deserializeJson(doc, body);
+  if (err) {
+    Serial.print("WARN: propagateTeacherRenameInSchedules: error JSON: ");
+    Serial.println(err.c_str());
+    return;
+  }
+
+  // Claves posibles según tu esquema de horarios
+  const char* idKeys[]        = {"id", "ID", "horario_id"};
+  const char* materiaKeys[]   = {"materia", "subject", "asignatura"};
+  const char* profesorKeys[]  = {"profesor", "teacher", "nombre_profesor"};
+  const char* diaKeys[]       = {"dia", "day", "dia_semana"};
+  const char* inicioKeys[]    = {"hora_inicio", "start", "inicio"};
+  const char* finKeys[]       = {"hora_fin", "end", "fin"};
+  const char* createdKeys[]   = {"created_at", "created", "createdAt"};
+
+  auto processItem = [&](JsonObjectConst obj) {
+    String id       = getJsonString(obj, idKeys,       3);
+    String materia  = getJsonString(obj, materiaKeys,  3);
+    String profesor = getJsonString(obj, profesorKeys, 3);
+    String dia      = getJsonString(obj, diaKeys,      3);
+    String inicio   = getJsonString(obj, inicioKeys,   3);
+    String fin      = getJsonString(obj, finKeys,      3);
+    String created  = getJsonString(obj, createdKeys,  3);
+
+    if (!id.length()) return;
+
+    // Verificar si el profesor de este horario coincide con oldName
+    bool needsUpdate = false;
+
+    if (profesor == oldName) {
+      needsUpdate = true;
+      profesor = newName;
+    }
+
+    // El campo materia puede venir como "Materia||Profesor" (clave compuesta)
+    int sepIdx = materia.indexOf("||");
+    if (sepIdx >= 0) {
+      String ownerProf = materia.substring(sepIdx + 2);
+      ownerProf.trim();
+      if (ownerProf == oldName) {
+        String ownerMat = materia.substring(0, sepIdx);
+        ownerMat.trim();
+        materia = ownerMat + String("||") + newName;
+        needsUpdate = true;
+      }
+    }
+
+    if (!needsUpdate) return;
+
+    int idNum = id.toInt();
+    if (idNum <= 0) return;
+
+    if (updateHorarioById(idNum, materia, profesor, dia, inicio, fin, created)) {
+      Serial.print("DB_SYNC: horario actualizado con nuevo nombre de profesor, id=");
+      Serial.println(idNum);
+    } else {
+      Serial.print("WARN: no se pudo actualizar horario id=");
+      Serial.println(idNum);
+    }
+  };
+
+  if (doc.is<JsonArray>()) {
+    JsonArrayConst arr = doc.as<JsonArrayConst>();
+    for (JsonVariantConst v : arr) {
+      if (v.is<JsonObjectConst>()) processItem(v.as<JsonObjectConst>());
+    }
+  } else if (doc.is<JsonObject>()) {
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    const char* wrappers[] = {"data", "horarios", "rows", "result", "items"};
+    bool wrapped = false;
+    for (const char* key : wrappers) {
+      if (root.containsKey(key) && root[key].is<JsonArray>()) {
+        wrapped = true;
+        JsonArrayConst arr = root[key].as<JsonArrayConst>();
+        for (JsonVariantConst v : arr) {
+          if (v.is<JsonObjectConst>()) processItem(v.as<JsonObjectConst>());
+        }
+        break;
+      }
+    }
+    if (!wrapped) processItem(root);
+  }
+}
+
 // ---------------- render / lógica compartida ----------------
-// Renderiza la página de edición (utilizada por /edit)
+
 static void renderEditPage(const String &uid, const String &return_to_in, const String &origin_path) {
   String return_to = sanitizeReturnToLocal(return_to_in);
 
-  // Buscar en users y teachers
   bool found = false;
   String foundName = "", foundAccount = "", foundCreated = "";
   String source = "users";
-  std::vector<String> foundMaterias; // para alumnos: todas las materias asociadas
+  std::vector<String> foundMaterias;
+  ProfesorDbRow teacherRow;
 
-  // leer USERS_FILE (acumular todas las filas que tengan uid)
-  File fu = SPIFFS.open(USERS_FILE, FILE_READ);
-  if (fu) {
-    String header = fu.readStringUntil('\n'); (void)header;
-    while (fu.available()) {
-      String l = fu.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 1 && c[0] == uid) {
-        if (!found) {
-          foundName = (c.size() > 1 ? c[1] : "");
-          foundAccount = (c.size() > 2 ? c[2] : "");
-          foundCreated = (c.size() > 4 ? c[4] : nowISO());
-          found = true;
-          source = "users";
-        }
-        String mat = (c.size() > 3 ? c[3] : "");
-        foundMaterias.push_back(mat);
-      }
-    }
-    fu.close();
-  }
+  std::vector<AlumnoDbRow> alumnoRows;
+  if (loadAlumnoRowsByUid(uid, alumnoRows) && alumnoRows.size() > 0) {
+    found = true;
+    source = "users";
+    foundName    = alumnoRows[0].name;
+    foundAccount = alumnoRows[0].account;
 
-  // si no encontrado en users, buscar en teachers (única fila esperada)
-  if (!found) {
-    File ft = SPIFFS.open(TEACHERS_FILE, FILE_READ);
-    if (ft) {
-      String header = ft.readStringUntil('\n'); (void)header;
-      while (ft.available()) {
-        String l = ft.readStringUntil('\n'); l.trim();
-        if (!l.length()) continue;
-        auto c = parseQuotedCSVLine(l);
-        if (c.size() >= 1 && c[0] == uid) {
-          foundName = (c.size() > 1 ? c[1] : "");
-          foundAccount = (c.size() > 2 ? c[2] : "");
-          foundCreated = (c.size() > 4 ? c[4] : nowISO());
-          found = true;
-          source = "teachers";
-          break;
-        }
-      }
-      ft.close();
+    for (auto &r : alumnoRows) {
+      if (foundCreated.length() == 0 && r.created.length()) foundCreated = r.created;
+      if (r.materia.length()) foundMaterias.push_back(r.materia);
     }
+    if (!foundCreated.length()) foundCreated = nowCreatedFallback();
+  } else if (loadProfesorByUidDb(uid, teacherRow)) {
+    found = true;
+    source       = "teachers";
+    foundName    = teacherRow.name;
+    foundAccount = teacherRow.account;
+    foundCreated = teacherRow.created.length() ? teacherRow.created : nowCreatedFallback();
   }
 
   if (!found) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
 
-  // cargar materias disponibles
   auto courses = loadCourses();
   std::vector<String> materias;
   for (auto &c : courses) {
@@ -234,7 +515,6 @@ static void renderEditPage(const String &uid, const String &return_to_in, const 
     if (ok) materias.push_back(c.materia);
   }
 
-  // Normalizar foundMaterias (eliminar vacíos duplicados)
   std::vector<String> normalMaterias;
   for (auto &m : foundMaterias) {
     if (m.length() == 0) continue;
@@ -243,19 +523,16 @@ static void renderEditPage(const String &uid, const String &return_to_in, const 
     if (ok) normalMaterias.push_back(m);
   }
 
-  // Determinar action del formulario según la ruta de llamada (default /edit_post)
   String formAction = "/edit_post";
   if (origin_path == "/capture_edit") formAction = "/capture_edit_post";
 
-  // Preparar posible mensaje inicial (err param)
   String initialWarnJS = "";
   if (server.hasArg("err")) {
     String e = server.arg("err");
     String msg = "";
-    if (e == "prof_required") msg = "Una de las materias seleccionadas no tiene profesor asignado. Por favor seleccione un profesor para cada materia.";
+    if (e == "prof_required")    msg = "Una de las materias seleccionadas no tiene profesor asignado. Por favor seleccione un profesor para cada materia.";
     else if (e == "materia_required") msg = "Debe seleccionar al menos una materia antes de guardar.";
     if (msg.length()) {
-      // escape for JS string
       msg.replace("\\", "\\\\");
       msg.replace("\"", "\\\"");
       msg.replace("\n", "\\n");
@@ -263,33 +540,21 @@ static void renderEditPage(const String &uid, const String &return_to_in, const 
     }
   }
 
-  // Construir HTML (estilo similar a capture_individual)
   String html = htmlHeader("Editar Usuario");
   html += R"rawliteral(
 <style>
-/* Card / grid */
 .edit-card { max-width:900px; margin:10px auto; padding:16px; }
 .form-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; align-items:start; }
 .form-row{ display:flex; flex-direction:column; }
 .form-row.full{ grid-column:1 / -1; }
-
-/* Labels / inputs */
 label.small{ font-size:0.9rem; color:#1f2937; margin-bottom:6px; font-weight:600; }
 input[type="text"], input[type="tel"], select, input[readonly] { padding:10px 12px; border-radius:8px; border:1px solid #e6eef6; background:#fff; font-size:0.95rem; }
 input[readonly]{ background:#f8fafc; color:#274151; }
-
-/* Materia rows */
 .materia-list { margin-top:8px; display:flex; flex-direction:column; gap:8px; }
 .materia-row { display:flex; gap:8px; align-items:center; }
 .materia-row select { min-width:160px; }
-
-/* Small inline buttons */
 .smallbtn { padding:6px 8px; border-radius:6px; text-decoration:none; cursor:pointer; }
-
-/* Warn box */
 .warn { display:none; border-radius:8px; padding:10px; margin-top:10px; font-weight:600; max-width:100%; box-sizing:border-box; }
-
-/* Bottom actions: smaller buttons like capture */
 .form-actions { display:flex; gap:8px; justify-content:center; margin-top:14px; grid-column:1 / -1; }
 .form-actions .btn { padding:8px 10px; font-size:0.92rem; border-radius:6px; min-width:110px; }
 @media (max-width:720px) { .form-grid { grid-template-columns:1fr; } .edit-card{ margin:8px; } .materia-row { flex-direction:column; align-items:stretch; } }
@@ -314,9 +579,7 @@ input[readonly]{ background:#f8fafc; color:#274151; }
     html += "<div style='margin-top:8px;display:flex;gap:8px;align-items:center;'><button type='button' id='addMateriaBtn' class='btn btn-blue'>➕ Agregar materia</button><span class='small' style='margin-left:8px;color:#475569;'>Seleccione al menos una materia antes de guardar.</span></div>";
     html += "</div>";
 
-    // contador y template data
     html += "<input type='hidden' id='mat_count' name='materias_count' value='0'>";
-    // JS array con materias disponibles
     html += "<script>var __availableMaterias = [";
     for (size_t i = 0; i < materias.size(); ++i) {
       if (i) html += ",";
@@ -329,10 +592,8 @@ input[readonly]{ background:#f8fafc; color:#274151; }
     html += "<div class='form-row full'><p class='small'>Este usuario es un maestro; las materias se gestionan por separado.</p></div>";
   }
 
-  // campo warn (para mensajes en cliente)
   html += "<div id='warn' class='warn'></div>";
 
-  // hidden meta fields
   html += "<input type='hidden' name='orig_uid' value='" + htmlEscapeLocal(uid) + "'>";
   html += "<input type='hidden' name='source' value='" + htmlEscapeLocal(source) + "'>";
   html += "<input type='hidden' name='return_to' value='" + htmlEscapeLocal(return_to) + "'>";
@@ -340,7 +601,6 @@ input[readonly]{ background:#f8fafc; color:#274151; }
   html += "<div class='form-row full'><label class='small'>Registrado:</label>";
   html += "<div style='padding:8px;background:#f5f7f5;border-radius:6px;'>" + htmlEscapeLocal(foundCreated) + "</div></div>";
 
-  // bottom actions (small)
   html += "<div class='form-actions'>";
   html += "<button type='submit' id='saveBtn' class='btn btn-green'>Guardar</button>";
   html += "<a class='btn btn-red' href='" + htmlEscapeLocal(return_to) + "'>Cancelar</a>";
@@ -348,7 +608,6 @@ input[readonly]{ background:#f8fafc; color:#274151; }
 
   html += "</form></div>" + htmlFooter();
 
-  // inyectar flags JS: si es edición de alumno (users) o no, y mensaje inicial si viene por err
   {
     String jsFlags = "<script>\n";
     jsFlags += "var __isUserEdit = ";
@@ -363,7 +622,6 @@ input[readonly]{ background:#f8fafc; color:#274151; }
     html += jsFlags;
   }
 
-  // JS dinámico: gestionar filas de materia y profesores + validación obligatoria de al menos 1 materia
   html += R"rawliteral(
 <script>
 function createElem(tag, attrs, text) {
@@ -402,7 +660,6 @@ function setWarn(msg){
 }
 
 function updateSaveButtonState(){
-  // Si no es edición de alumno, saltar validación de materias
   if (typeof __isUserEdit === 'undefined' || !__isUserEdit) {
     if (saveBtn) saveBtn.disabled = false;
     setWarn('');
@@ -420,7 +677,7 @@ function updateSaveButtonState(){
       var profSel = r.querySelector('select[name^="profesor_"]');
       if (!matSel) return;
       var mv = matSel.value || '';
-      if (!mv) return; // empty materia row - ignored
+      if (!mv) return;
       selectedCount++;
       var c = profSel ? profSel.getAttribute('data-prof-count') : null;
       if (c !== null) {
@@ -433,7 +690,6 @@ function updateSaveButtonState(){
             profSel.setAttribute('data-prof-count', String(list.length));
             if (!profSel.value) ok = false;
           } else if (list.length === 1) {
-            // single professor: set it but DO NOT disable the select
             profSel.innerHTML = '';
             var o = createElem('option',{ 'value': list[0] }, list[0]);
             profSel.appendChild(o);
@@ -481,7 +737,6 @@ function addMateriaRow(materia, profesor){
   }
   var profSel = createElem('select',{ 'name':'profesor_' + idx });
   profSel.appendChild(createElem('option',{ 'value':'' }, '-- Ninguno --'));
-  // NOTE: do NOT disable profSel when single professor; keep enabled so it is submitted
 
   var rm = createElem('button',{ 'type':'button', 'class':'smallbtn btn btn-red' }, 'Eliminar');
   rm.addEventListener('click', function(){
@@ -508,7 +763,6 @@ function addMateriaRow(materia, profesor){
         profSel.disabled = true;
         profSel.setAttribute('data-prof-count','0');
       } else if (list.length === 1) {
-        // single professor: assign it but DO NOT disable the select
         profSel.innerHTML = '';
         var o = createElem('option',{ 'value': list[0] }, list[0]);
         profSel.appendChild(o);
@@ -553,55 +807,46 @@ document.addEventListener('DOMContentLoaded', function(){
   var addBtn = document.getElementById('addMateriaBtn');
   if (addBtn) addBtn.addEventListener('click', function(){ addMateriaRow('', ''); });
 
-  // existing materias provided by server are embedded below (server will inject array)
   var existing = [
 )rawliteral";
 
-  // embed existing materias as JS array
   for (size_t i = 0; i < normalMaterias.size(); ++i) {
     String m = normalMaterias[i];
-    String esc = m;
-    esc.replace("\\", "\\\\");
-    esc.replace("\"", "\\\"");
-    html += "\"" + esc + "\"";
+    m.replace("\\", "\\\\");
+    m.replace("\"", "\\\"");
+    html += "\"" + m + "\"";
     if (i + 1 < normalMaterias.size()) html += ",";
   }
 
   html += R"rawliteral(
   ];
 
-  // If edit is for students, populate existing materia rows; otherwise skip
   if (typeof __isUserEdit !== 'undefined' && __isUserEdit) {
     for (var i=0;i<existing.length;i++){
       addMateriaRow(existing[i], '');
     }
     updateSaveButtonState();
   } else {
-    // For teachers: ensure Save enabled and no warnings
     if (saveBtn) saveBtn.disabled = false;
     setTimeout(function(){ setWarn(''); }, 20);
   }
 
-  // if server indicated initial warning, show it
   if (typeof __initial_warn !== 'undefined' && __initial_warn) {
     setTimeout(function(){ setWarn(__initial_warn); }, 50);
   }
 
   var form = document.getElementById('editForm');
   form.addEventListener('submit', function(ev){
-    // If editing teachers skip materia validation
     if (typeof __isUserEdit === 'undefined' || !__isUserEdit) {
-      return; // allow submit
+      return;
     }
     updateSaveButtonState();
-    // if saveBtn disabled: show client-side HTML message (warn box) and prevent submit
     if (saveBtn.disabled) {
       ev.preventDefault();
       setWarn('No puede guardar: seleccione al menos 1 materia y complete profesores requeridos.');
       if (materiasContainer) materiasContainer.scrollIntoView({behavior:'smooth', block:'center'});
       return false;
     }
-    // otherwise submit normally
   });
 });
 </script>
@@ -620,55 +865,52 @@ void handleEditGet() {
   renderEditPage(uid, return_to, server.uri());
 }
 
-// POST shared: procesar el formulario (tanto /edit_post)
+// POST /edit_post (y /capture_edit_post comparte esta lógica)
 static void processEditPostAndRedirect(const String &redirect_to) {
-  // aceptar orig_uid o uid para compatibilidad
   String uid;
   if (server.hasArg("orig_uid")) uid = server.arg("orig_uid");
   else if (server.hasArg("uid")) uid = server.arg("uid");
   uid.trim();
 
-  String name = server.hasArg("name") ? server.arg("name") : String(); name.trim();
+  String name    = server.hasArg("name")    ? server.arg("name")    : String(); name.trim();
   String account = server.hasArg("account") ? server.arg("account") : String(); account.trim();
-  String source = server.hasArg("source") ? server.arg("source") : String(); source.trim();
-  String return_to = server.hasArg("return_to") ? server.arg("return_to") : String(); return_to = sanitizeReturnToLocal(return_to);
+  String source  = server.hasArg("source")  ? server.arg("source")  : String(); source.trim();
+  String return_to = server.hasArg("return_to") ? server.arg("return_to") : String();
+  return_to = sanitizeReturnToLocal(return_to);
 
-  if (uid.length() == 0) { server.send(400, "text/plain", "UID vacío"); return; }
-  if (name.length() == 0) { server.send(400, "text/plain", "Nombre vacío"); return; }
+  if (uid.length() == 0)     { server.send(400, "text/plain", "UID vacío");      return; }
+  if (name.length() == 0)    { server.send(400, "text/plain", "Nombre vacío");   return; }
   if (account.length() != 7) { server.send(400, "text/plain", "Cuenta inválida"); return; }
-  for (size_t i = 0; i < account.length(); ++i) if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
-
-  if (!(source == "users" || source == "teachers")) {
-    // intentar inferir por archivos
-    if (uidExistsInTeachers(uid)) source = "teachers";
-    else source = "users";
+  for (size_t i = 0; i < account.length(); ++i) {
+    if (!isDigit(account[i])) { server.send(400, "text/plain", "Cuenta inválida"); return; }
   }
 
-  // comprobar duplicado de cuenta
-  auto accFound = findByAccountLocal(account);
-  if (accFound.first.length() && accFound.first != uid) {
+  if (!(source == "users" || source == "teachers")) {
+    source = uidExistsInTeachers(uid) ? "teachers" : "users";
+  }
+
+  String accountOwnerUid = findUidByAccountInStudentsDb(account);
+  if (accountOwnerUid.length() && accountOwnerUid != uid) {
     server.send(400, "text/plain", "Cuenta duplicada con otro usuario");
     return;
   }
 
-  // si users: procesar materias múltiples
+  // ---- ALUMNOS ----
   if (source == "users") {
     int mcount = 0;
     if (server.hasArg("materias_count")) {
       mcount = server.arg("materias_count").toInt();
-      if (mcount < 0) mcount = 0;
+      if (mcount < 0)   mcount = 0;
       if (mcount > 200) mcount = 200;
     }
 
     std::vector<std::pair<String,String>> materias;
     for (int i = 0; i < mcount; ++i) {
-      String mk = String("materia_") + String(i);
+      String mk = String("materia_")  + String(i);
       String pk = String("profesor_") + String(i);
-      String mval = server.hasArg(mk) ? server.arg(mk) : String();
-      String pval = server.hasArg(pk) ? server.arg(pk) : String();
-      mval.trim(); pval.trim();
+      String mval = server.hasArg(mk) ? server.arg(mk) : String(); mval.trim();
+      String pval = server.hasArg(pk) ? server.arg(pk) : String(); pval.trim();
       if (mval.length() == 0) continue;
-      // Si profesor vacío -> redirigir a edición con mensaje (evitamos la página emergente "Falta profesor")
       if (pval.length() == 0) {
         String loc = "/edit?uid=" + uid + "&err=prof_required";
         server.sendHeader("Location", loc);
@@ -678,7 +920,6 @@ static void processEditPostAndRedirect(const String &redirect_to) {
       materias.push_back(std::make_pair(mval, pval));
     }
 
-    // En EDIT de alumno: es obligatorio tener al menos UNA materia seleccionada
     if (materias.size() == 0) {
       String loc = "/edit?uid=" + uid + "&err=materia_required";
       server.sendHeader("Location", loc);
@@ -686,163 +927,115 @@ static void processEditPostAndRedirect(const String &redirect_to) {
       return;
     }
 
-    // leer USERS_FILE y construir nuevo contenido
-    File f = SPIFFS.open(USERS_FILE, FILE_READ);
-    std::vector<String> lines;
-    String header = "";
-    if (f) {
-      header = f.readStringUntil('\n');
-      lines.push_back(header);
-      while (f.available()) {
-        String l = f.readStringUntil('\n'); l.trim();
-        if (!l.length()) continue;
-        auto c = parseQuotedCSVLine(l);
-        if (c.size() >= 1 && c[0] == uid) {
-          // omitimos las filas antiguas de este uid
-          continue;
-        }
-        lines.push_back(l);
-      }
-      f.close();
-    } else {
-      header = "\"uid\",\"name\",\"account\",\"materia\",\"created\"";
-      lines.push_back(header);
+    std::vector<AlumnoDbRow> existingRows;
+    if (!loadAlumnoRowsByUid(uid, existingRows) || existingRows.size() == 0) {
+      server.send(404, "text/plain", "Usuario no encontrado");
+      return;
     }
 
-    // intentar conservar created timestamp si existía
-    String created = nowISO();
-    File fu2 = SPIFFS.open(USERS_FILE, FILE_READ);
-    if (fu2) {
-      String h = fu2.readStringUntil('\n'); (void)h;
-      while (fu2.available()) {
-        String l = fu2.readStringUntil('\n'); l.trim();
-        if (!l.length()) continue;
-        auto c = parseQuotedCSVLine(l);
-        if (c.size() >= 1 && c[0] == uid) {
-          if (c.size() > 4 && c[4].length()) { created = c[4]; break; }
-        }
-      }
-      fu2.close();
+    String created = nowCreatedFallback();
+    for (auto &r : existingRows) {
+      if (r.created.length()) { created = r.created; break; }
     }
 
-    // agregar filas por materia
-    for (auto &mp : materias) {
-      String newline = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"" + mp.first + "\",\"" + created + "\"";
-      lines.push_back(newline);
-    }
-
-    if (!writeAllLines(USERS_FILE, lines)) { server.send(500, "text/plain", "Error guardando usuarios"); return; }
-
-    // Sincronizar con Oracle: borrar filas anteriores del UID e insertar las nuevas
-    std::vector<String> materiaList;
+    std::vector<String> uniqueSubmitted;
     for (auto &mp : materias) {
       bool exists = false;
-      for (auto &m : materiaList) {
+      for (auto &m : uniqueSubmitted) {
         if (m == mp.first) { exists = true; break; }
       }
-      if (!exists) materiaList.push_back(mp.first);
+      if (!exists) uniqueSubmitted.push_back(mp.first);
     }
 
-    if (!oracleSyncUserRows(uid, name, account, materiaList, created)) {
+    bool allOk = true;
+    std::vector<bool> used(existingRows.size(), false);
+
+    for (auto &mp : materias) {
+      const String &mat = mp.first;
+      int matchedIndex = -1;
+      for (size_t i = 0; i < existingRows.size(); ++i) {
+        if (used[i]) continue;
+        if (existingRows[i].materia == mat) { matchedIndex = (int)i; break; }
+      }
+
+      if (matchedIndex >= 0) {
+        used[matchedIndex] = true;
+        const AlumnoDbRow &row = existingRows[matchedIndex];
+        int idNum = row.id.toInt();
+        if (idNum > 0) {
+          if (!updateAlumnoById(idNum, uid, name, account, mat, created)) {
+            Serial.print("WARN: updateAlumnoById falló para id="); Serial.println(idNum);
+            allOk = false;
+          } else {
+            Serial.print("DB_SYNC: alumno actualizado id="); Serial.println(idNum);
+          }
+        } else {
+          if (!sendAlumnoRegistro(uid, name, account, mat, created)) {
+            Serial.print("WARN: sendAlumnoRegistro falló para materia="); Serial.println(mat);
+            allOk = false;
+          }
+        }
+      } else {
+        if (!sendAlumnoRegistro(uid, name, account, mat, created)) {
+          Serial.print("WARN: sendAlumnoRegistro falló para materia="); Serial.println(mat);
+          allOk = false;
+        } else {
+          Serial.print("DB_SYNC: alumno creado para materia="); Serial.println(mat);
+        }
+      }
+    }
+
+    for (size_t i = 0; i < existingRows.size(); ++i) {
+      if (used[i]) continue;
+      int idNum = existingRows[i].id.toInt();
+      if (idNum > 0) {
+        if (!deleteAlumnoById(idNum)) {
+          Serial.print("WARN: no se pudo borrar alumno id="); Serial.println(idNum);
+          allOk = false;
+        } else {
+          Serial.print("DB_SYNC: alumno eliminado id="); Serial.println(idNum);
+        }
+      }
+    }
+
+    if (!oracleSyncUserRows(uid, name, account, uniqueSubmitted, created)) {
       Serial.println("WARN: sincronización Oracle de alumno no completa");
     } else {
       Serial.println("DB_SYNC: alumno sincronizado correctamente con Oracle");
     }
 
     server.sendHeader("Location", return_to);
-    server.send(303, "text/plain", "Updated");
+    server.send(303, "text/plain", allOk ? "Updated" : "Updated with warnings");
     return;
   }
 
-  // flujo teachers (única fila)
+  // ---- TEACHERS ----
   if (source == "teachers") {
-    const char* targetFile = TEACHERS_FILE;
-    File f = SPIFFS.open(targetFile, FILE_READ);
-    if (!f) { server.send(500, "text/plain", "no file"); return; }
-    std::vector<String> lines;
-    String header = f.readStringUntil('\n'); lines.push_back(header);
-    bool updated = false;
-    String oldName = "";
-
-    while (f.available()) {
-      String l = f.readStringUntil('\n'); l.trim();
-      if (!l.length()) continue;
-      auto c = parseQuotedCSVLine(l);
-      if (c.size() >= 1 && c[0] == uid) {
-        if (c.size() > 1) oldName = c[1];
-        String created = (c.size() > 4 ? c[4] : nowISO());
-        String newline = "\"" + uid + "\",\"" + name + "\",\"" + account + "\",\"\",\"" + created + "\"";
-        lines.push_back(newline);
-        updated = true;
-      } else lines.push_back(l);
+    ProfesorDbRow teacher;
+    if (!loadProfesorByUidDb(uid, teacher)) {
+      server.send(404, "text/plain", "Usuario no encontrado");
+      return;
     }
-    f.close();
 
-    if (!updated) { server.send(404, "text/plain", "Usuario no encontrado"); return; }
-    if (!writeAllLines(targetFile, lines)) { server.send(500, "text/plain", "Error guardando"); return; }
+    String created = teacher.created.length() ? teacher.created : nowCreatedFallback();
+    String oldName = teacher.name;
 
-    // Sincronizar maestro a Oracle
-    String created = nowISO();
-    File ft = SPIFFS.open(targetFile, FILE_READ);
-    if (ft) {
-      String h = ft.readStringUntil('\n'); (void)h;
-      while (ft.available()) {
-        String l = ft.readStringUntil('\n'); l.trim();
-        if (!l.length()) continue;
-        auto c = parseQuotedCSVLine(l);
-        if (c.size() >= 1 && c[0] == uid) {
-          if (c.size() > 4 && c[4].length()) created = c[4];
-          break;
-        }
+    bool updated = updateProfesorByUid(uid, uid, name, account, created);
+    if (!updated) {
+      Serial.println("WARN: updateProfesorByUid falló, intentando crear profesor en Oracle");
+      if (!sendProfesorRegistro(uid, name, account, created)) {
+        server.send(500, "text/plain", "Error guardando profesor");
+        return;
       }
-      ft.close();
     }
 
     if (!syncTeacherToOracle(uid, name, account, created)) {
       Serial.println("WARN: sincronización Oracle de profesor no completa");
     }
 
-    // Propagar renombre si es necesario
+    // Propagar renombre en horarios de la BD (sin SPIFFS)
     if (oldName.length() && oldName != name) {
-      // update courses
-      auto courses = loadCourses();
-      bool changed = false;
-      for (auto &c : courses) {
-        if (c.profesor == oldName) { c.profesor = name; changed = true; }
-      }
-      if (changed) writeCourses(courses);
-
-      // update schedules file owner fields if format "materia||profesor"
-      File fs = SPIFFS.open(SCHEDULES_FILE, FILE_READ);
-      if (fs) {
-        std::vector<String> slines;
-        String sheader = fs.readStringUntil('\n'); slines.push_back(sheader);
-        while (fs.available()) {
-          String l = fs.readStringUntil('\n'); l.trim();
-          if (!l.length()) continue;
-          auto p = parseQuotedCSVLine(l);
-          if (p.size() >= 4) {
-            String owner = p[0];
-            int idx = owner.indexOf("||");
-            if (idx >= 0) {
-              String ownerMat = owner.substring(0, idx);
-              String ownerProf = owner.substring(idx + 2);
-              if (ownerProf == oldName) {
-                String newOwner = ownerMat + String("||") + name;
-                String day = p[1];
-                String start = p[2];
-                String rest = p[3];
-                String newline = "\"" + newOwner + "\"," + "\"" + day + "\"," + "\"" + start + "\"," + "\"" + rest + "\"";
-                slines.push_back(newline);
-                continue;
-              }
-            }
-          }
-          slines.push_back(l);
-        }
-        fs.close();
-        writeAllLines(SCHEDULES_FILE, slines);
-      }
+      propagateTeacherRenameInSchedules(oldName, name);
     }
 
     server.sendHeader("Location", return_to);

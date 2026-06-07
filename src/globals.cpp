@@ -5,7 +5,6 @@
 #include <WebServer.h>
 #include <MFRC522.h>
 #include <Adafruit_ST7735.h>
-#include <SPIFFS.h>
 
 #if defined(ARDUINO_ARCH_ESP32)
   #include <ESP32Servo.h>
@@ -15,8 +14,8 @@
 
 // --- Config values (definiciones) ---
 const char* WIFI_SSID = "Totalplay-2.4G-1cc8";
-const char* WIFI_PASS = "pHh5XfaynxccRz5H";
-const char* TZ = "America/Mexico_City";
+const char* WIFI_PASS  = "pHh5XfaynxccRz5H";
+const char* TZ         = "America/Mexico_City";
 
 // --- Pins ---
 const int RST_PIN   = 22;
@@ -24,20 +23,10 @@ const int SS_PIN    = 21;
 const int TFT_CS    = 5;
 const int TFT_DC    = 2;
 const int TFT_RST   = 4;
-const int SERVO_PIN = 15; 
+const int SERVO_PIN = 15;
 const int RGB_R_PIN = 25;
 const int RGB_G_PIN = 26;
 const int BUZZER_PIN = -1;
-
-// --- Files (SPIFFS paths) ---
-const char* USERS_FILE         = "/users.csv";
-const char* ATT_FILE           = "/attendance.csv";
-const char* DENIED_FILE        = "/denied.csv";
-const char* SCHEDULES_FILE     = "/schedules.csv";
-const char* NOTIF_FILE         = "/notifications.csv";
-const char* COURSES_FILE       = "/courses.csv";
-const char* CAPTURE_QUEUE_FILE = "/capture_queue.csv";
-const char* TEACHERS_FILE      = "/teachers.csv";
 
 // --- Timings ---
 const unsigned long DISPLAY_MS = 4000UL;
@@ -53,7 +42,7 @@ const int SLOT_COUNT = 6;
 WebServer server(80);
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
-Servo puerta; // objeto Servo (definición)
+Servo puerta;
 
 // --- Capture mode globals ---
 volatile bool captureMode = false;
@@ -78,5 +67,5 @@ unsigned long SELF_REG_TIMEOUT_MS = 5UL * 60UL * 1000UL;
 String currentSelfRegToken = String();
 String currentSelfRegUID = String();
 
-// *** NUEVA VARIABLE PARA BLOQUEO RFID DURANTE REGISTRO ***
+// --- Bloqueo RFID durante registro ---
 volatile bool blockRFIDForSelfReg = false;

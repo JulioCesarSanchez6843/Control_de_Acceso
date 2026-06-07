@@ -17,9 +17,10 @@
 #include "web/web_common.h"
 #include "self_register.h"  // declara handlers para self-registration
 #include "teachers.h"       // handlers para maestros
-#include "edit.h"           // si no existiera, quítalo o crea el header correspondiente
-// Nota: no incluimos aquí capture_lote.h ni registramos rutas capture_lote_*
-// a menos que tengas implementado ese módulo completo (header + .cpp).
+#include "edit.h"
+
+// CAPTURE_QUEUE_FILE se define en capture_common.h (cola temporal en SPIFFS)
+#include "capture_common.h"
 
 // Declaraciones externas para acceder a las variables de self-register
 extern volatile bool awaitingSelfRegister;
@@ -28,18 +29,15 @@ extern String currentSelfRegToken;
 extern volatile bool blockRFIDForSelfReg;
 extern std::vector<SelfRegSession> selfRegSessions;
 
-// ----- Prototipos/forward declarations para funciones que pueden no estar
-//      declaradas en headers incluidos (evita errores de "identifier not defined")
-//      Mantén solo los que realmente falten en tu proyecto.
+// Forward declarations
 void handleNotificationsPage();
 void handleNotificationsReadPage();
 void handleNotificationsClearPOST();
 void handleNotificationsDeletePOST();
 void handleNotificationsMarkPOST();
 
-// El endpoint que devuelve profesores por materia debe existir en courses.cpp
 void handleProfesoresForMateriaGET();
-// ------------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────────────────────────────
 
 void registerRoutes() {
   server.on("/", handleRoot);
@@ -81,17 +79,14 @@ void registerRoutes() {
   server.on("/capture_poll", HTTP_GET, handleCapturePoll);
   server.on("/capture_stop", HTTP_GET, handleCaptureStopGET);
 
-  // Batch endpoints (no confundir con capture_lote; estos deben existir)
+  // Batch endpoints
   server.on("/capture_batch_poll", HTTP_GET, handleCaptureBatchPollGET);
   server.on("/capture_batch_stop", HTTP_POST, handleCaptureBatchStopPOST);
   server.on("/capture_batch_pause", HTTP_POST, handleCaptureBatchPausePOST);
   server.on("/capture_remove_last", HTTP_POST, handleCaptureRemoveLastPOST);
   server.on("/capture_generate_links", HTTP_POST, handleCaptureGenerateLinksPOST);
 
-  // Nota: aquí NO registramos las rutas capture_lote_* porque las implementaciones
-  // no están presentes en tu repo actual (evita undefined references).
-
-  // Cancel capture & reset display. Ahora respeta return_to si se envía.
+  // Cancel capture & reset display. Respeta return_to si se envía.
   server.on("/cancel_capture", HTTP_POST, []() {
     Serial.println("Cancelando captura y limpiando cola desde /cancel_capture...");
 
@@ -105,7 +100,7 @@ void registerRoutes() {
     // Limpiar la cola de UIDs en memoria
     capturedUIDs.clear();
 
-    // Limpiar archivo de cola en SPIFFS
+    // Limpiar archivo de cola temporal en SPIFFS
     if (SPIFFS.exists(CAPTURE_QUEUE_FILE)) {
       SPIFFS.remove(CAPTURE_QUEUE_FILE);
       Serial.println("Archivo de cola eliminado: " + String(CAPTURE_QUEUE_FILE));
@@ -123,16 +118,14 @@ void registerRoutes() {
     captureAccount = "";
     captureDetectedAt = 0;
 
-    // LIMPIAR ESTADO DE SELF-REGISTER
+    // Limpiar estado de self-register
     awaitingSelfRegister = false;
     currentSelfRegUID = "";
     currentSelfRegToken = "";
     blockRFIDForSelfReg = false;
-
-    // También limpiar cualquier sesión de self-register activa
     selfRegSessions.clear();
 
-    // Llamar a la función del display para volver a pantalla normal
+    // Volver a pantalla normal
     cancelCaptureAndReturnToNormal();
 
     Serial.println("Captura cancelada completamente - display resetado a pantalla de bienvenido");
@@ -141,7 +134,7 @@ void registerRoutes() {
     server.send(303, "text/plain", "Canceled");
   });
 
-  // NUEVO: terminar y guardar batch
+  // Terminar y guardar batch
   server.on("/capture_finish", HTTP_POST, handleCaptureFinishPOST);
 
   server.on("/capture_edit", HTTP_GET, handleCaptureEditPage);
@@ -159,11 +152,8 @@ void registerRoutes() {
   server.on("/schedules_for_del", HTTP_POST, handleSchedulesForMateriaDelPOST);
 
   // Notifications: lista + acciones
-  // /notifications -> vista por defecto: No leídas (GET)
-  server.on("/notifications", HTTP_GET, handleNotificationsPage);           
-  // /notifications_read -> vista: Leídas (GET)
-  server.on("/notifications_read", HTTP_GET, handleNotificationsReadPage);  
-  // acciones (POST)
+  server.on("/notifications", HTTP_GET, handleNotificationsPage);
+  server.on("/notifications_read", HTTP_GET, handleNotificationsReadPage);
   server.on("/notifications_clear", HTTP_POST, handleNotificationsClearPOST);
   server.on("/notifications_delete", HTTP_POST, handleNotificationsDeletePOST);
   server.on("/notifications_mark", HTTP_POST, handleNotificationsMarkPOST);
@@ -176,44 +166,6 @@ void registerRoutes() {
   server.on("/self_register", HTTP_GET, handleSelfRegisterGET);
   server.on("/self_register_submit", HTTP_POST, handleSelfRegisterPost);
   server.on("/self_register_cancel", HTTP_POST, handleSelfRegisterCancelPOST);
-
-  // CSV endpoints (descarga directa)
-  server.on("/users.csv", [](){
-    if (!SPIFFS.exists(USERS_FILE)) { server.send(404,"text/plain","No users"); return; }
-    File f = SPIFFS.open(USERS_FILE, FILE_READ); 
-    server.sendHeader("Content-Type", "text/csv");
-    server.sendHeader("Content-Disposition", "attachment; filename=users.csv");
-    server.streamFile(f, "text/csv"); 
-    f.close();
-  });
-
-  server.on("/attendance.csv", [](){
-    if (!SPIFFS.exists(ATT_FILE)) { server.send(404,"text/plain","no att"); return; }
-    File f = SPIFFS.open(ATT_FILE, FILE_READ); 
-    server.sendHeader("Content-Type", "text/csv");
-    server.sendHeader("Content-Disposition", "attachment; filename=attendance.csv");
-    server.streamFile(f,"text/csv"); 
-    f.close();
-  });
-
-  server.on("/notifications.csv", [](){
-    if (!SPIFFS.exists(NOTIF_FILE)) { server.send(404,"text/plain","no"); return; }
-    File f = SPIFFS.open(NOTIF_FILE, FILE_READ); 
-    server.sendHeader("Content-Type", "text/csv");
-    server.sendHeader("Content-Disposition", "attachment; filename=notifications.csv");
-    server.streamFile(f,"text/csv"); 
-    f.close();
-  });
-
-  // Teachers CSV
-  server.on("/teachers.csv", [](){
-    if (!SPIFFS.exists(TEACHERS_FILE)) { server.send(404,"text/plain","No teachers"); return; }
-    File f = SPIFFS.open(TEACHERS_FILE, FILE_READ); 
-    server.sendHeader("Content-Type", "text/csv");
-    server.sendHeader("Content-Disposition", "attachment; filename=teachers.csv");
-    server.streamFile(f, "text/csv"); 
-    f.close();
-  });
 
   server.on("/history", handleHistoryPage);
   server.on("/history.csv", handleHistoryCSV);
@@ -231,7 +183,7 @@ void registerRoutes() {
   server.on("/logs", handleLogsPage);
   #endif
 
-  // Ruta para favicon (evita errores 404 en navegadores)
+  // Favicon (evita errores 404 en navegadores)
   server.on("/favicon.ico", []() {
     if (SPIFFS.exists("/favicon.ico")) {
       File f = SPIFFS.open("/favicon.ico", FILE_READ);
@@ -242,7 +194,7 @@ void registerRoutes() {
     }
   });
 
-  // Ruta para iconos/logo si existen
+  // Logo
   server.on("/logo.png", []() {
     if (SPIFFS.exists("/logo.png")) {
       File f = SPIFFS.open("/logo.png", FILE_READ);
@@ -253,7 +205,7 @@ void registerRoutes() {
     }
   });
 
-  // Ruta para estilos CSS si existe un archivo separado
+  // CSS externo
   server.on("/style.css", []() {
     if (SPIFFS.exists("/style.css")) {
       File f = SPIFFS.open("/style.css", FILE_READ);

@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
-#include <SPIFFS.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -17,7 +16,6 @@
 #include "config.h"
 #include "globals.h"
 #include "display.h"
-#include "files_utils.h"
 #include "rfid_handler.h"
 #include "web/web_routes.h"
 #include "db_sync.h"
@@ -69,7 +67,7 @@ static void showBootScreen(const String &line1, const String &line2 = String(), 
 static void showBootErrorAndStop(const String &msg) {
   showBootScreen("ERROR DE RED", msg, ST77XX_RED);
   Serial.println(msg);
-  Serial.println("Sistema detenido por falta de conexion WiFi/Internet.");
+  Serial.println("Sistema detenido por falta de conexion WiFi/Internet o servidor no disponible.");
 
   while (true) {
     updateDisplay();
@@ -236,17 +234,7 @@ void setup() {
   delay(200);
 
   Serial.println();
-  Serial.println("Iniciando ESP32 Registro Asistencia - flujo ONLINE/LOCAL");
-
-  Serial.println("Montando SPIFFS...");
-  if (!SPIFFS.begin(true)) {
-    Serial.println("ERR: SPIFFS.begin() fallo. Se continuara, pero faltaran archivos si no existen.");
-  } else {
-    Serial.println("SPIFFS montado OK.");
-  }
-
-  initFiles();
-  Serial.println("initFiles() -> OK.");
+  Serial.println("Iniciando ESP32 Registro Asistencia - flujo ONLINE");
 
   // La pantalla debe estar lista antes del arranque de red
   displayInit();
@@ -257,17 +245,9 @@ void setup() {
     showBootErrorAndStop("Sin conexion WiFi / Internet");
   }
 
-  // Si hay WiFi, seguimos
   showBootScreen("Internet conectado", WiFi.localIP().toString(), ST77XX_GREEN);
 
-  // 2) mDNS
-  if (MDNS.begin("control-acceso")) {
-    Serial.println("mDNS iniciado: http://control-acceso.local");
-  } else {
-    Serial.println("WARN: No se pudo iniciar mDNS");
-  }
-
-  // 3) Hora / NTP
+  // 2) NTP / hora
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6";
 
@@ -287,16 +267,22 @@ void setup() {
 
   printTimeInfo();
 
+  // 3) mDNS
+  if (MDNS.begin("control-acceso")) {
+    Serial.println("mDNS iniciado: http://control-acceso.local");
+  } else {
+    Serial.println("WARN: No se pudo iniciar mDNS");
+  }
+
   // 4) Servidor FastAPI / Oracle
   showBootScreen("Comprobando servidor FastAPI...", "Intentando 60 segundos", ST77XX_YELLOW);
 
   bool serverOnline = waitForServerWithTimeout(SERVER_TIMEOUT_MS);
-  if (serverOnline) {
-    showBootScreen("Servidor conectado", "Modo ONLINE", ST77XX_GREEN);
-  } else {
-    showBootScreen("Servidor no responde", "Iniciando modo LOCAL", ST77XX_YELLOW);
-    delay(2500);
+  if (!serverOnline) {
+    showBootErrorAndStop("Servidor FastAPI no responde");
   }
+
+  showBootScreen("Servidor conectado", "Modo ONLINE", ST77XX_GREEN);
 
   // 5) SPI / RFID
   Serial.println("Iniciando SPI...");
@@ -339,7 +325,7 @@ void setup() {
   // Pantalla normal de espera
   showWaitingMessage();
 
-  Serial.println(serverOnline ? "Sistema listo en MODO ONLINE." : "Sistema listo en MODO LOCAL.");
+  Serial.println("Sistema listo en MODO ONLINE.");
   Serial.println("Setup completo - entrando a loop.");
 }
 
