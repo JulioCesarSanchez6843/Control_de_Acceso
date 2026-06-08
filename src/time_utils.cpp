@@ -4,18 +4,12 @@
 #include <time.h>
 #include <sys/time.h>
 
-// Fallback offset si NTP no está disponible
-static const long LOCAL_TZ_OFFSET_SEC = -6L * 3600L;
-
 String nowISO() {
   time_t epoch = time(nullptr);
-  time_t local_epoch = epoch + LOCAL_TZ_OFFSET_SEC;
   struct tm tm_local;
-#if defined(_MSC_VER)
-  gmtime_s(&tm_local, &local_epoch);
-#else
-  gmtime_r(&local_epoch, &tm_local);
-#endif
+  // localtime_r respeta la TZ configurada via setenv("TZ", ...) en setup()
+  // No hacemos aritmetica manual: el sistema ya sabe que es America/Mexico_City
+  localtime_r(&epoch, &tm_local);
   char buf[32];
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_local);
   return String(buf);
@@ -50,13 +44,9 @@ static bool parseHHMMPermissive(const String &t, int &outH, int &outM) {
 
 String currentScheduledMateria() {
   time_t epoch = time(nullptr);
-  time_t local_epoch = epoch + LOCAL_TZ_OFFSET_SEC;
   struct tm tm_now;
-#if defined(_MSC_VER)
-  gmtime_s(&tm_now, &local_epoch);
-#else
-  gmtime_r(&local_epoch, &tm_now);
-#endif
+  // Igual: usamos localtime_r en lugar del offset manual
+  localtime_r(&epoch, &tm_now);
 
   int wday = tm_now.tm_wday;
   int dayIndex = -1;

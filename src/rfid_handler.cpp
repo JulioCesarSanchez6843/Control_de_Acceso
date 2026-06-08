@@ -6,7 +6,7 @@
 //   2. Oracle / BD es el respaldo.  Después de escribir en SPIFFS
 //      se intenta enviar a la BD en el mismo evento (fire-and-forget).
 //      Si falla, el dato queda en SPIFFS marcado como pendiente y
-//      syncPendingToServer() lo reintenta cada ~15 s en background.
+//      syncPendingToServer() lo reintenta cada 5 min en background.
 //   3. modoLocal ha sido ELIMINADO — el sistema opera igual
 //      con o sin BD disponible.
 // ============================================================
@@ -326,21 +326,57 @@ static void trySyncDeniedFile() {
   f.close();
 }
 
+// Archivo auxiliar que guarda una línea por cada notificación ya enviada
+// (usamos timestamp+uid como clave única).
+static const char* NOTIF_SENT_FILE = "/notif_sent.txt";
+
+static bool isNotifAlreadySent(const String &key) {
+  if (!SPIFFS.exists(NOTIF_SENT_FILE)) return false;
+  File f = SPIFFS.open(NOTIF_SENT_FILE, FILE_READ);
+  if (!f) return false;
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (line == key) { f.close(); return true; }
+  }
+  f.close();
+  return false;
+}
+
+static void markNotifSent(const String &key) {
+  File f = SPIFFS.open(NOTIF_SENT_FILE, FILE_APPEND);
+  if (f) { f.println(key); f.close(); }
+}
+
 static void trySyncNotificationsFile() {
   if (!SPIFFS.exists(NOTIF_FILE)) return;
   File f = SPIFFS.open(NOTIF_FILE, FILE_READ);
   if (!f) return;
   String header = f.readStringUntil('\n'); (void)header;
+  int enviadas = 0;
+  int omitidas = 0;
   while (f.available()) {
     String line = f.readStringUntil('\n');
     line.trim();
     if (!line.length()) continue;
     auto c = parseQuotedCSVLine(line);
     if (c.size() >= 5) {
-      sendNotificacionRegistro(c[0], c[1], c[2], c[3], c[4]);
+      // Clave única: timestamp + UID
+      String key = c[0] + "|" + c[1];
+      if (isNotifAlreadySent(key)) {
+        omitidas++;
+        continue; // ya fue enviada exitosamente antes
+      }
+      bool ok = sendNotificacionRegistro(c[0], c[1], c[2], c[3], c[4]);
+      if (ok) {
+        markNotifSent(key); // marcar para no reenviar
+        enviadas++;
+      }
     }
   }
   f.close();
+  if (enviadas > 0 || omitidas > 0)
+    Serial.printf("SYNC notif: %d enviadas, %d ya existian\n", enviadas, omitidas);
 }
 
 // ------------------------------------------------------------
@@ -351,7 +387,7 @@ static void trySyncNotificationsFile() {
 // ------------------------------------------------------------
 void syncPendingToServer() {
   static unsigned long lastAttemptMs = 0;
-  const unsigned long SYNC_CHECK_INTERVAL_MS = 15000UL; // cada 15 s
+  const unsigned long SYNC_CHECK_INTERVAL_MS = 5UL * 60UL * 1000UL; // cada 5 minutos
 
   if (millis() - lastAttemptMs < SYNC_CHECK_INTERVAL_MS) return;
   lastAttemptMs = millis();
