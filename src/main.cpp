@@ -313,16 +313,18 @@ void setup() {
 
   // ── NTP / Hora ─────────────────────────────────────────────
   Serial.println("Configurando TZ y NTP...");
-  const char *posixTZ = "GMT-6";
+  // Mexico elimino el horario de verano en 2023. Todo el año es UTC-6 (CST fijo).
+  // El ESP32 NO tiene tzdata, por eso usamos la cadena POSIX directamente.
+  const char *posixTZ = "CST6";
 
-  configTzTime(TZ, "pool.ntp.org", "time.nist.gov");
-  setenv("TZ", TZ, 1);
+  configTzTime(posixTZ, "pool.ntp.org", "time.nist.gov");
+  setenv("TZ", posixTZ, 1);
   tzset();
 
   waitForNtpSyncOrTimeout();
 
   if (!systemTimeReasonable()) {
-    Serial.println("Reintentando NTP con fallback POSIX...");
+    Serial.println("Reintentando NTP con fallback...");
     configTzTime(posixTZ, "pool.ntp.org", "time.nist.gov");
     setenv("TZ", posixTZ, 1);
     tzset();
@@ -371,7 +373,7 @@ void setup() {
     tv.tv_sec  = (time_t)e;
     tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
-    setenv("TZ", TZ, 1);
+    setenv("TZ", "CST6", 1);
     tzset();
     server.send(200, "text/plain", String("Time set to: ") + nowISO());
   });
