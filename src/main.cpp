@@ -33,46 +33,106 @@
 // ============================================================
 // Tiempos de espera
 // ============================================================
-static const unsigned long WIFI_TIMEOUT_MS  = 60UL * 1000UL;
-static const unsigned long NTP_TIMEOUT_MS   = 30UL * 1000UL;
-static const unsigned long NTP_POLL_MS      = 500UL;
+static const unsigned long WIFI_TIMEOUT_MS = 60UL * 1000UL;
+static const unsigned long NTP_TIMEOUT_MS  = 30UL * 1000UL;
+static const unsigned long NTP_POLL_MS     = 500UL;
 
 // ============================================================
-// Utilidades de pantalla de arranque
+// Helpers de pantalla de arranque (texto que no se corta)
 // ============================================================
-static void drawCenteredTextMain(const String &txt, int y, uint8_t size, uint16_t color = ST77XX_WHITE) {
+
+// Calcula cuántos caracteres caben en maxW píxeles con fuente size
+static int _bootCharsPerLine(uint8_t size, int maxW) {
+  return maxW / (6 * size);
+}
+
+// Dibuja texto centrado con wrapping; devuelve la Y final
+static int _bootDrawWrapped(const String &txt, int y,
+                             uint8_t size, uint16_t color) {
   tft.setTextSize(size);
   tft.setTextColor(color);
 
-  int16_t x1, y1;
-  uint16_t w, h;
-  tft.getTextBounds(txt, 0, y, &x1, &y1, &w, &h);
+  const int margin = 6;
+  int cpl    = _bootCharsPerLine(size, tft.width() - 2 * margin);
+  int lineH  = 9 * size;
+  int len    = txt.length();
+  int offset = 0;
 
-  int x = (tft.width() - w) / 2;
-  if (x < 0) x = 0;
+  while (offset < len) {
+    int take = min(cpl, len - offset);
+    int cut  = offset + take;
 
-  tft.setCursor(x, y);
-  tft.print(txt);
+    if (cut < len && txt.charAt(cut) != ' ') {
+      int sp = txt.lastIndexOf(' ', cut - 1);
+      if (sp > offset) cut = sp;
+    }
+
+    String line = txt.substring(offset, cut);
+    line.trim();
+
+    int16_t x1, y1; uint16_t w, h;
+    tft.getTextBounds(line, 0, y, &x1, &y1, &w, &h);
+    int cx = (tft.width() - (int)w) / 2;
+    if (cx < margin) cx = margin;
+
+    tft.setCursor(cx, y);
+    tft.print(line);
+    y += lineH;
+
+    offset = cut;
+    if (offset < len && txt.charAt(offset) == ' ') offset++;
+  }
+  return y;
 }
 
-static void showBootScreen(const String &line1, const String &line2 = String(), uint16_t color = ST77XX_WHITE) {
+// Pantalla de arranque: header fijo + caja con título y subtítulo
+// Usa siempre fuente 1 (6×8 px) para que el texto no se corte.
+static void showBootScreen(const String &line1,
+                           const String &line2 = String(),
+                           uint16_t color = ST77XX_WHITE) {
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
 
+  // ── Header ────────────────────────────────────────────────
+  tft.fillRect(0, 0, tft.width(), 22, ST77XX_BLACK);
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
-  tft.setCursor(8, 6);
+
+  int16_t x1, y1; uint16_t w, h;
+  tft.getTextBounds("CONTROL DE ACCESO", 0, 4, &x1, &y1, &w, &h);
+  tft.setCursor((tft.width() - w) / 2, 4);
   tft.print("CONTROL DE ACCESO");
   tft.drawFastHLine(0, 20, tft.width(), ST77XX_WHITE);
 
-  drawCenteredTextMain(line1, 42, 2, color);
+  // ── Caja decorativa ───────────────────────────────────────
+  int boxX = 5, boxY = 26;
+  int boxW = tft.width() - 10;
+  int boxH = 44;
 
+  tft.drawRoundRect(boxX, boxY, boxW, boxH, 5, color);
+  tft.fillRoundRect(boxX + 1, boxY + 1, boxW - 2, boxH - 2, 5, ST77XX_BLACK);
+
+  // ── Línea 1: título principal (fuente 1, con wrapping) ────
+  _bootDrawWrapped(line1, boxY + 7, 1, color);
+
+  // ── Línea 2: subtítulo (fuente 1, con wrapping) ───────────
   if (line2.length()) {
-    drawCenteredTextMain(line2, 68, 1, ST77XX_WHITE);
+    _bootDrawWrapped(line2, boxY + 22, 1, ST77XX_WHITE);
+  }
+
+  // ── Icono de espera debajo de la caja ─────────────────────
+  int iconY = boxY + boxH + 22;
+  if (iconY + 12 < tft.height()) {
+    // drawWaitIcon está en display.cpp; no está disponible aquí,
+    // así que dibujamos un indicador sencillo con puntos
+    int cx = tft.width() / 2;
+    tft.fillCircle(cx - 10, iconY, 3, color);
+    tft.fillCircle(cx,      iconY, 3, color);
+    tft.fillCircle(cx + 10, iconY, 3, color);
   }
 }
 
-// Muestra error en pantalla pero NO detiene el sistema
+// Muestra advertencia amarilla (sin detener el sistema)
 static void showBootWarning(const String &msg) {
   showBootScreen("AVISO", msg, ST77XX_YELLOW);
   Serial.println(msg);
@@ -89,7 +149,7 @@ static bool systemTimeReasonable() {
 
 static void waitForNtpSyncOrTimeout() {
   unsigned long t0 = millis();
-  Serial.printf("Esperando sincronizacion NTP (timeout %lus)...\n", NTP_TIMEOUT_MS / 1000UL);
+  Serial.printf("Esperando NTP (timeout %lus)...\n", NTP_TIMEOUT_MS / 1000UL);
 
   while (!systemTimeReasonable() && (millis() - t0) < NTP_TIMEOUT_MS) {
     delay(NTP_POLL_MS);
@@ -109,7 +169,7 @@ static void printTimeInfo() {
   if (getLocalTime(&t)) {
     char buf[64];
     strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &t);
-    Serial.print("Hora local (getLocalTime): ");
+    Serial.print("Hora local: ");
     Serial.println(buf);
   } else {
     Serial.println("getLocalTime() fallo.");
@@ -120,10 +180,10 @@ static void printTimeInfo() {
   Serial.println((unsigned long)epoch);
 
   const char *tz = getenv("TZ");
-  Serial.print("getenv(\"TZ\"): ");
+  Serial.print("getenv(TZ): ");
   Serial.println(tz ? tz : "NULL");
 
-  Serial.print("WiFi status (numeric): ");
+  Serial.print("WiFi status: ");
   Serial.println((int)WiFi.status());
 }
 
@@ -135,11 +195,11 @@ static void wifiEvent(WiFiEvent_t event) {
   Serial.println((int)event);
 
   switch (event) {
-    case SYSTEM_EVENT_STA_START:        Serial.println("  -> SYSTEM_EVENT_STA_START"); break;
-    case SYSTEM_EVENT_STA_CONNECTED:    Serial.println("  -> SYSTEM_EVENT_STA_CONNECTED"); break;
-    case SYSTEM_EVENT_STA_GOT_IP:       Serial.println("  -> SYSTEM_EVENT_STA_GOT_IP"); break;
-    case SYSTEM_EVENT_STA_DISCONNECTED: Serial.println("  -> SYSTEM_EVENT_STA_DISCONNECTED"); break;
-    default:                            Serial.println("  -> (otro evento)"); break;
+    case SYSTEM_EVENT_STA_START:        Serial.println("  STA_START");        break;
+    case SYSTEM_EVENT_STA_CONNECTED:    Serial.println("  STA_CONNECTED");    break;
+    case SYSTEM_EVENT_STA_GOT_IP:       Serial.println("  STA_GOT_IP");       break;
+    case SYSTEM_EVENT_STA_DISCONNECTED: Serial.println("  STA_DISCONNECTED"); break;
+    default:                            Serial.println("  (otro evento)");    break;
   }
 }
 
@@ -147,24 +207,22 @@ static void wifiEvent(WiFiEvent_t event) {
 // WiFi
 // ============================================================
 static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
-  Serial.printf("Intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms / 1000UL);
+  Serial.printf("Conectando a '%s' (timeout %lus)...\n",
+                WIFI_SSID, timeout_ms / 1000UL);
 
   WiFi.onEvent(wifiEvent);
 
-  Serial.println("Escaneando redes WiFi visibles...");
+  Serial.println("Escaneando redes...");
   int n = WiFi.scanNetworks();
   if (n <= 0) {
-    Serial.println("  No se encontraron redes.");
+    Serial.println("  Sin redes visibles.");
   } else {
-    Serial.printf("  %d redes encontradas:\n", n);
+    Serial.printf("  %d redes:\n", n);
     for (int i = 0; i < n; ++i) {
-      String ssid = WiFi.SSID(i);
-      int rssi = WiFi.RSSI(i);
-      int ch = WiFi.channel(i);
-      wifi_auth_mode_t auth = WiFi.encryptionType(i);
-      const char* enc = (auth == WIFI_AUTH_OPEN) ? "OPEN" : "ENCRYPTED";
-      Serial.printf("   %02d: SSID='%s'  RSSI=%d dBm  CH=%d  %s\n",
-                    i + 1, ssid.c_str(), rssi, ch, enc);
+      Serial.printf("   %02d: '%s'  RSSI=%d dBm  CH=%d  %s\n",
+                    i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+                    WiFi.channel(i),
+                    (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "OPEN" : "ENC");
     }
   }
   WiFi.scanDelete();
@@ -186,31 +244,25 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
 
   while ((millis() - t0) < timeout_ms) {
     wl_status_t st = WiFi.status();
-
     if (st != lastStatus) {
-      Serial.printf("  WiFi.status() cambio: %d\n", (int)st);
+      Serial.printf("  WiFi.status(): %d\n", (int)st);
       lastStatus = st;
     }
-
     if (st == WL_CONNECTED) {
-      Serial.println(String("Conectado. IP: ") + WiFi.localIP().toString());
-      Serial.print("  RSSI: ");
-      Serial.println(WiFi.RSSI());
-      Serial.print("  MAC: ");
-      Serial.println(WiFi.macAddress());
+      Serial.println("Conectado. IP: " + WiFi.localIP().toString());
+      Serial.print("  RSSI: "); Serial.println(WiFi.RSSI());
+      Serial.print("  MAC:  "); Serial.println(WiFi.macAddress());
       return true;
     }
-
     if (st == WL_CONNECT_FAILED) {
-      Serial.println("  WL_CONNECT_FAILED. Abortando intento.");
+      Serial.println("  WL_CONNECT_FAILED.");
       break;
     }
-
     delay(300);
   }
 
-  Serial.println("Timeout de conexion WiFi.");
-  Serial.printf("Estado final WiFi.status() = %d\n", (int)WiFi.status());
+  Serial.println("Timeout WiFi.");
+  Serial.printf("Estado final: %d\n", (int)WiFi.status());
   return false;
 }
 
@@ -220,47 +272,46 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-
   Serial.println();
-  Serial.println("Iniciando ESP32 Control de Acceso - MODO ONLINE con respaldo SPIFFS");
+  Serial.println("Iniciando ESP32 - Control de Acceso (ONLINE + SPIFFS)");
 
-  // ─── SPIFFS ─────────────────────────────────────────────
+  // ── SPIFFS ─────────────────────────────────────────────────
   Serial.println("Montando SPIFFS...");
   if (!SPIFFS.begin(true)) {
-    Serial.println("ERR: SPIFFS.begin() fallo. Se continuara, pero faltaran archivos si no existen.");
+    Serial.println("ERR: SPIFFS.begin() fallo.");
   } else {
-    Serial.println("SPIFFS montado OK.");
+    Serial.println("SPIFFS OK.");
   }
 
   initFiles();
-  Serial.println("initFiles() -> OK.");
+  Serial.println("initFiles() OK.");
 
-  // ─── Pantalla ────────────────────────────────────────────
+  // ── Pantalla ───────────────────────────────────────────────
   displayInit();
-  showBootScreen("Conectando a WiFi...", "Espere hasta 60 s", ST77XX_CYAN);
+  showBootScreen("Conectando a WiFi", "Espere hasta 60 s", ST77XX_CYAN);
 
-  // ─── WiFi (OBLIGATORIO: sin WiFi no hay nada) ────────────
+  // ── WiFi ───────────────────────────────────────────────────
   if (!connectWiFiWithTimeout(WIFI_TIMEOUT_MS)) {
-    // Sin WiFi no podemos ni NTP ni DB; mostramos error y nos detenemos
     showBootScreen("ERROR DE RED", "Sin conexion WiFi", ST77XX_RED);
-    Serial.println("Sistema detenido: sin conexion WiFi.");
+    Serial.println("Sistema detenido: sin WiFi.");
     while (true) {
       updateDisplay();
       delay(1000);
     }
   }
 
+  // Mostrar IP (siempre cabe en una línea con fuente 1)
   showBootScreen("WiFi conectado", WiFi.localIP().toString(), ST77XX_GREEN);
   delay(1000);
 
-  // ─── mDNS ────────────────────────────────────────────────
+  // ── mDNS ───────────────────────────────────────────────────
   if (MDNS.begin("control-acceso")) {
-    Serial.println("mDNS iniciado: http://control-acceso.local");
+    Serial.println("mDNS: http://control-acceso.local");
   } else {
-    Serial.println("WARN: No se pudo iniciar mDNS");
+    Serial.println("WARN: mDNS fallo.");
   }
 
-  // ─── NTP / Hora ──────────────────────────────────────────
+  // ── NTP / Hora ─────────────────────────────────────────────
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6";
 
@@ -271,7 +322,7 @@ void setup() {
   waitForNtpSyncOrTimeout();
 
   if (!systemTimeReasonable()) {
-    Serial.println("Reintentando configTzTime con cadena POSIX (fallback)...");
+    Serial.println("Reintentando NTP con fallback POSIX...");
     configTzTime(posixTZ, "pool.ntp.org", "time.nist.gov");
     setenv("TZ", posixTZ, 1);
     tzset();
@@ -280,38 +331,34 @@ void setup() {
 
   printTimeInfo();
 
-  // ─── Servidor FastAPI / Oracle (opcional en arranque) ────
-  // El sistema arranca siempre. Si el servidor no responde ahora,
-  // los datos se guardan en SPIFFS y se sincronizan cuando vuelva.
-  showBootScreen("Verificando servidor BD...", "Intentando conexion", ST77XX_YELLOW);
+  // ── Servidor BD ────────────────────────────────────────────
+  showBootScreen("Verificando servidor BD", "Intentando conexion", ST77XX_YELLOW);
 
   bool serverOnline = pingServer();
   if (serverOnline) {
-    showBootScreen("Servidor BD conectado", "Sincronizando pendientes", ST77XX_GREEN);
+    showBootScreen("Servidor BD OK", "Sincronizando pendientes", ST77XX_GREEN);
     delay(800);
-    // Subir cualquier dato pendiente en SPIFFS que aún no llegó a la BD
     syncPendingToServer();
   } else {
     showBootWarning("BD no responde ahora");
-    Serial.println("WARN: Servidor BD no disponible en arranque. Se sincronizara mas adelante.");
-    // No se detiene — modoLocal eliminado, SPIFFS cubre el respaldo
+    Serial.println("WARN: BD no disponible. Se sincronizara despues.");
   }
 
-  // ─── SPI / RFID ──────────────────────────────────────────
+  // ── SPI / RFID ─────────────────────────────────────────────
   Serial.println("Iniciando SPI...");
   SPI.begin();
 
-  Serial.println("Inicializando lector RFID (MFRC522)...");
+  Serial.println("Inicializando MFRC522...");
   mfrc522.PCD_Init();
-  Serial.println("MFRC522 inicializado.");
+  Serial.println("MFRC522 OK.");
 
-  // ─── Servo ───────────────────────────────────────────────
-  Serial.printf("Inicializando servo. Pin (SERVO_PIN) = %d\n", SERVO_PIN);
+  // ── Servo ──────────────────────────────────────────────────
+  Serial.printf("Servo en pin %d\n", SERVO_PIN);
   puerta.attach(SERVO_PIN);
   puerta.write(0);
-  Serial.println("Servo attach OK. Posicion inicial 0.");
+  Serial.println("Servo OK. Pos=0.");
 
-  // ─── Rutas web ───────────────────────────────────────────
+  // ── Rutas web ──────────────────────────────────────────────
   registerRoutes();
 
   server.on("/debug_set_time", HTTP_GET, []() {
@@ -319,16 +366,13 @@ void setup() {
       server.send(400, "text/plain", "epoch required");
       return;
     }
-
     uint32_t e = (uint32_t)server.arg("epoch").toInt();
     struct timeval tv;
-    tv.tv_sec = (time_t)e;
+    tv.tv_sec  = (time_t)e;
     tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
-
     setenv("TZ", TZ, 1);
     tzset();
-
     server.send(200, "text/plain", String("Time set to: ") + nowISO());
   });
 
@@ -336,9 +380,7 @@ void setup() {
   Serial.println("Web server iniciado.");
 
   showWaitingMessage();
-
-  Serial.println("Setup completo - Sistema listo (SPIFFS + Oracle como respaldo).");
-  Serial.println("Entrando a loop.");
+  Serial.println("Setup completo. Entrando a loop.");
 }
 
 // ============================================================

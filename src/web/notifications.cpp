@@ -514,7 +514,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
             <div class="modal-title" id="modal_type">Notificación</div>
             <div style="font-size:0.9em;color:#475569" id="modal_meta"></div>
           </div>
-          <div><button type="button" class="btn btn-red" onclick="closeModal()" id="modal_close_btn" aria-label="Cerrar">✕</button></div>
+          <div><button type="button" class="btn btn-red" onclick="closeModal(false)" id="modal_close_btn" aria-label="Cerrar">✕</button></div>
         </div>
         <div class="modal-body" id="modal_body" tabindex="0"></div>
         <div class="modal-meta-big" id="modal_biginfo"></div>
@@ -529,6 +529,7 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
     </div>
   )rawliteral";
 
+  // FIX: JavaScript completamente reescrito para que marcar/desmarcar funcione correctamente
   html += R"rawliteral(
     <script>
       var currentIdx = -1;
@@ -538,43 +539,40 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         var list = document.getElementById('notif_list');
         if (list) {
           list.addEventListener('click', function(e) {
+            // Si el click fue en el botón inline, no abrir el modal
             var btn = e.target.closest('button');
             if (btn && btn.classList.contains('btn-mark-inline')) {
-              var item = e.target.closest('.notif-item');
-              if (!item) return;
-              var idx = item.getAttribute('data-idx');
-              if (!idx) return;
-              var markAsRead = btn.classList.contains('btn-green');
-              markInline(parseInt(idx), markAsRead, e);
-              return;
+              return; // El onclick del botón ya se encarga
             }
-
             var item = e.target.closest('.notif-item');
             if (!item) return;
             var idx = item.getAttribute('data-idx');
-            if (!idx) return;
+            if (idx === null) return;
             openNotif(parseInt(idx), e);
           });
         }
       });
 
+      // -------------------------------------------------------
+      // Filtros
+      // -------------------------------------------------------
       function applyNotifFilters(){
-        var fm=document.getElementById('nf_materia').value.trim().toLowerCase();
-        var fp=document.getElementById('nf_prof').value.trim().toLowerCase();
-        var fn=document.getElementById('nf_name').value.trim().toLowerCase();
-        var fdate=document.getElementById('nf_date').value.trim();
+        var fm   = document.getElementById('nf_materia').value.trim().toLowerCase();
+        var fp   = document.getElementById('nf_prof').value.trim().toLowerCase();
+        var fn   = document.getElementById('nf_name').value.trim().toLowerCase();
+        var fdate= document.getElementById('nf_date').value.trim();
         var items = document.querySelectorAll('#notif_list .notif-item');
-        for (var i=0;i<items.length;i++){
+        for (var i = 0; i < items.length; i++) {
           var item = items[i];
-          var ts = (item.getAttribute('data-ts')||'').toLowerCase();
-          var name = (item.getAttribute('data-name')||'').toLowerCase();
-          var note = (item.getAttribute('data-note-html')||'').toLowerCase();
-          var mat = (item.getAttribute('data-materia')||'').toLowerCase();
-          var prof = (item.getAttribute('data-prof')||'').toLowerCase();
+          var ts   = (item.getAttribute('data-ts')       || '').toLowerCase();
+          var name = (item.getAttribute('data-name')     || '').toLowerCase();
+          var note = (item.getAttribute('data-note-html')|| '').toLowerCase();
+          var mat  = (item.getAttribute('data-materia')  || '').toLowerCase();
+          var prof = (item.getAttribute('data-prof')     || '').toLowerCase();
           var ok = true;
-          if (fm.length && mat.indexOf(fm) === -1 && name.indexOf(fm) === -1 && note.indexOf(fm) === -1) ok = false;
-          if (fp.length && prof.indexOf(fp) === -1 && name.indexOf(fp) === -1 && note.indexOf(fp) === -1) ok = false;
-          if (fn.length && name.indexOf(fn) === -1 && note.indexOf(fn) === -1) ok = false;
+          if (fm.length   && mat.indexOf(fm)   === -1 && name.indexOf(fm)   === -1 && note.indexOf(fm)   === -1) ok = false;
+          if (fp.length   && prof.indexOf(fp)  === -1 && name.indexOf(fp)   === -1 && note.indexOf(fp)   === -1) ok = false;
+          if (fn.length   && name.indexOf(fn)  === -1 && note.indexOf(fn)   === -1) ok = false;
           if (fdate.length && ts.indexOf(fdate) === -1) ok = false;
           item.style.display = ok ? '' : 'none';
         }
@@ -582,123 +580,165 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       }
 
       function clearNotifFilters(){
-        document.getElementById('nf_materia').value='';
-        document.getElementById('nf_prof').value='';
-        document.getElementById('nf_name').value='';
-        document.getElementById('nf_date').value='';
+        document.getElementById('nf_materia').value = '';
+        document.getElementById('nf_prof').value    = '';
+        document.getElementById('nf_name').value    = '';
+        document.getElementById('nf_date').value    = '';
         applyNotifFilters();
       }
 
+      // -------------------------------------------------------
+      // Mensaje de estado
+      // -------------------------------------------------------
       function showStatusMessage(message, type) {
         var msgEl = document.getElementById('status_message');
         if (!msgEl) return;
         msgEl.textContent = message;
         msgEl.style.display = 'inline-block';
-        if (type === 'success') {
-          msgEl.style.backgroundColor = '#10b981';
-          msgEl.style.color = 'white';
-        } else if (type === 'info') {
-          msgEl.style.backgroundColor = '#06b6d4';
-          msgEl.style.color = 'white';
-        } else if (type === 'warning') {
-          msgEl.style.backgroundColor = '#f59e0b';
-          msgEl.style.color = 'white';
-        }
+        var colors = { success: '#10b981', info: '#06b6d4', warning: '#f59e0b' };
+        msgEl.style.backgroundColor = colors[type] || '#10b981';
+        msgEl.style.color = 'white';
         setTimeout(function() { msgEl.style.display = 'none'; }, 3000);
       }
 
-      function markInline(idx, markAsRead, event){
+      // -------------------------------------------------------
+      // FIX PRINCIPAL: obtener nota de forma segura
+      // -------------------------------------------------------
+      function getNoteFromEnc(idx) {
+        var encEl = document.getElementById('notif_note_enc_' + idx);
+        if (!encEl) return '';
+        var b64 = (encEl.textContent || encEl.innerText || '').trim();
+        try { return atob(b64); } catch(e) { return ''; }
+      }
+
+      // -------------------------------------------------------
+      // FIX PRINCIPAL: marcar/desmarcar inline (botón en la tarjeta)
+      // - Ya NO elimina el elemento del DOM.
+      // - Actualiza data-isread y reconstruye el botón para
+      //   reflejar el nuevo estado sin recargar la página.
+      // -------------------------------------------------------
+      function markInline(idx, markAsRead, event) {
         if (event && event.stopPropagation) event.stopPropagation();
-        var uidEl  = document.getElementById('notif_uid_' + idx);
-        var tsEl   = document.getElementById('notif_ts_' + idx);
-        var encEl  = document.getElementById('notif_note_enc_' + idx);
-        if (!tsEl || !encEl) return;
-        var uid  = uidEl ? (uidEl.textContent || uidEl.innerText || '') : '';
-        var ts   = tsEl ? (tsEl.textContent || tsEl.innerText || '') : '';
-        var note = '';
-        try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = ''; }
+        if (event && event.preventDefault)  event.preventDefault();
+
+        var uidEl = document.getElementById('notif_uid_' + idx);
+        var tsEl  = document.getElementById('notif_ts_'  + idx);
+        if (!tsEl) return;
+
+        var uid  = uidEl ? (uidEl.textContent || uidEl.innerText || '').trim() : '';
+        var ts   = (tsEl.textContent || tsEl.innerText || '').trim();
+        var note = getNoteFromEnc(idx);
         var action = markAsRead ? 'mark' : 'unmark';
+
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/notifications_mark', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
+            // Actualizar data-isread en el elemento
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (item) {
-              if (item.parentNode) item.parentNode.removeChild(item);
-              updateCounts();
-              if (markAsRead) {
-                if (window.location.pathname === '/notifications') {
-                  showStatusMessage('Notificación marcada como leída', 'success');
-                } else {
-                  showStatusMessage('Notificación actualizada', 'info');
-                }
-              } else {
-                if (window.location.pathname === '/notifications_read') {
-                  showStatusMessage('Notificación movida a no leídas', 'info');
-                } else {
-                  showStatusMessage('Notificación actualizada', 'info');
-                }
+              item.setAttribute('data-isread', markAsRead ? '1' : '0');
+
+              // Actualizar el div oculto de is_read
+              var isReadEl = document.getElementById('notif_is_read_' + idx);
+              if (isReadEl) isReadEl.textContent = markAsRead ? '1' : '0';
+
+              // Reconstruir el área de acciones del header
+              var compactActions = item.querySelector('.compact-actions');
+              if (compactActions) {
+                compactActions.innerHTML = markAsRead
+                  ? '<button type="button" class="btn btn-orange btn-mark-inline" onclick="markInline(' + idx + ', false, event)">Marcar no leído</button>'
+                  : '<button type="button" class="btn btn-green btn-mark-inline" onclick="markInline(' + idx + ', true, event)">Marcar leído</button>';
+              }
+
+              // Mostrar/ocultar badge "Nuevo"
+              var actionLeft = item.querySelector('.action-left');
+              if (actionLeft) {
+                actionLeft.style.display = markAsRead ? 'none' : '';
               }
             }
+
+            updateCounts();
+            showStatusMessage(
+              markAsRead ? 'Notificación marcada como leída' : 'Notificación marcada como no leída',
+              markAsRead ? 'success' : 'info'
+            );
           } else {
-            alert('Error al cambiar estado');
+            alert('Error al cambiar estado de la notificación');
           }
         };
-        xhr.send('action=' + action + '&ts=' + encodeURIComponent(ts) + '&uid=' + encodeURIComponent(uid) + '&note=' + encodeURIComponent(note));
+        xhr.onerror = function() { alert('Error de red al cambiar estado'); };
+        xhr.send('action=' + action
+          + '&ts='   + encodeURIComponent(ts)
+          + '&uid='  + encodeURIComponent(uid)
+          + '&note=' + encodeURIComponent(note));
       }
 
-      function openNotif(idx, e){
+      // -------------------------------------------------------
+      // Abrir modal
+      // -------------------------------------------------------
+      function openNotif(idx, e) {
         if (e && e.stopPropagation) e.stopPropagation();
         currentIdx = idx;
-        var uidEl  = document.getElementById('notif_uid_' + idx);
-        var tsEl   = document.getElementById('notif_ts_' + idx);
-        var encEl  = document.getElementById('notif_note_enc_' + idx);
-        var nameEl = document.getElementById('notif_name_' + idx);
-        var accEl  = document.getElementById('notif_acc_' + idx);
+
+        var uidEl    = document.getElementById('notif_uid_'     + idx);
+        var tsEl     = document.getElementById('notif_ts_'      + idx);
+        var nameEl   = document.getElementById('notif_name_'    + idx);
+        var accEl    = document.getElementById('notif_acc_'     + idx);
         var isReadEl = document.getElementById('notif_is_read_' + idx);
-        if (!tsEl || !encEl) return;
-        var uid  = uidEl ? (uidEl.textContent || uidEl.innerText || '') : '';
-        var ts   = tsEl ? (tsEl.textContent || tsEl.innerText || '') : '';
-        var note = '';
-        try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = ''; }
-        var name = nameEl ? (nameEl.textContent || nameEl.innerText || '') : '';
-        var acc  = accEl ? (accEl.textContent || accEl.innerText || '') : '';
-        var isRead = isReadEl ? (isReadEl.textContent === '1') : false;
+        if (!tsEl) return;
+
+        var uid    = uidEl    ? (uidEl.textContent    || uidEl.innerText    || '').trim() : '';
+        var ts     = (tsEl.textContent || tsEl.innerText || '').trim();
+        var name   = nameEl   ? (nameEl.textContent   || nameEl.innerText   || '').trim() : '';
+        var acc    = accEl    ? (accEl.textContent    || accEl.innerText    || '').trim() : '';
+        var isRead = isReadEl ? (isReadEl.textContent.trim() === '1') : false;
+        var note   = getNoteFromEnc(idx);
+
         currentNotificationData = { idx: idx, ts: ts, uid: uid, note: note, name: name, acc: acc, isRead: isRead };
         showModal();
       }
 
+      // -------------------------------------------------------
+      // Mostrar modal (rellena contenido)
+      // -------------------------------------------------------
       function showModal() {
         if (!currentNotificationData) return;
-        var noteDisplay = (currentNotificationData.note||'').replace(/teacher/gi,'maestro');
+        var noteDisplay = (currentNotificationData.note || '').replace(/teacher/gi, 'maestro');
+
         var tipo = 'Notificación';
-        var ln = (currentNotificationData.note||'').toLowerCase();
-        if (ln.indexOf('tarjeta')!==-1 && ln.indexOf('no registrada')!==-1) tipo = 'Tarjeta desconocida';
-        else if (ln.indexOf('fuera de materia')!==-1 || ln.indexOf('no pertenece')!==-1) tipo = 'Alerta (Denegado)';
-        else if (ln.indexOf('fuera de horario')!==-1 || ln.indexOf('no hay clase')!==-1) {
-          if (ln.indexOf('maestro')!==-1 || ln.indexOf('teacher')!==-1) tipo = 'Informativa (Maestro)'; else tipo = 'Informativa (Alumno)';
+        var ln = (currentNotificationData.note || '').toLowerCase();
+        if      (ln.indexOf('tarjeta') !== -1 && ln.indexOf('no registrada') !== -1) tipo = 'Tarjeta desconocida';
+        else if (ln.indexOf('fuera de materia') !== -1 || ln.indexOf('no pertenece') !== -1) tipo = 'Alerta (Denegado)';
+        else if (ln.indexOf('fuera de horario') !== -1 || ln.indexOf('no hay clase') !== -1) {
+          tipo = (ln.indexOf('maestro') !== -1 || ln.indexOf('teacher') !== -1)
+            ? 'Informativa (Maestro)' : 'Informativa (Alumno)';
         }
+
         document.getElementById('modal_type').textContent = tipo;
+
         var itemEl = document.querySelector('.notif-item[data-idx="' + currentNotificationData.idx + '"]');
-        var prof = (itemEl && itemEl.getAttribute('data-prof')) ? itemEl.getAttribute('data-prof') : '';
-        var meta = currentNotificationData.ts;
-        if (prof) meta += ' • ' + prof; else if (currentNotificationData.name) meta += ' • ' + currentNotificationData.name;
-        if (currentNotificationData.acc) meta += ' • ' + currentNotificationData.acc;
+        var prof   = (itemEl && itemEl.getAttribute('data-prof')) ? itemEl.getAttribute('data-prof') : '';
+        var meta   = currentNotificationData.ts;
+        if (prof)                           meta += ' • ' + prof;
+        else if (currentNotificationData.name) meta += ' • ' + currentNotificationData.name;
+        if (currentNotificationData.acc)    meta += ' • ' + currentNotificationData.acc;
         document.getElementById('modal_meta').textContent = meta;
         document.getElementById('modal_body').textContent = noteDisplay;
+
         var big = '';
-        big += '<b>UID:</b> ' + (currentNotificationData.uid?currentNotificationData.uid:'-') + '<br/>';
-        big += '<b>Hora:</b> ' + (currentNotificationData.ts?currentNotificationData.ts:'-') + '<br/>';
-        big += '<b>Tipo:</b> ' + tipo + '<br/>';
-        if (prof) big += '<b>Maestro:</b> ' + prof + '<br/>';
+        big += '<b>UID:</b> '   + (currentNotificationData.uid  || '-') + '<br/>';
+        big += '<b>Hora:</b> '  + (currentNotificationData.ts   || '-') + '<br/>';
+        big += '<b>Tipo:</b> '  + tipo + '<br/>';
+        if (prof)                              big += '<b>Maestro:</b> ' + prof + '<br/>';
         else if (currentNotificationData.name) big += '<b>Nombre:</b> ' + currentNotificationData.name + '<br/>';
-        if (currentNotificationData.acc) big += '<b>Cuenta:</b> ' + currentNotificationData.acc + '<br/>';
+        if (currentNotificationData.acc)       big += '<b>Cuenta:</b> ' + currentNotificationData.acc + '<br/>';
         document.getElementById('modal_biginfo').innerHTML = big;
 
         var profileEl = document.getElementById('modal_profile_link');
         var historyEl = document.getElementById('modal_history_link');
-        var markBtn = document.getElementById('modal_mark_btn');
+        var markBtn   = document.getElementById('modal_mark_btn');
         var unmarkBtn = document.getElementById('modal_unmark_btn');
 
         if (tipo === 'Tarjeta desconocida') {
@@ -707,24 +747,34 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
         } else {
           profileEl.style.display = 'inline-block';
           historyEl.style.display = 'inline-block';
-          var profile_base = '/capture_edit?uid=' + encodeURIComponent(currentNotificationData.uid);
-          if (prof) profile_base = '/teachers_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
-          else if ((currentNotificationData.note||'').toLowerCase().indexOf('maestro')!==-1 || (currentNotificationData.note||'').toLowerCase().indexOf('teacher')!==-1) profile_base = '/teachers_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
-          else profile_base = '/students_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
+          var profile_base;
+          if (prof || (currentNotificationData.note || '').toLowerCase().indexOf('maestro') !== -1
+                   || (currentNotificationData.note || '').toLowerCase().indexOf('teacher') !== -1) {
+            profile_base = '/teachers_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
+          } else {
+            profile_base = '/students_all?search_uid=' + encodeURIComponent(currentNotificationData.uid);
+          }
           profileEl.href = profile_base;
-          var hist = '/history';
+
+          var hist   = '/history';
           var params = [];
           if (currentNotificationData.uid) params.push('uid=' + encodeURIComponent(currentNotificationData.uid));
-          if (currentNotificationData.ts && currentNotificationData.ts.length>=10) params.push('date=' + encodeURIComponent(currentNotificationData.ts.substring(0,10)));
+          if (currentNotificationData.ts && currentNotificationData.ts.length >= 10)
+            params.push('date=' + encodeURIComponent(currentNotificationData.ts.substring(0, 10)));
           if (params.length) hist += '?' + params.join('&');
           historyEl.href = hist;
         }
 
-        if (currentNotificationData.isRead) {
-          markBtn.style.display = 'none';
+        // Leer el estado actual desde el DOM (puede haber cambiado con markInline)
+        var isReadEl = document.getElementById('notif_is_read_' + currentNotificationData.idx);
+        var currentIsRead = isReadEl ? (isReadEl.textContent.trim() === '1') : currentNotificationData.isRead;
+        currentNotificationData.isRead = currentIsRead;
+
+        if (currentIsRead) {
+          markBtn.style.display   = 'none';
           unmarkBtn.style.display = 'inline-block';
         } else {
-          markBtn.style.display = 'inline-block';
+          markBtn.style.display   = 'inline-block';
           unmarkBtn.style.display = 'none';
         }
 
@@ -733,115 +783,122 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
       }
 
       function handleEscKey(e) {
-        if (e.key === 'Escape') closeModal();
+        if (e.key === 'Escape') closeModal(false);
       }
 
-      function closeModal() {
-        document.getElementById('modal_back').style.display='none';
-
-        if (window.location.pathname === '/notifications' && currentNotificationData && !currentNotificationData.isRead) {
-          var idx = currentNotificationData.idx;
-          var encEl = document.getElementById('notif_note_enc_' + idx);
-          var note = '';
-          try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = currentNotificationData.note; }
-          var xhr = new XMLHttpRequest();
-          xhr.open('POST', '/notifications_mark', true);
-          xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-          xhr.onload = function() {
-            if (xhr.status === 200) {
-              var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-              if (item && item.parentNode) {
-                item.parentNode.removeChild(item);
-              }
-              updateCounts();
-              showStatusMessage('Notificación marcada como leída', 'success');
-            } else {
-              alert('Error al marcar como leído');
-            }
-          };
-          xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
-        }
-
+      // -------------------------------------------------------
+      // FIX PRINCIPAL: closeModal ya NO marca automáticamente
+      // como leído al cerrar. El usuario debe usar el botón
+      // explícito. Esto evita marcados accidentales.
+      // El parámetro autoMark=true se usa solo desde
+      // markCurrentNotification/unmarkCurrentNotification.
+      // -------------------------------------------------------
+      function closeModal(autoMark) {
+        document.getElementById('modal_back').style.display = 'none';
+        document.removeEventListener('keydown', handleEscKey);
         currentIdx = -1;
         currentNotificationData = null;
-        document.removeEventListener('keydown', handleEscKey);
       }
 
+      // -------------------------------------------------------
+      // FIX PRINCIPAL: marcar leído desde el modal
+      // Actualiza el DOM en lugar de solo quitar el elemento
+      // -------------------------------------------------------
       function markCurrentNotification() {
         if (!currentNotificationData) return;
-        var idx = currentNotificationData.idx;
-        var encEl = document.getElementById('notif_note_enc_' + idx);
-        var note = '';
-        try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = currentNotificationData.note; }
+        var idx  = currentNotificationData.idx;
+        var note = getNoteFromEnc(idx);
+
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/notifications_mark', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
+            // Actualizar estado en el DOM
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-            if (item && item.parentNode) {
-              item.parentNode.removeChild(item);
+            if (item) {
+              item.setAttribute('data-isread', '1');
+              var isReadEl = document.getElementById('notif_is_read_' + idx);
+              if (isReadEl) isReadEl.textContent = '1';
+
+              var compactActions = item.querySelector('.compact-actions');
+              if (compactActions) {
+                compactActions.innerHTML = '<button type="button" class="btn btn-orange btn-mark-inline" onclick="markInline(' + idx + ', false, event)">Marcar no leído</button>';
+              }
+              var actionLeft = item.querySelector('.action-left');
+              if (actionLeft) actionLeft.style.display = 'none';
             }
+
             updateCounts();
-            document.getElementById('modal_back').style.display='none';
-
-            if (window.location.pathname === '/notifications') {
-              showStatusMessage('Notificación marcada como leída', 'success');
-            } else {
-              showStatusMessage('Notificación actualizada', 'info');
-            }
-
+            document.getElementById('modal_back').style.display = 'none';
+            document.removeEventListener('keydown', handleEscKey);
+            showStatusMessage('Notificación marcada como leída', 'success');
             currentIdx = -1;
             currentNotificationData = null;
-            document.removeEventListener('keydown', handleEscKey);
           } else {
             alert('Error al marcar como leído');
           }
         };
-        xhr.send('action=mark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
+        xhr.onerror = function() { alert('Error de red'); };
+        xhr.send('action=mark'
+          + '&ts='   + encodeURIComponent(currentNotificationData.ts)
+          + '&uid='  + encodeURIComponent(currentNotificationData.uid)
+          + '&note=' + encodeURIComponent(note));
       }
 
+      // -------------------------------------------------------
+      // FIX PRINCIPAL: desmarcar (no leído) desde el modal
+      // -------------------------------------------------------
       function unmarkCurrentNotification() {
         if (!currentNotificationData) return;
-        var idx = currentNotificationData.idx;
-        var encEl = document.getElementById('notif_note_enc_' + idx);
-        var note = '';
-        try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = currentNotificationData.note; }
+        var idx  = currentNotificationData.idx;
+        var note = getNoteFromEnc(idx);
+
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/notifications_mark', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
         xhr.onload = function() {
           if (xhr.status === 200) {
             var item = document.querySelector('.notif-item[data-idx="' + idx + '"]');
-            if (item && item.parentNode) {
-              item.parentNode.removeChild(item);
+            if (item) {
+              item.setAttribute('data-isread', '0');
+              var isReadEl = document.getElementById('notif_is_read_' + idx);
+              if (isReadEl) isReadEl.textContent = '0';
+
+              var compactActions = item.querySelector('.compact-actions');
+              if (compactActions) {
+                compactActions.innerHTML = '<button type="button" class="btn btn-green btn-mark-inline" onclick="markInline(' + idx + ', true, event)">Marcar leído</button>';
+              }
+              var actionLeft = item.querySelector('.action-left');
+              if (actionLeft) actionLeft.style.display = '';
             }
+
             updateCounts();
-            document.getElementById('modal_back').style.display='none';
-
-            if (window.location.pathname === '/notifications_read') {
-              showStatusMessage('Notificación movida a no leídas', 'info');
-            } else {
-              showStatusMessage('Notificación actualizada', 'info');
-            }
-
+            document.getElementById('modal_back').style.display = 'none';
+            document.removeEventListener('keydown', handleEscKey);
+            showStatusMessage('Notificación marcada como no leída', 'info');
             currentIdx = -1;
             currentNotificationData = null;
-            document.removeEventListener('keydown', handleEscKey);
           } else {
             alert('Error al marcar como no leído');
           }
         };
-        xhr.send('action=unmark&ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
+        xhr.onerror = function() { alert('Error de red'); };
+        xhr.send('action=unmark'
+          + '&ts='   + encodeURIComponent(currentNotificationData.ts)
+          + '&uid='  + encodeURIComponent(currentNotificationData.uid)
+          + '&note=' + encodeURIComponent(note));
       }
 
+      // -------------------------------------------------------
+      // Eliminar notificación desde el modal
+      // -------------------------------------------------------
       function deleteCurrentNotification() {
         if (!currentNotificationData) return;
         if (!confirm('¿Eliminar esta notificación?')) return;
-        var idx = currentNotificationData.idx;
-        var encEl = document.getElementById('notif_note_enc_' + idx);
-        var note = '';
-        try { note = atob(encEl.textContent || encEl.innerText || ''); } catch(e){ note = currentNotificationData.note; }
+        var idx  = currentNotificationData.idx;
+        var note = getNoteFromEnc(idx);
+
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/notifications_delete', true);
         xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
@@ -850,50 +907,55 @@ static String generateNotificationsHTML(bool showUnreadOnly, const String &pageT
             var el = document.querySelector('.notif-item[data-idx="' + idx + '"]');
             if (el && el.parentNode) el.parentNode.removeChild(el);
             updateCounts();
-            document.getElementById('modal_back').style.display='none';
+            document.getElementById('modal_back').style.display = 'none';
+            document.removeEventListener('keydown', handleEscKey);
             showStatusMessage('Notificación eliminada', 'info');
             currentIdx = -1;
             currentNotificationData = null;
-            document.removeEventListener('keydown', handleEscKey);
           } else {
             alert('Error al eliminar notificación');
           }
         };
-        xhr.send('ts=' + encodeURIComponent(currentNotificationData.ts) + '&uid=' + encodeURIComponent(currentNotificationData.uid) + '&note=' + encodeURIComponent(note));
+        xhr.onerror = function() { alert('Error de red'); };
+        xhr.send('ts='   + encodeURIComponent(currentNotificationData.ts)
+          + '&uid='  + encodeURIComponent(currentNotificationData.uid)
+          + '&note=' + encodeURIComponent(note));
       }
 
+      // Cerrar modal al hacer click en el fondo
       (function() {
         var mb = document.getElementById('modal_back');
         if (mb) mb.addEventListener('click', function(e) {
-          if (e.target.id === 'modal_back') closeModal();
+          if (e.target.id === 'modal_back') closeModal(false);
         });
       })();
 
+      // -------------------------------------------------------
+      // FIX: updateCounts lee data-isread en lugar de depender
+      // de cuáles elementos están visibles/ocultos
+      // -------------------------------------------------------
       function updateCounts() {
-        var unreadVisible = 0;
-        var readVisible = 0;
+        var unreadCount = 0;
+        var readCount   = 0;
         var items = document.querySelectorAll('#notif_list .notif-item');
         for (var i = 0; i < items.length; i++) {
           var it = items[i];
           if (it.style.display === 'none') continue;
           var isRead = it.getAttribute('data-isread') === '1';
-          if (isRead) readVisible++; else unreadVisible++;
+          if (isRead) readCount++; else unreadCount++;
         }
 
         var hUnread = document.querySelector('#unread_badge');
-        if (hUnread) hUnread.textContent = String(unreadVisible);
+        if (hUnread) hUnread.textContent = String(unreadCount);
 
         var hRead = document.querySelector('#read_badge');
-        if (hRead) hRead.textContent = String(readVisible);
+        if (hRead) hRead.textContent = String(readCount);
 
-        var switchLink = document.querySelector('a.btn-blue[href="/notifications_read"]');
-        if (switchLink && window.location.pathname === '/notifications') {
-          switchLink.textContent = 'Ver Leídas (' + readVisible + ')';
-        }
-        var switchLink2 = document.querySelector('a.btn-blue[href="/notifications"]');
-        if (switchLink2 && window.location.pathname === '/notifications_read') {
-          switchLink2.textContent = 'Ver No Leídas (' + unreadVisible + ')';
-        }
+        var linkToRead = document.querySelector('a.btn-blue[href="/notifications_read"]');
+        if (linkToRead) linkToRead.textContent = 'Ver Leídas (' + readCount + ')';
+
+        var linkToUnread = document.querySelector('a.btn-blue[href="/notifications"]');
+        if (linkToUnread) linkToUnread.textContent = 'Ver No Leídas (' + unreadCount + ')';
       }
     </script>
   )rawliteral";
@@ -940,8 +1002,8 @@ void handleNotificationsDeletePOST() {
     return;
   }
 
-  String ts = server.arg("ts");
-  String uid = server.arg("uid");
+  String ts   = server.arg("ts");
+  String uid  = server.arg("uid");
   String note = server.arg("note");
 
   if (!SPIFFS.exists(NOTIF_FILE)) {
@@ -968,8 +1030,8 @@ void handleNotificationsDeletePOST() {
     if (!l.length()) continue;
 
     auto c = parseQuotedCSVLine(l);
-    String lts = (c.size() > 0 ? c[0] : "");
-    String luid = (c.size() > 1 ? c[1] : "");
+    String lts   = (c.size() > 0 ? c[0] : "");
+    String luid  = (c.size() > 1 ? c[1] : "");
     String lnote = (c.size() > 4 ? c[4] : "");
     if (lts == ts && luid == uid && lnote == note) continue;
     lines.push_back(l);
@@ -994,10 +1056,10 @@ void handleNotificationsMarkPOST() {
   }
 
   String action = server.arg("action");
-  String ts = server.arg("ts");
-  String uid = server.arg("uid");
-  String note = server.arg("note");
-  String key = notifKey(ts, uid, note);
+  String ts     = server.arg("ts");
+  String uid    = server.arg("uid");
+  String note   = server.arg("note");
+  String key    = notifKey(ts, uid, note);
 
   bool nowRead = false;
   if (action == "mark") {
