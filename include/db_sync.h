@@ -1,5 +1,20 @@
 #pragma once
+// include/db_sync.h
+// ============================================================
+// Comunicacion ESP32 <-> servidor FastAPI (Oracle backend)
+// SPIFFS es el almacen primario; Oracle es el respaldo.
+// syncPendingToServer() lee los archivos SPIFFS y reenvía a la BD
+// cada 15 s (llamado desde rfidLoopHandler).
+// ============================================================
 #include <Arduino.h>
+
+// --------------------------------------------------
+// Sincronización SPIFFS -> Oracle (llamar desde loop)
+// --------------------------------------------------
+// Lee attendance.csv, notifications.csv y denied.csv del SPIFFS
+// y reenvía los registros al servidor cuando está disponible.
+// NO borra el SPIFFS (la duplicación es intencional).
+void syncPendingToServer();
 
 // --------------------------------------------------
 // Conexión / salud del servidor
@@ -34,7 +49,6 @@ bool deleteAsistenciaById(int asistencia_id);
 // --------------------------------------------------
 // ALUMNOS
 // --------------------------------------------------
-// created_at es opcional; si no se manda, el ESP lo genera
 bool sendAlumnoRegistro(
     String uid,
     String nombre,
@@ -58,7 +72,6 @@ bool deleteAlumnoById(int alumno_id);
 // --------------------------------------------------
 // PROFESORES
 // --------------------------------------------------
-// account + created_at también opcionales por compatibilidad
 bool sendProfesorRegistro(
     String uid,
     String nombre,

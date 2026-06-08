@@ -1,4 +1,12 @@
 // src/main.cpp
+// ============================================================
+// MODO: siempre ONLINE
+// SPIFFS = almacenamiento primario rápido + respaldo de BD
+// Oracle = réplica/backup asíncrona (envío inmediato o diferido)
+// No existe modoLocal: si la BD no responde, los datos
+// quedan en SPIFFS y se sincronizan en cuanto vuelve.
+// ============================================================
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <SPI.h>
@@ -25,10 +33,9 @@
 // ============================================================
 // Tiempos de espera
 // ============================================================
-static const unsigned long WIFI_TIMEOUT_MS   = 60UL * 1000UL;
-static const unsigned long SERVER_TIMEOUT_MS  = 60UL * 1000UL;
-static const unsigned long NTP_TIMEOUT_MS    = 30UL * 1000UL;
-static const unsigned long NTP_POLL_MS       = 500UL;
+static const unsigned long WIFI_TIMEOUT_MS  = 60UL * 1000UL;
+static const unsigned long NTP_TIMEOUT_MS   = 30UL * 1000UL;
+static const unsigned long NTP_POLL_MS      = 500UL;
 
 // ============================================================
 // Utilidades de pantalla de arranque
@@ -52,7 +59,6 @@ static void showBootScreen(const String &line1, const String &line2 = String(), 
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
 
-  // Encabezado simple
   tft.setTextSize(1);
   tft.setTextColor(ST77XX_WHITE);
   tft.setCursor(8, 6);
@@ -66,15 +72,11 @@ static void showBootScreen(const String &line1, const String &line2 = String(), 
   }
 }
 
-static void showBootErrorAndStop(const String &msg) {
-  showBootScreen("ERROR DE RED", msg, ST77XX_RED);
+// Muestra error en pantalla pero NO detiene el sistema
+static void showBootWarning(const String &msg) {
+  showBootScreen("AVISO", msg, ST77XX_YELLOW);
   Serial.println(msg);
-  Serial.println("Sistema detenido por falta de conexion WiFi/Internet.");
-
-  while (true) {
-    updateDisplay();
-    delay(1000);
-  }
+  delay(2500);
 }
 
 // ============================================================
@@ -142,7 +144,7 @@ static void wifiEvent(WiFiEvent_t event) {
 }
 
 // ============================================================
-// WiFi / servidor
+// WiFi
 // ============================================================
 static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
   Serial.printf("Intentando conectar a '%s' (timeout %lus)...\n", WIFI_SSID, timeout_ms / 1000UL);
@@ -212,22 +214,6 @@ static bool connectWiFiWithTimeout(unsigned long timeout_ms = WIFI_TIMEOUT_MS) {
   return false;
 }
 
-static bool waitForServerWithTimeout(unsigned long timeout_ms = SERVER_TIMEOUT_MS) {
-  Serial.printf("Probando servidor FastAPI por hasta %lus...\n", timeout_ms / 1000UL);
-
-  unsigned long t0 = millis();
-  while ((millis() - t0) < timeout_ms) {
-    if (pingServer()) {
-      Serial.println("Servidor FastAPI responde OK.");
-      return true;
-    }
-    delay(2000);
-  }
-
-  Serial.println("Servidor FastAPI no respondio dentro del timeout.");
-  return false;
-}
-
 // ============================================================
 // Setup
 // ============================================================
@@ -236,8 +222,9 @@ void setup() {
   delay(200);
 
   Serial.println();
-  Serial.println("Iniciando ESP32 Registro Asistencia - flujo ONLINE/LOCAL");
+  Serial.println("Iniciando ESP32 Control de Acceso - MODO ONLINE con respaldo SPIFFS");
 
+  // ─── SPIFFS ─────────────────────────────────────────────
   Serial.println("Montando SPIFFS...");
   if (!SPIFFS.begin(true)) {
     Serial.println("ERR: SPIFFS.begin() fallo. Se continuara, pero faltaran archivos si no existen.");
@@ -248,26 +235,32 @@ void setup() {
   initFiles();
   Serial.println("initFiles() -> OK.");
 
-  // La pantalla debe estar lista antes del arranque de red
+  // ─── Pantalla ────────────────────────────────────────────
   displayInit();
-  showBootScreen("Intentando conectar a Internet...", "Espere hasta 60 segundos", ST77XX_CYAN);
+  showBootScreen("Conectando a WiFi...", "Espere hasta 60 s", ST77XX_CYAN);
 
-  // 1) WiFi / Internet
+  // ─── WiFi (OBLIGATORIO: sin WiFi no hay nada) ────────────
   if (!connectWiFiWithTimeout(WIFI_TIMEOUT_MS)) {
-    showBootErrorAndStop("Sin conexion WiFi / Internet");
+    // Sin WiFi no podemos ni NTP ni DB; mostramos error y nos detenemos
+    showBootScreen("ERROR DE RED", "Sin conexion WiFi", ST77XX_RED);
+    Serial.println("Sistema detenido: sin conexion WiFi.");
+    while (true) {
+      updateDisplay();
+      delay(1000);
+    }
   }
 
-  // Si hay WiFi, seguimos
-  showBootScreen("Internet conectado", WiFi.localIP().toString(), ST77XX_GREEN);
+  showBootScreen("WiFi conectado", WiFi.localIP().toString(), ST77XX_GREEN);
+  delay(1000);
 
-  // 2) mDNS
+  // ─── mDNS ────────────────────────────────────────────────
   if (MDNS.begin("control-acceso")) {
     Serial.println("mDNS iniciado: http://control-acceso.local");
   } else {
     Serial.println("WARN: No se pudo iniciar mDNS");
   }
 
-  // 3) Hora / NTP
+  // ─── NTP / Hora ──────────────────────────────────────────
   Serial.println("Configurando TZ y NTP...");
   const char *posixTZ = "GMT-6";
 
@@ -287,24 +280,24 @@ void setup() {
 
   printTimeInfo();
 
-  // 4) Servidor FastAPI / Oracle
-  showBootScreen("Comprobando servidor FastAPI...", "Intentando 60 segundos", ST77XX_YELLOW);
+  // ─── Servidor FastAPI / Oracle (opcional en arranque) ────
+  // El sistema arranca siempre. Si el servidor no responde ahora,
+  // los datos se guardan en SPIFFS y se sincronizan cuando vuelva.
+  showBootScreen("Verificando servidor BD...", "Intentando conexion", ST77XX_YELLOW);
 
-  bool serverOnline = waitForServerWithTimeout(SERVER_TIMEOUT_MS);
+  bool serverOnline = pingServer();
   if (serverOnline) {
-    modoLocal = false;
-    showBootScreen("Servidor conectado", "Modo ONLINE", ST77XX_GREEN);
-    delay(1500);
-
-    // Si quedaron registros pendientes del modo local anterior, sincronizar
+    showBootScreen("Servidor BD conectado", "Sincronizando pendientes", ST77XX_GREEN);
+    delay(800);
+    // Subir cualquier dato pendiente en SPIFFS que aún no llegó a la BD
     syncPendingToServer();
   } else {
-    modoLocal = true;
-    showBootScreen("Servidor no responde", "Iniciando modo LOCAL", ST77XX_YELLOW);
-    delay(2500);
+    showBootWarning("BD no responde ahora");
+    Serial.println("WARN: Servidor BD no disponible en arranque. Se sincronizara mas adelante.");
+    // No se detiene — modoLocal eliminado, SPIFFS cubre el respaldo
   }
 
-  // 5) SPI / RFID
+  // ─── SPI / RFID ──────────────────────────────────────────
   Serial.println("Iniciando SPI...");
   SPI.begin();
 
@@ -312,13 +305,13 @@ void setup() {
   mfrc522.PCD_Init();
   Serial.println("MFRC522 inicializado.");
 
-  // 6) Servo
+  // ─── Servo ───────────────────────────────────────────────
   Serial.printf("Inicializando servo. Pin (SERVO_PIN) = %d\n", SERVO_PIN);
   puerta.attach(SERVO_PIN);
   puerta.write(0);
   Serial.println("Servo attach OK. Posicion inicial 0.");
 
-  // 7) Rutas web locales del ESP32
+  // ─── Rutas web ───────────────────────────────────────────
   registerRoutes();
 
   server.on("/debug_set_time", HTTP_GET, []() {
@@ -342,11 +335,10 @@ void setup() {
   server.begin();
   Serial.println("Web server iniciado.");
 
-  // Pantalla normal de espera
   showWaitingMessage();
 
-  Serial.println(serverOnline ? "Sistema listo en MODO ONLINE." : "Sistema listo en MODO LOCAL.");
-  Serial.println("Setup completo - entrando a loop.");
+  Serial.println("Setup completo - Sistema listo (SPIFFS + Oracle como respaldo).");
+  Serial.println("Entrando a loop.");
 }
 
 // ============================================================

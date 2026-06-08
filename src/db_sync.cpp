@@ -5,7 +5,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
-static const char* SERVER_URL = "http://192.168.100.15:8000";
+static const char* SERVER_URL = "http://192.168.100.11:8000";
 static const uint32_t HTTP_TIMEOUT_MS = 15000;
 
 // --------------------------------------------------

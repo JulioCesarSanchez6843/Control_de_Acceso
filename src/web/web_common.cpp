@@ -33,9 +33,6 @@ static String notifKeyLocal(const String &ts, const String &uid, const String &n
   return out;
 }
 
-static String currentModeLabel() {
-  return modoLocal ? "MODO: LOCAL" : "MODO: ONLINE";
-}
 
 // --------------------------------------------------
 // Contador de notificaciones no leídas desde Oracle
@@ -185,22 +182,6 @@ String htmlHeader(const char* title) {
     align-items: center;
     min-width: 180px;
   }
-
-  .mode-badge {
-    background: #dc2626;
-    color: #fff;
-    padding: 8px 14px;
-    border-radius: 10px;
-    font-weight: 900;
-    font-size: 13px;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    box-shadow: 0 4px 12px rgba(220,38,38,0.25);
-    user-select: none;
-    pointer-events: none;
-    white-space: nowrap;
-  }
-
   .title { font-weight:900; font-size:20px; cursor:pointer; }
   .nav { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 
@@ -570,12 +551,6 @@ String htmlHeader(const char* title) {
     .topbar {
       justify-content: center;
     }
-
-    .topbar-center {
-      order: 3;
-      width: 100%;
-      margin-top: 4px;
-    }
   }
 
   @media (max-width: 480px) {
@@ -615,10 +590,6 @@ String htmlHeader(const char* title) {
   h += "<a class='notif' href='/notifications' title='Notificaciones No Leídas'>🔔";
   if (nCount > 0) h += "<span class='count'>" + String(nCount) + "</span>";
   h += "</a>";
-  h += "</div>";
-
-  h += "<div class='topbar-center'>";
-  h += "<div class='mode-badge'>" + currentModeLabel() + "</div>";
   h += "</div>";
 
   // Menú de navegación principal (se eliminó botón Capturar del nav)
