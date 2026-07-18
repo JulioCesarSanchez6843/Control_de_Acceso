@@ -1,0 +1,103 @@
+-- ============================================================
+-- SISTEMA DE CONTROL DE ACCESO
+-- Script de creación de tablas — Oracle Database XE
+-- ============================================================
+
+
+-- ------------------------------------------------------------
+-- ALUMNOS
+-- ------------------------------------------------------------
+CREATE TABLE alumnos (
+    id         NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    rfid_uid   VARCHAR2(30)  NOT NULL,
+    name       VARCHAR2(100) NOT NULL,
+    account    VARCHAR2(30)  NOT NULL,
+    materia    VARCHAR2(100),
+    created_at VARCHAR2(30)  NOT NULL
+);
+
+
+-- ------------------------------------------------------------
+-- PROFESORES
+-- ------------------------------------------------------------
+CREATE TABLE profesores (
+    rfid_uid   VARCHAR2(30)  NOT NULL,
+    name       VARCHAR2(100) NOT NULL,
+    account    VARCHAR2(30)  NOT NULL,
+    created_at VARCHAR2(30)  NOT NULL
+);
+
+
+-- ------------------------------------------------------------
+-- MATERIAS
+-- ------------------------------------------------------------
+CREATE TABLE materias (
+    id         NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    materia    VARCHAR2(100) NOT NULL,
+    profesor   VARCHAR2(100) NOT NULL,
+    created_at VARCHAR2(30)
+);
+
+
+-- ------------------------------------------------------------
+-- PROFESOR_MATERIA
+-- ------------------------------------------------------------
+CREATE TABLE profesor_materia (
+    id         NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    rfid_uid   VARCHAR2(30)  NOT NULL,
+    materia    VARCHAR2(100) NOT NULL,
+    created_at VARCHAR2(30)
+);
+
+
+-- ------------------------------------------------------------
+-- HORARIOS
+-- ------------------------------------------------------------
+CREATE TABLE horarios (
+    id          NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    materia     VARCHAR2(100) NOT NULL,
+    profesor    VARCHAR2(100),
+    dia         VARCHAR2(20)  NOT NULL,
+    hora_inicio VARCHAR2(10)  NOT NULL,
+    hora_fin    VARCHAR2(10)  NOT NULL,
+    created_at  VARCHAR2(30)
+);
+
+
+-- ------------------------------------------------------------
+-- ACCESOS_DENEGADOS
+-- ------------------------------------------------------------
+CREATE TABLE accesos_denegados (
+    id        NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp VARCHAR2(30)  NOT NULL,
+    rfid_uid  VARCHAR2(30)  NOT NULL,
+    note      VARCHAR2(200)
+);
+
+
+-- ------------------------------------------------------------
+-- NOTIFICACIONES
+-- ------------------------------------------------------------
+CREATE TABLE notificaciones (
+    id        NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    timestamp VARCHAR2(30)  NOT NULL,
+    rfid_uid  VARCHAR2(30)  NOT NULL,
+    name      VARCHAR2(100),
+    account   VARCHAR2(30),
+    note      CLOB          NOT NULL,
+    leida     NUMBER        DEFAULT 0 NOT NULL
+);
+
+
+-- ------------------------------------------------------------
+-- ASISTENCIAS
+-- ------------------------------------------------------------
+CREATE TABLE asistencias (
+    id        NUMBER        GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    fecha_hora VARCHAR2(30) NOT NULL,
+    rfid_uid  VARCHAR2(30)  NOT NULL,
+    name      VARCHAR2(100) NOT NULL,
+    account   VARCHAR2(30)  NOT NULL,
+    materia   VARCHAR2(100),
+    tipo      VARCHAR2(20)  NOT NULL
+);
